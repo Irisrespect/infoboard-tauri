@@ -46,12 +46,11 @@ export function WeatherCard({ manifest, expanded }: PluginComponentProps) {
   }, [])
 
   const handleRefresh = useCallback(async () => {
-    try {
-      refresh()
-      setTimeout(() => showToast('✅ 天气数据已刷新', 'success'), 500)
-    } catch {
-      showToast('❌ 刷新失败，请检查网络', 'error')
-    }
+    // 等真实结果再提示：refresh() 现在返回是否成功
+    // （原先 refresh() 不返回 Promise，setTimeout 无条件弹"已刷新"，
+    //   失败时也会显示成功）
+    const ok = await refresh()
+    showToast(ok ? '✅ 天气数据已刷新' : '❌ 刷新失败，请检查网络', ok ? 'success' : 'error')
   }, [refresh, showToast])
 
   const prevErrorRef = useRef<string | null>(null)
@@ -269,7 +268,7 @@ function DetailGrid({ data }: { data: WeatherData }) {
     { label: '湿度', value: `${data.humidity}%`, icon: 'droplets' },
     { label: '风速', value: `${data.windSpeed} km/h`, icon: 'wind' },
     { label: '能见度', value: `${data.visibility} km`, icon: 'eye' },
-    { label: '紫外线', value: '--', icon: 'sun' },
+    { label: '紫外线', value: data.uvIndex || '--', icon: 'sun' },
   ]
 
   return (

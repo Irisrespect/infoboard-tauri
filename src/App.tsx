@@ -2,21 +2,34 @@ import { useState, useCallback, useEffect } from 'react'
 import { TitleBar } from './components/TitleBar'
 import { InfoSection } from './components/InfoSection'
 import { ToolSection } from './components/ToolSection'
+import { clampMenuPosition, isMenuCloseKey } from './components/contextMenu'
 
 export default function App() {
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
 
-  // 右键菜单
+  // 右键菜单（位置钳制在可视区内，否则右下角右键会点不到菜单项）
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
-    setMenu({ x: e.clientX, y: e.clientY })
+    setMenu(
+      clampMenuPosition(
+        { x: e.clientX, y: e.clientY },
+        { width: window.innerWidth, height: window.innerHeight }
+      )
+    )
   }, [])
 
-  // 点击任意位置关闭菜单
+  // 点击任意位置 / 按 Esc 关闭菜单
   useEffect(() => {
     const close = () => setMenu(null)
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (isMenuCloseKey(e.key)) setMenu(null)
+    }
     window.addEventListener('click', close)
-    return () => window.removeEventListener('click', close)
+    window.addEventListener('keydown', onKeyDown)
+    return () => {
+      window.removeEventListener('click', close)
+      window.removeEventListener('keydown', onKeyDown)
+    }
   }, [])
 
   // 切换标题栏显隐

@@ -101,6 +101,8 @@ export default function GlobalToast() {
           <button
             className="p-0.5 rounded hover:bg-bg-surface-hover transition-colors"
             onClick={() => removeToast(toast.id)}
+            aria-label="关闭提示"
+            title="关闭"
           >
             <X size={14} className="text-text-muted" />
           </button>

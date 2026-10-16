@@ -171,6 +171,7 @@ export function MediaControls({ media, onSendCommand }: MediaControlsProps) {
             handlePrevious()
           }}
           title="上一个"
+          aria-label="上一个"
         >
           <SkipBack size={16} />
         </button>
@@ -187,6 +188,7 @@ export function MediaControls({ media, onSendCommand }: MediaControlsProps) {
             handlePlayPause()
           }}
           title={isPlaying ? '暂停' : '播放'}
+          aria-label={isPlaying ? '暂停' : '播放'}
         >
           {isPlaying ? <Pause size={20} /> : <Play size={20} />}
         </button>
@@ -203,6 +205,7 @@ export function MediaControls({ media, onSendCommand }: MediaControlsProps) {
             handleNext()
           }}
           title="下一个"
+          aria-label="下一个"
         >
           <SkipForward size={16} />
         </button>

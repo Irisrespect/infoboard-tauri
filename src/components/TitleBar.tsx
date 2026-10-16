@@ -69,6 +69,7 @@ export function TitleBar() {
           className="w-6 h-6 flex items-center justify-center rounded hover:bg-bg-surface-hover transition-colors"
           onClick={() => window.dispatchEvent(new CustomEvent('log-console-toggle'))}
           title="日志台 (F12)"
+          aria-label="打开日志台"
         >
           <svg
             className="w-3.5 h-3.5 text-text-muted"
@@ -90,6 +91,7 @@ export function TitleBar() {
           className="w-6 h-6 flex items-center justify-center rounded hover:bg-bg-surface-hover transition-colors"
           onClick={handleMinimize}
           title="最小化"
+          aria-label="最小化窗口"
         >
           <svg
             className="w-3.5 h-3.5 text-text-muted"
@@ -109,6 +111,7 @@ export function TitleBar() {
           className="w-6 h-6 flex items-center justify-center rounded hover:bg-bg-surface-hover transition-colors"
           onClick={handleMaximize}
           title={isMaximized ? '还原' : '最大化'}
+          aria-label={isMaximized ? '还原窗口' : '最大化窗口'}
         >
           {isMaximized ? (
             <svg
@@ -142,6 +145,7 @@ export function TitleBar() {
           className="w-6 h-6 flex items-center justify-center rounded hover:bg-red-500 hover:text-white transition-colors group"
           onClick={handleClose}
           title="关闭"
+          aria-label="隐藏到托盘"
         >
           <svg
             className="w-3.5 h-3.5 text-text-muted group-hover:text-white"

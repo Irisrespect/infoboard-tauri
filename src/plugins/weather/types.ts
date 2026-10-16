@@ -27,6 +27,8 @@ export interface WeatherData {
   pressure: number
   /** 能见度（km） */
   visibility: number
+  /** 今日紫外线指数（来自 3 日预报的 uvIndex，如 "3"；拿不到时为空串） */
+  uvIndex: string
   /** 3 日预报 */
   forecast: ForecastDay[]
   /** 24 小时逐时预报 */
@@ -71,8 +73,8 @@ export interface UseWeatherReturn {
   loading: boolean
   /** 错误信息 */
   error: string | null
-  /** 刷新数据 */
-  refresh: () => void
+  /** 刷新数据。返回是否真的成功（调用方据此提示，别无条件报成功） */
+  refresh: () => Promise<boolean>
   /** 当前城市显示名（如 "海淀 · 北京"） */
   city: string
   /** 当前城市详细信息 */

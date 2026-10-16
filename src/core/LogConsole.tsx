@@ -194,6 +194,7 @@ export default function LogConsole({ open, onClose }: LogConsoleProps) {
         <button
           type="button"
           title="复制全部"
+          aria-label="复制全部日志"
           className="p-1 rounded hover:opacity-80"
           style={{ color: 'var(--text-secondary)' }}
           onClick={handleCopy}
@@ -203,6 +204,7 @@ export default function LogConsole({ open, onClose }: LogConsoleProps) {
         <button
           type="button"
           title="清空"
+          aria-label="清空日志"
           className="p-1 rounded hover:opacity-80"
           style={{ color: 'var(--text-secondary)' }}
           onClick={handleClear}
@@ -212,6 +214,7 @@ export default function LogConsole({ open, onClose }: LogConsoleProps) {
         <button
           type="button"
           title="关闭"
+          aria-label="关闭日志台"
           className="p-1 rounded hover:opacity-80"
           style={{ color: 'var(--text-secondary)' }}
           onClick={onClose}

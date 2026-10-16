@@ -171,6 +171,8 @@ function transformWeatherData(
     icon: now.icon,
     pressure: parseInt(now.pressure, 10) || 0,
     visibility: parseInt(now.vis, 10) || 0,
+    // 紫外线指数只在 3 日预报里（now 没有这个字段），取今天那条
+    uvIndex: dailyRes.daily?.[0]?.uvIndex ?? '',
     forecast: dailyRes.daily.slice(0, 3).map((day): ForecastDay => ({
       date: getDayLabel(day.fxDate),
       tempMax: parseInt(day.tempMax, 10) || 0,
@@ -279,9 +281,11 @@ export function useWeather(): UseWeatherReturn {
 
   /**
    * 获取天气数据
+   *
+   * @returns 是否真的刷新成功（供"刷新"按钮提示用；失败原因已写进 error 状态）
    */
   const fetchWeather = useCallback(
-    async (config?: CityInfo) => {
+    async (config?: CityInfo): Promise<boolean> => {
       const city = config || cityConfig
       const locationParam = getLocationParam(city)
       const cityName = city.name
@@ -305,7 +309,7 @@ export function useWeather(): UseWeatherReturn {
           }
         }
         setLoading(false)
-        return
+        return false
       }
       setIsOffline(false)
 
@@ -425,10 +429,11 @@ export function useWeather(): UseWeatherReturn {
         setData(weatherData)
         saveToCache(weatherData)
         setError(null)
+        return true
       } catch (err: unknown) {
         if (err instanceof DOMException && err.name === 'AbortError') {
           console.log('[天气] 请求被取消 (AbortError)')
-          return
+          return false
         }
 
         const errorMessage = err instanceof Error ? err.message : '获取天气数据失败'
@@ -444,6 +449,7 @@ export function useWeather(): UseWeatherReturn {
             /* 缓存读取失败 */
           }
         }
+        return false
       } finally {
         setLoading(false)
       }
@@ -451,10 +457,8 @@ export function useWeather(): UseWeatherReturn {
     [cityConfig, saveToCache]
   )
 
-  /** 刷新数据 */
-  const refresh = useCallback(() => {
-    fetchWeather()
-  }, [fetchWeather])
+  /** 刷新数据（把真实结果返回给调用方，"刷新"按钮据此提示成功/失败） */
+  const refresh = useCallback(() => fetchWeather(), [fetchWeather])
 
   /** 切换城市（支持区/街道级） */
   const setCity = useCallback(
