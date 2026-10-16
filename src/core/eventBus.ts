@@ -54,6 +54,19 @@ function generateId(): string {
   return `listener_${++listenerIdCounter}_${Date.now()}`
 }
 
+/**
+ * 把 payload 转成可打印的日志文本。
+ * 循环引用 / BigInt 等不可序列化的值不能让 emit 抛错，否则该事件的订阅者都收不到。
+ */
+function describePayload(payload: unknown): unknown {
+  if (typeof payload !== 'object' || payload === null) return payload
+  try {
+    return JSON.stringify(payload)
+  } catch {
+    return '[无法序列化的 payload]'
+  }
+}
+
 // ─── EventBus 类 ───
 
 class EventBus {
@@ -166,10 +179,7 @@ class EventBus {
    * ```
    */
   emit(type: string, payload: unknown, source: string): void {
-    console.log(
-      `[事件] ${type} ← ${source}`,
-      typeof payload === 'object' ? JSON.stringify(payload) : payload
-    )
+    console.log(`[事件] ${type} ← ${source}`, describePayload(payload))
     const typeListeners = this.listeners.get(type)
     if (!typeListeners || typeListeners.length === 0) return
 
