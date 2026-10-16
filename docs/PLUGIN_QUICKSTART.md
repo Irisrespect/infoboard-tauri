@@ -4,11 +4,15 @@
 
 ## 第一步：创建插件目录
 
+插件放在用户数据目录（首次启动应用会自动创建），不是仓库里的 `plugins/`：
+
 ```bash
-cd plugins
+cd "$APPDATA/com.infoboard.tauri/plugins"
 mkdir my-first-plugin
 cd my-first-plugin
 ```
+
+PowerShell 用户：`cd "$env:APPDATA\com.infoboard.tauri\plugins"`。
 
 ## 第二步：创建 manifest.json
 
@@ -154,9 +158,9 @@ Component: () => {
 
 **Q: 插件可以访问哪些 API？**
 
-- 所有 React API
-- 所有 Tauri API
-- InfoBoard 核心 API (pluginRegistry 等)
+- React（`react`、`react/jsx-runtime`、`react-dom`）
+- Tauri 的 `invoke` / 事件（`@tauri-apps/api/core`、`@tauri-apps/api/event`）
+- 仅限单文件；不支持相对路径 import 和其他 npm 包
 
 **Q: 如何热重载插件？**
 

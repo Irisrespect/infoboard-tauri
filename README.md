@@ -24,15 +24,19 @@ InfoBoard 支持**外部插件热加载**，开发者可以编写独立插件包
 
 ### 快速开始
 
-1. 在 `plugins/` 目录创建插件文件夹
-2. 编写 `manifest.json` 和入口文件
+1. 在 `%APPDATA%\com.infoboard.tauri\plugins\` 下创建插件文件夹（首次启动会自动创建该目录）
+2. 编写 `manifest.json` 和单文件入口（`.tsx` / `.ts`，应用会在运行时转译）
 3. 重启应用自动加载
+
+插件只能 import：`react`、`react/jsx-runtime`、`react-dom`、`@tauri-apps/api/core`、`@tauri-apps/api/event`；`import type` 会被擦除，可照常引用核心类型。
 
 **示例：** 查看 [`plugins/hello-world/`](plugins/hello-world/) 示例插件
 
 **完整教程：** 阅读 [插件开发指南](docs/PLUGIN_TUTORIAL.md)
 
 ### 插件目录结构
+
+仓库里的 `plugins/` 只存放示例，运行时扫描的是 `%APPDATA%\com.infoboard.tauri\plugins\`，请把示例复制过去。
 
 ```
 plugins/

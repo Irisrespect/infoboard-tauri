@@ -176,10 +176,10 @@ await reloadPluginSystem()
 
 ### 插件未被加载？
 
-1. 检查 `plugins/` 目录是否存在且位于可执行文件同级
+1. 检查插件是否放在 `%APPDATA%\com.infoboard.tauri\plugins\`（不是安装目录，也不是仓库里的 `plugins/`）
 2. 检查 `manifest.json` 格式是否正确
 3. 检查 `entry` 文件路径是否正确
-4. 查看控制台错误日志
+4. 按 F12 打开应用内日志台，搜索 `PluginLoader`：转译失败、import 了不支持的模块等原因都会写在这里
 
 ### 如何调试插件？
 
@@ -187,15 +187,15 @@ await reloadPluginSystem()
 
 ### 插件可以访问哪些 API？
 
-外部插件可以访问：
-- 所有 React API
-- 所有 Tauri API
-- InfoBoard 提供的核心 API (`pluginRegistry`, `initPluginSystem` 等)
-- 其他已注册的插件
+外部插件运行在受控环境里，只能 import 下面这些模块（与应用共用同一份实例）：
+- `react`、`react/jsx-runtime`、`react-dom`
+- `@tauri-apps/api/core`（`invoke` 等）、`@tauri-apps/api/event`
+
+不支持：相对路径 import（插件必须是单文件）、其他 npm 包、`@/core/*` 运行时模块（如 `pluginRegistry`）。`import type` 会被擦除，所以 `import type { InfoBoardPlugin } from '@/core/types'` 仍然可用。
 
 ### 如何分发插件？
 
-将整个插件目录（包含 `manifest.json` 和 `entry` 文件）打包为 ZIP，用户解压到 `plugins/` 目录即可使用。
+将整个插件目录（包含 `manifest.json` 和 `entry` 文件）打包为 ZIP，用户解压到 `%APPDATA%\com.infoboard.tauri\plugins\` 即可使用。
 
 ## 下一步
 
