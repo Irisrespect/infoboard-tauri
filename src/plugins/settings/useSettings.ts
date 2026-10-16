@@ -18,7 +18,6 @@ const DEFAULT_SETTINGS: Settings = {
   weatherCityName: '北京',
   weatherApiKey: '',
   weatherApiHost: '',
-  minimaxApiKey: '',
   theme: 'system',
   disabledPlugins: [],
   autoStart: false,

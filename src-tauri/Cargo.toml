@@ -39,11 +39,5 @@ base64 = "0.22"
 
 # Issue 15: OCR 插件（使用子进程通信，无需额外 crate）
 
-# Issue 16: IMAP 邮件插件
-imap = "2.4"
-imap-proto = "0.10"
-native-tls = "0.2"
-mail-parser = "0.10"
-html-escape = "0.2"
 log = "0.4"
 chrono = "0.4"

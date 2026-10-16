@@ -13,51 +13,6 @@ declare global {
     data: OcrResultItem[] | string
   }
 
-  /** OpenCode 用量统计（与 plugins/opencode-go/types 对齐） */
-  interface OpenCodeUsageStats {
-    dbExists: boolean
-    todayTokens: number
-    weeklyTokens: number
-    monthlyTokens: number
-    timestamp: number
-    error?: string
-    rollingResetInSec?: number
-    weeklyResetInSec?: number
-    monthlyResetInSec?: number
-  }
-
-  interface OpenCodeSessionInfo {
-    id: string
-    modelId: string
-    tokens: number
-    timeCreated: number
-  }
-
-  interface OpenCodeMiniMaxUsage {
-    rollingUsed: number
-    rollingResetMs: number
-    weeklyUsed: number
-    weeklyResetMs: number
-    rollingResetLabel: string
-    weeklyResetLabel: string
-  }
-
-  interface OpenCodeRefreshResult {
-    started?: boolean
-    message?: string
-    ok?: boolean
-    error?: string
-    mtime?: number
-  }
-
-  interface OpenCodeDB {
-    getUsage: () => Promise<OpenCodeUsageStats | null>
-    getSessions: (limit?: number) => Promise<OpenCodeSessionInfo[]>
-    getMiniMax: () => Promise<OpenCodeMiniMaxUsage | null>
-    refreshCookie: () => Promise<OpenCodeRefreshResult | null>
-    getCookieMtime: () => Promise<number>
-  }
-
   /** 系统/IP 定位结果 */
   type GeolocateResult =
     | { lat: number; lon: number }
@@ -99,7 +54,6 @@ declare global {
 
   interface Window {
     electronAPI: ElectronAPI
-    opencodeDB: OpenCodeDB
     deeplAPI?: TranslateApiBridge
     niutransAPI?: TranslateApiBridge
     clipboard?: ClipboardBridge

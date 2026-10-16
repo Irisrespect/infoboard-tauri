@@ -22,18 +22,9 @@ export { DynamicIsland } from './DynamicIsland'
 export { PillCollapsed } from './PillCollapsed'
 export { MediaControls } from './MediaControls'
 export { useMediaControl, formatPlaybackStatus } from './useMediaControl'
-export { useNotifications } from './useNotifications'
-export {
-  eventBus,
-  emitNotification,
-  onNotification,
-  payloadToNotificationItem,
-} from '../../core/eventBus'
-export type { PluginEvent, NotificationPayload } from '../../core/eventBus'
 export type {
   PillState,
   MediaSession,
-  NotificationItem,
   IslandState,
   MockDataType,
   MockConfig,

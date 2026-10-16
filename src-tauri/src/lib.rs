@@ -15,10 +15,8 @@ mod plugins {
     pub mod bilibili_info;
     pub mod media_control;
     pub mod niutrans;
-    pub mod opencode;
     pub mod screenshot;
     pub mod ocr;
-    pub mod mail;
     pub mod loader;
 }
 
@@ -78,7 +76,6 @@ pub fn run() {
             }
             // 注册插件状态
             app.manage(plugins::ocr::OcrEngine::new());
-            app.manage(plugins::mail::MailManager::new());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -94,11 +91,6 @@ pub fn run() {
             core::window::window_is_maximized,
             core::window::window_is_visible,
             core::geolocate::geolocate_ip,
-            plugins::opencode::opencode_get_usage,
-            plugins::opencode::opencode_get_sessions,
-            plugins::opencode::opencode_get_minimax,
-            plugins::opencode::opencode_refresh_cookie,
-            plugins::opencode::opencode_get_cookie_mtime,
             plugins::bilibili_info::bilibili_enrich_media,
             plugins::media_control::media_get_current_session,
             plugins::media_control::media_send_command,
@@ -120,17 +112,6 @@ pub fn run() {
             plugins::ocr::ocr_is_ready,
             plugins::ocr::ocr_engine_status,
             // Issue 16: IMAP 邮件
-            plugins::mail::mail_get_config,
-            plugins::mail::mail_set_config,
-            plugins::mail::mail_add_account,
-            plugins::mail::mail_remove_account,
-            plugins::mail::mail_connect_saved,
-            plugins::mail::mail_fetch_recent,
-            plugins::mail::mail_check_new,
-            plugins::mail::mail_fetch_content,
-            plugins::mail::mail_mark_read,
-            plugins::mail::mail_disconnect_all,
-            plugins::mail::mail_connection_info,
             // 外部插件加载器
             plugins::loader::scan_external_plugins,
         ])

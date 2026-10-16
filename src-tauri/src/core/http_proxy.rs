@@ -15,8 +15,6 @@ const ALLOWED_HOST_SUFFIXES: &[&str] = &[
     "hdslb.com",
     "niutrans.com",
     "open-meteo.com",
-    "minimaxi.com",
-    "opencode.ai",
 ];
 
 /// 本机常见代理（Clash / v2rayN 等）

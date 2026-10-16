@@ -1,6 +1,6 @@
 # InfoBoard
 
-桌面信息面板 — 基于 [Tauri 2](https://tauri.app/) 的插件化仪表盘，聚合 AI 用量、待办、天气、媒体控制、邮件通知、截图 OCR 等。
+桌面信息面板 — 基于 [Tauri 2](https://tauri.app/) 的插件化仪表盘，聚合待办、天气、媒体控制、截图 OCR 等。
 
 ![Platform](https://img.shields.io/badge/platform-Windows-blue)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB)
@@ -10,13 +10,12 @@
 
 | 模块            | 说明                                                                                |
 | --------------- | ----------------------------------------------------------------------------------- |
-| **灵动岛**      | 系统媒体会话（SMTC）控制、B 站信息补充、可选本地 MusicPlayer 歌词桥、邮件验证码通知 |
-| **OpenCode Go** | OpenCode / MiniMax 用量查询，Cookie 刷新                                            |
+| **灵动岛**      | 系统媒体会话（SMTC）控制、B 站信息补充、可选本地 MusicPlayer 歌词桥 |
 | **天气**        | 定位 + 公开天气 API（可配置和风 Key）                                               |
 | **待办**        | 本地待办列表（localStorage）                                                        |
 | **翻译**        | 小牛翻译 API                                                                        |
 | **截图**        | 全屏捕获、区域框选、剪贴板；集成 RapidOCR 文字识别                                  |
-| **设置**        | 主题色、开机自启、API Key、邮箱账户、插件开关                                       |
+| **设置**        | 主题色、开机自启、API Key、插件开关                                       |
 | **🔌 外部插件** | 热插拔插件系统，无需修改核心代码即可添加新功能                                       |
 
 ## 插件系统
@@ -132,10 +131,8 @@ src-tauri/target/release/infoboard-tauri.exe
 
 大部分选项在应用内 **设置** 面板配置，例如：
 
-- MiniMax API Key（用量查询；也可设环境变量 `MINIMAX_API_KEY`）
 - 和风天气 Key（可选）
 - 小牛翻译 appId / appKey
-- IMAP 邮箱（用于验证码通知；密码仅本地保存）
 
 **可选本地服务：**
 

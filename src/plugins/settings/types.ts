@@ -33,8 +33,6 @@ export interface Settings {
   weatherApiKey: string
   /** 和风天气 API Host */
   weatherApiHost: string
-  /** MiniMax API Key */
-  minimaxApiKey: string
   /** 主题模式 */
   theme: ThemeMode
   /** 被禁用的插件 ID 列表 */

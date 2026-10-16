@@ -8,10 +8,8 @@
 
 /** 灵动岛状态类型 */
 export type PillState =
-  | 'idle' // 空闲态：无媒体播放、无通知
+  | 'idle' // 空闲态：无媒体播放
   | 'media-playing' // 播放态：检测到媒体播放
-  | 'notification' // 通知态：有新通知
-  | 'media-and-notification' // 混合态：同时有媒体和通知
 
 // ─── 媒体会话相关 ───
 
@@ -48,32 +46,6 @@ export interface MediaSession {
   ownerAvatar?: string
 }
 
-// ─── 通知相关 ───
-
-/** 通知条目类型 */
-export type NotificationType = 'email' | 'system'
-
-/** 通知条目 */
-export interface NotificationItem {
-  /** 唯一标识 */
-  id: string
-
-  /** 通知类型 */
-  type: NotificationType
-
-  /** 发件人 或 通知标题 */
-  title: string
-
-  /** 邮件主题 或 通知正文 */
-  body: string
-
-  /** 时间戳 */
-  timestamp: number
-
-  /** 是否已读 */
-  read: boolean
-}
-
 // ─── 灵动岛内部状态 ───
 
 /** 灵动岛内部状态 */
@@ -84,12 +56,6 @@ export interface IslandState {
   /** 当前媒体会话 */
   currentMedia: MediaSession | null
 
-  /** 通知列表 */
-  notifications: NotificationItem[]
-
-  /** 未读通知数 */
-  unreadCount: number
-
   /** 是否展开（点击展开） */
   isExpanded: boolean
 }
@@ -97,7 +63,7 @@ export interface IslandState {
 // ─── Mock 数据相关 ───
 
 /** Mock 数据类型 */
-export type MockDataType = 'media' | 'notifications' | 'both' | 'clear'
+export type MockDataType = 'media' | 'clear'
 
 /** Mock 配置 */
 export interface MockConfig {
@@ -106,7 +72,4 @@ export interface MockConfig {
 
   /** Mock 媒体数据 */
   media?: MediaSession
-
-  /** Mock 通知数据 */
-  notifications?: NotificationItem[]
 }

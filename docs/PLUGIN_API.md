@@ -93,7 +93,7 @@ const result = await invoke<string>('my_command', {
 })
 
 // 调用内置命令
-const data = await invoke('opencode_get_usage')
+const data = await invoke('ocr_recognize', { imageBase64 })
 ```
 
 ### 访问剪贴板
