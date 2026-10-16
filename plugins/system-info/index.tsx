@@ -1,4 +1,4 @@
-import type { InfoBoardPlugin } from '../../src/core/types'
+import type { InfoBoardPlugin } from '@/core/types'
 import { useState, useEffect } from 'react'
 
 interface SystemInfo {

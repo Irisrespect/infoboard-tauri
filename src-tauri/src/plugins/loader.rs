@@ -44,7 +44,11 @@ pub struct PluginManifest {
     pub permissions: Vec<String>,
 
     /// Tauri 命令列表 (可选)
-    #[serde(default)]
+    ///
+    /// 注意必须有 `rename`：manifest.json 里写的是 camelCase 的 `tauriCommands`，
+    /// 缺了这个重命名 serde 会按字段名 `tauri_commands` 去找，于是插件声明了也读不到
+    /// （表现为白名单恒为空、所有 invoke 都被拒）。
+    #[serde(rename = "tauriCommands", default)]
     pub tauri_commands: Vec<String>,
 }
 
@@ -305,9 +309,38 @@ mod tests {
         d
     }
 
+    /// 回归：manifest.json 用的是 camelCase，`tauriCommands` 必须被解析到
+    /// （原先缺 serde rename，插件声明了也读到空，白名单形同虚设）
     #[test]
-    fn resolve_entry_accepts_plain_and_nested() {
-        let base = Path::new("C:\\p\\a");
+    fn manifest_parses_camel_case_tauri_commands() {
+        let content = r#"{
+            "id": "p", "name": "n", "version": "1.0.0", "section": "info",
+            "icon": "x", "entry": "index.tsx",
+            "permissions": ["clipboard"],
+            "tauriCommands": ["window_is_active", "ocr_is_ready"]
+        }"#;
+        let manifest: PluginManifest = serde_json::from_str(content).unwrap();
+        assert_eq!(
+            manifest.tauri_commands,
+            vec!["window_is_active".to_string(), "ocr_is_ready".to_string()]
+        );
+        assert_eq!(manifest.permissions, vec!["clipboard".to_string()]);
+    }
+
+    /// 没写 tauriCommands 时回退为空（fail-closed：前端会拒绝所有 invoke）
+    #[test]
+    fn manifest_without_tauri_commands_defaults_to_empty() {
+        let content = r#"{
+            "id": "p", "name": "n", "version": "1.0.0", "section": "info",
+            "icon": "x", "entry": "index.tsx"
+        }"#;
+        let manifest: PluginManifest = serde_json::from_str(content).unwrap();
+        assert!(manifest.tauri_commands.is_empty());
+        assert!(manifest.permissions.is_empty());
+    }
+
+    #[test]
+    fn resolve_entry_accepts_plain_and_nested() {        let base = Path::new("C:\\p\\a");
         assert!(resolve_entry(base, "index.tsx").is_ok());
         assert!(resolve_entry(base, "src/index.tsx").is_ok());
         assert!(resolve_entry(base, "./index.tsx").is_ok());

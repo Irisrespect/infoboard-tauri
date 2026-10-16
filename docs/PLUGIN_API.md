@@ -79,34 +79,43 @@ const count = pluginRegistry.size
 
 ## Tauri API
 
-外部插件可以调用所有 Tauri API。
+外部插件**只能 import 运行时白名单里的模块**（见 `src/core/pluginRuntime.ts` 的
+`SHARED_MODULES`）：`react`、`react/jsx-runtime`、`react-dom`、
+`@tauri-apps/api/core`、`@tauri-apps/api/event`。
+import 其它模块（含 `@tauri-apps/plugin-*`）会在加载时报错。
 
 ### 调用 Rust 命令
+
+调用命令前，**必须先在 `manifest.json` 的 `tauriCommands` 里声明它**：
+
+```json
+{
+  "id": "my-plugin",
+  "tauriCommands": ["window_is_active", "ocr_is_ready"]
+}
+```
 
 ```typescript
 import { invoke } from '@tauri-apps/api/core'
 
-// 调用自定义命令
-const result = await invoke<string>('my_command', {
-  arg1: 'value1',
-  arg2: 123
-})
+// 已声明的命令：正常执行
+const active = await invoke<boolean>('window_is_active')
 
-// 调用内置命令
-const data = await invoke('ocr_recognize', { imageBase64 })
+// 未声明的命令：运行时被拒绝，报错里会提示去 tauriCommands 里声明
+// await invoke('ocr_recognize', { imageBase64 })
 ```
+
+没声明 `tauriCommands`（或声明为空数组）时，**所有 invoke 都会被拒绝**。
+
+> ⚠️ 这只是**护栏，不是安全边界**：插件代码跑在主窗口里，仍可以直接用
+> `window.__TAURI_INTERNALS__.invoke` 绕过这层检查。真要隔离需要 iframe/Worker
+> 沙箱（未实现）。
 
 ### 访问剪贴板
 
-```typescript
-import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager'
-
-// 写入剪贴板
-await writeText('Hello, World!')
-
-// 读取剪贴板
-const text = await readText()
-```
+`@tauri-apps/plugin-clipboard-manager` **不在**白名单里，插件无法 import。
+需要写剪贴板时，请通过宿主提供的命令（应用自身的写剪贴板能力也只对
+`clipboard-manager:allow-write-text` 开放，读剪贴板已被收回）。
 
 ### 存储数据
 

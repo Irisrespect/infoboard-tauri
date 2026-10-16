@@ -27,6 +27,48 @@ export const SHARED_MODULES: SharedModules = {
   '@tauri-apps/api/event': TauriEvent,
 }
 
+/**
+ * 为单个插件构造模块表：把 `@tauri-apps/api/core` 换成带命令白名单的包装。
+ *
+ * `manifest.json` 里声明的 `tauriCommands` 就是这个插件允许调用的命令；
+ * 没声明（或声明为空）时**默认全部拒绝**（fail-closed）。
+ *
+ * 注意：这只是**护栏，不是安全边界**——插件代码仍可直接用
+ * `window.__TAURI_INTERNALS__.invoke` 绕过，`build.rs` 也没有限制自有命令
+ * （见 HANDOVER「外部插件的限制」）。它的作用是让"没声明就用"变成显式报错，
+ * 而不是悄悄生效。
+ */
+export function createPluginModules(
+  tauriCommands: readonly string[] | undefined,
+  base: SharedModules = SHARED_MODULES
+): SharedModules {
+  const allowed = new Set(
+    (tauriCommands ?? []).map((c) => c.trim()).filter((c) => c.length > 0)
+  )
+  const core = base['@tauri-apps/api/core'] as {
+    invoke: (cmd: string, args?: unknown, options?: unknown) => Promise<unknown>
+  }
+
+  return {
+    ...base,
+    '@tauri-apps/api/core': {
+      ...core,
+      invoke: (cmd: string, args?: unknown, options?: unknown): Promise<unknown> => {
+        if (typeof cmd !== 'string' || !allowed.has(cmd)) {
+          return Promise.reject(
+            new PluginRuntimeError(
+              `插件未声明命令 "${String(cmd)}"。请在 manifest.json 的 tauriCommands 里列出它（当前已声明: ${
+                allowed.size ? [...allowed].join(', ') : '无'
+              }）`
+            )
+          )
+        }
+        return core.invoke(cmd, args, options)
+      },
+    },
+  }
+}
+
 /** 转译失败 / 执行失败 / import 了不允许的模块时抛出，信息面向插件作者 */
 export class PluginRuntimeError extends Error {
   constructor(message: string) {

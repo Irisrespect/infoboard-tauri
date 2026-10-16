@@ -11,6 +11,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useSettings } from './useSettings'
 import { pluginRegistry } from '../../core/PluginRegistry'
+import { reloadPluginSystem } from '../../core/PluginHost'
 import type { ThemeMode } from './types'
 import { THEME_PREVIEWS } from './types'
 import * as autostart from '../../core/autostart-bridge'
@@ -37,6 +38,10 @@ export function SettingsPanel() {
   const [weatherApiKey, setWeatherApiKey] = useState('')
   const [weatherHasKey, setWeatherHasKey] = useState(false)
   const [savingWeatherKey, setSavingWeatherKey] = useState(false)
+
+  // 插件热重载
+  const [reloadingPlugins, setReloadingPlugins] = useState(false)
+  const [pluginCount, setPluginCount] = useState(() => pluginRegistry.getAllPlugins().length)
 
   const allPlugins = pluginRegistry.getAllPlugins()
 
@@ -331,6 +336,33 @@ export function SettingsPanel() {
               </div>
             )
           })}
+
+          {/* 热重载入口：改完插件源码不用重启应用 */}
+          <button
+            className="w-full py-1.5 mt-1 text-xs font-medium rounded-md transition-all"
+            style={{
+              backgroundColor: reloadingPlugins ? 'var(--border-subtle)' : 'var(--bg-surface)',
+              color: reloadingPlugins ? 'var(--text-muted)' : 'var(--text-primary)',
+              border: '1px solid var(--border-subtle)',
+              cursor: reloadingPlugins ? 'wait' : 'pointer',
+            }}
+            disabled={reloadingPlugins}
+            onClick={async () => {
+              setReloadingPlugins(true)
+              try {
+                await reloadPluginSystem()
+                setPluginCount(pluginRegistry.getAllPlugins().length)
+                window.toastAPI?.show?.({ message: '插件已重新加载' })
+              } catch (err) {
+                console.error('[设置] 重新加载插件失败:', err)
+                window.toastAPI?.show?.({ message: '重新加载插件失败，详见日志台', color: '#ef4444' })
+              } finally {
+                setReloadingPlugins(false)
+              }
+            }}
+          >
+            {reloadingPlugins ? '正在重新加载…' : `重新加载插件（当前 ${pluginCount} 个）`}
+          </button>
         </div>
       </section>
     </div>

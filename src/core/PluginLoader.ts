@@ -10,7 +10,7 @@
 
 import { invoke } from '@tauri-apps/api/core'
 import type { InfoBoardPlugin, ExternalPluginMeta } from './types'
-import { evaluatePluginSource } from './pluginRuntime'
+import { createPluginModules, evaluatePluginSource } from './pluginRuntime'
 
 /** 取路径的文件名（兼容 Windows 反斜杠和正斜杠） */
 export function fileNameOf(path: string): string {
@@ -65,7 +65,12 @@ export class PluginLoader {
         pluginId: meta.id,
       })
       const entryName = fileNameOf(meta.entryPath)
-      const module = evaluatePluginSource(source, `${meta.id}/${entryName}`) as {
+      // 每个插件拿到自己的模块表：invoke 只允许 manifest.json 里声明的 tauriCommands
+      const module = evaluatePluginSource(
+        source,
+        `${meta.id}/${entryName}`,
+        createPluginModules(meta.tauriCommands)
+      ) as {
         default?: unknown
         plugin?: unknown
       }

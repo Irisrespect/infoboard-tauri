@@ -1,11 +1,16 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import * as React from 'react'
 import * as JsxRuntime from 'react/jsx-runtime'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { evaluatePluginSource, PluginRuntimeError } from '../core/pluginRuntime'
+import {
+  createPluginModules,
+  evaluatePluginSource,
+  PluginRuntimeError,
+} from '../core/pluginRuntime'
 // 用 Vite 的 ?raw 读取源码文本（不依赖 Node 类型）
 import helloWorldSrc from '../../plugins/hello-world/index.tsx?raw'
 import systemInfoSrc from '../../plugins/system-info/index.tsx?raw'
+import templateSrc from '../../plugins/.plugin-template/index.tsx?raw'
 
 const MODULES = { react: React, 'react/jsx-runtime': JsxRuntime }
 
@@ -82,18 +87,74 @@ describe('evaluatePluginSource', () => {
 })
 
 describe('仓库自带示例插件可以真正被加载', () => {
-  const samples: Array<[string, string]> = [
-    ['hello-world', helloWorldSrc],
-    ['system-info', systemInfoSrc],
+  const samples: Array<[string, string, string]> = [
+    ['hello-world', helloWorldSrc, 'hello-world'],
+    ['system-info', systemInfoSrc, 'system-info'],
+    // 模板也要能加载：作者照着它写，模板坏掉等于新插件全坏
+    ['.plugin-template', templateSrc, 'my-plugin'],
   ]
 
-  for (const [name, src] of samples) {
+  for (const [name, src, expectedId] of samples) {
     it(name, () => {
       const exp = evaluatePluginSource(src, `${name}/index.tsx`, MODULES) as {
         default: { manifest: { id: string }; Component: React.FC }
       }
-      expect(exp.default.manifest.id).toBe(name)
+      expect(exp.default.manifest.id).toBe(expectedId)
       expect(typeof exp.default.Component).toBe('function')
     })
   }
+})
+
+describe('插件命令白名单护栏（manifest.tauriCommands）', () => {
+  const coreStub = {
+    invoke: vi.fn((cmd: string) => Promise.resolve(`ok:${cmd}`)),
+  }
+  const modulesWithCore = {
+    ...MODULES,
+    '@tauri-apps/api/core': coreStub,
+  }
+
+  const callInvoke = (tauriCommands: string[] | undefined, cmd: string) => {
+    const modules = createPluginModules(tauriCommands, modulesWithCore)
+    const core = modules['@tauri-apps/api/core'] as {
+      invoke: (c: string) => Promise<unknown>
+    }
+    return core.invoke(cmd)
+  }
+
+  it('声明过的命令可以调用', async () => {
+    coreStub.invoke.mockClear()
+    await expect(callInvoke(['window_is_active'], 'window_is_active')).resolves.toBe(
+      'ok:window_is_active'
+    )
+    expect(coreStub.invoke).toHaveBeenCalledWith('window_is_active', undefined, undefined)
+  })
+
+  it('未声明的命令被拒绝，且错误信息告诉作者怎么修', async () => {
+    coreStub.invoke.mockClear()
+    await expect(callInvoke(['a'], 'secret_has')).rejects.toThrow(PluginRuntimeError)
+    await expect(callInvoke(['a'], 'secret_has')).rejects.toThrow(/tauriCommands/)
+    // 被拒绝时不应真的调用底层 invoke
+    expect(coreStub.invoke).not.toHaveBeenCalled()
+  })
+
+  /** fail-closed：没声明就等于什么都没授权 */
+  it('未声明 tauriCommands 时全部拒绝', async () => {
+    coreStub.invoke.mockClear()
+    await expect(callInvoke(undefined, 'window_is_close')).rejects.toThrow(PluginRuntimeError)
+    await expect(callInvoke([], 'window_close')).rejects.toThrow(PluginRuntimeError)
+    expect(coreStub.invoke).not.toHaveBeenCalled()
+  })
+
+  it('其它模块不受影响（react 必须是同一份实例，否则 hooks 报错）', () => {
+    const modules = createPluginModules(undefined, modulesWithCore)
+    expect(modules['react']).toBe(React)
+    expect(modules['react/jsx-runtime']).toBe(JsxRuntime)
+  })
+
+  it('空字符串 / 空白项不会变成"允许调用空命令名"', async () => {
+    coreStub.invoke.mockClear()
+    await expect(callInvoke(['  ', ''], '')).rejects.toThrow(PluginRuntimeError)
+    expect(coreStub.invoke).not.toHaveBeenCalled()
+  })
 })

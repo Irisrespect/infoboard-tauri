@@ -1,9 +1,13 @@
-import type { InfoBoardPlugin, PluginComponentProps } from '../../src/core/types'
+import type { InfoBoardPlugin, PluginComponentProps } from '@/core/types'
 
 /**
  * 插件组件
  *
  * 可以使用 props.manifest 访问插件配置
+ *
+ * 需要调用 Tauri 命令时（例如 `invoke('window_is_active')`），
+ * 必须先在 manifest.json 的 `tauriCommands` 里声明该命令，
+ * 否则运行时会被拒绝并报错（护栏，见 docs/PLUGIN_API.md）。
  */
 function MyPluginComponent(props: PluginComponentProps) {
   return (

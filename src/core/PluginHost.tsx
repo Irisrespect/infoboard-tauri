@@ -59,14 +59,22 @@ export function initPluginSystem(): Promise<void> {
 }
 
 /**
+ * 插件重载完成事件（`usePlugins` 监听它来刷新界面）
+ */
+export const PLUGINS_RELOADED_EVENT = 'plugins:reloaded'
+
+/**
  * 重新加载插件系统
  *
- * 用于插件热重载场景
+ * 用于插件热重载场景（设置面板 → 插件管理 → 重新加载插件）。
+ * 会先 `pluginRegistry.clear()`（触发每个插件的 onDestroy）再重新扫描，
+ * 完成后派发 `plugins:reloaded` 让界面重新渲染。
  */
 export async function reloadPluginSystem(): Promise<void> {
   console.log('[PluginHost] 重新加载插件系统...')
   initPromise = null
   await initPluginSystem()
+  window.dispatchEvent(new CustomEvent(PLUGINS_RELOADED_EVENT))
 }
 
 /**
@@ -290,8 +298,18 @@ export function usePlugins(section: 'info' | 'tool'): InfoBoardPlugin[] {
       }
     }
 
+    // 手动"重新加载插件"完成后也要刷新
+    const handleReloaded = () => {
+      setDisabledPlugins(getDisabledPlugins().filter((id) => id !== 'settings'))
+      setVersion((v) => v + 1)
+    }
+
     window.addEventListener('settings:changed', handleSettingsChanged)
-    return () => window.removeEventListener('settings:changed', handleSettingsChanged)
+    window.addEventListener(PLUGINS_RELOADED_EVENT, handleReloaded)
+    return () => {
+      window.removeEventListener('settings:changed', handleSettingsChanged)
+      window.removeEventListener(PLUGINS_RELOADED_EVENT, handleReloaded)
+    }
   }, [])
 
   // 过滤已禁用的插件（settings 始终保留）
