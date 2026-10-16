@@ -3,13 +3,19 @@
  *
  * 职责：
  * 1. 调用 Rust 扫描 plugins/ 目录
- * 2. 动态导入外部插件模块
+ * 2. 读取插件入口源码并在运行时转译、执行（WebView 无法直接 import 磁盘文件）
  * 3. 验证插件格式合法性
  * 4. 返回加载成功的插件列表
  */
 
 import { invoke } from '@tauri-apps/api/core'
 import type { InfoBoardPlugin, ExternalPluginMeta } from './types'
+import { evaluatePluginSource } from './pluginRuntime'
+
+/** 取路径的文件名（兼容 Windows 反斜杠和正斜杠） */
+export function fileNameOf(path: string): string {
+  return path.split(/[\\/]/).pop() || 'index.tsx'
+}
 
 export class PluginLoader {
   /**
@@ -53,9 +59,16 @@ export class PluginLoader {
    */
   private async loadPlugin(meta: ExternalPluginMeta): Promise<InfoBoardPlugin | null> {
     try {
-      // 动态导入插件模块
-      // @vite-ignore 告诉 Vite 不要在构建时处理此导入
-      const module = await import(/* @vite-ignore */ meta.entryPath)
+      // 由 Rust 读出入口源码，前端转译并在受控环境里执行
+      // （直接 import(meta.entryPath) 不可能成功：WebView 读不到磁盘文件）
+      const source = await invoke<string>('read_external_plugin_source', {
+        pluginId: meta.id,
+      })
+      const entryName = fileNameOf(meta.entryPath)
+      const module = evaluatePluginSource(source, `${meta.id}/${entryName}`) as {
+        default?: unknown
+        plugin?: unknown
+      }
 
       // 插件可以通过 default 或具名导出
       const pluginExport = module.default || module.plugin
