@@ -8,10 +8,14 @@ import { initTauriShim } from './tauri-shim'
 import { ScreenshotOverlayWindow } from './components/ScreenshotOverlayWindow'
 import './styles/globals.css'
 import { toggleNativeDevtools } from './core/devtools'
+import { migrateLegacySecrets } from './plugins/settings/secrets'
 
 // 尽早拦截 console，确保后续插件日志都能进面板
 installLogConsole()
 initTauriShim()
+// P1-a：把旧版本明文存在 localStorage 里的 API Key 迁到 Windows 凭据管理器，
+// 并清掉已删除功能遗留的明文凭据字段
+void migrateLegacySecrets()
 
 function Root() {
   const [titleBarVisible, setTitleBarVisible] = useState(true)

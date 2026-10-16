@@ -7,6 +7,7 @@ mod core {
     pub mod autostart;
     pub mod geolocate;
     pub mod net;
+    pub mod secrets;
     pub mod text;
     pub mod toast;
     pub mod tray;
@@ -77,6 +78,8 @@ pub fn run() {
             }
             // 注册插件状态
             app.manage(plugins::ocr::OcrEngine::new());
+            // P1-a：把历史明文 API Key 迁到 Windows 凭据管理器
+            plugins::niutrans::migrate_legacy_api_key(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -84,6 +87,9 @@ pub fn run() {
             core::app_log::log_get_path,
             core::app_log::log_append_file,
             core::http_proxy::http_proxy_get,
+            core::secrets::secret_set,
+            core::secrets::secret_has,
+            core::secrets::secret_delete,
             core::autostart::autostart_is_enabled,
             core::autostart::autostart_set_enabled,
             core::window::window_minimize,

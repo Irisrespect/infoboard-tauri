@@ -20,9 +20,9 @@ import type {
   QWeatherHourlyResponse,
 } from './types'
 import { httpGetJson } from '../../core/http-client'
+import { QWEATHER_KEY_PLACEHOLDER } from '../settings/secrets'
 import {
   QWEATHER_API_HOST,
-  QWEATHER_API_KEY,
   DEFAULT_LOCATION_ID,
   DEFAULT_CITY_NAME,
   CACHE_DURATION,
@@ -113,43 +113,30 @@ function getDayLabel(dateStr: string): string {
 }
 
 /**
- * 从设置中读取 API 配置（优先使用用户设置，回退到默认配置）
+ * 读取天气 API Host（Key 不在前端，见下方 buildUrl）
  */
-function getApiConfig(): { host: string; key: string } {
+function getApiHost(): string {
   try {
     const stored = localStorage.getItem('infoboard-settings')
     if (stored) {
       const parsed = JSON.parse(stored)
-      console.log(
-        '[天气] 从 settings 读取: host=',
-        parsed.weatherApiHost || '(空)',
-        'key长度=',
-        (parsed.weatherApiKey || '').length
-      )
-      return {
-        host: parsed.weatherApiHost || QWEATHER_API_HOST,
-        key: parsed.weatherApiKey || QWEATHER_API_KEY,
-      }
+      return parsed.weatherApiHost || QWEATHER_API_HOST
     }
   } catch {
     /* 忽略 */
   }
-  console.log(
-    '[天气] 使用 config.ts 默认值: host=',
-    QWEATHER_API_HOST,
-    'key长度=',
-    QWEATHER_API_KEY.length
-  )
-  return { host: QWEATHER_API_HOST, key: QWEATHER_API_KEY }
+  return QWEATHER_API_HOST
 }
 
 /**
  * 构建和风天气 API URL
  * 支持 LocationID 或经纬度坐标
+ *
+ * Key 用占位符，由 Rust 侧发请求前替换（前端不持有明文 Key）。
  */
 function buildUrl(path: string, location: string): string {
-  const { host, key } = getApiConfig()
-  return `https://${host}${path}?location=${location}&key=${key}&lang=zh`
+  const host = getApiHost()
+  return `https://${host}${path}?location=${location}&key=${QWEATHER_KEY_PLACEHOLDER}&lang=zh`
 }
 
 /**
@@ -296,20 +283,14 @@ export function useWeather(): UseWeatherReturn {
   const fetchWeather = useCallback(
     async (config?: CityInfo) => {
       const city = config || cityConfig
-      const { host, key } = getApiConfig()
       const locationParam = getLocationParam(city)
       const cityName = city.name
 
       console.log('[天气] ========== fetchWeather 开始 ==========')
       console.log('[天气] 城市:', cityName, 'locationParam:', locationParam)
-      console.log('[天气] API 配置: host=', host, 'key 长度=', key?.length || 0)
 
-      if (!key || !key.trim()) {
-        setLoading(false)
-        setError('未配置天气 API Key（请在设置中填写和风 Key）')
-        console.warn('[天气] 未配置 API Key，跳过请求')
-        return
-      }
+      // Key 由 Rust 侧在发请求前注入；没配置时那边会返回明确错误，
+      // 这里不再自己判断（前端也读不到 Key）
 
       // 离线时跳过请求
       if (typeof navigator !== 'undefined' && !navigator.onLine) {
@@ -346,8 +327,9 @@ export function useWeather(): UseWeatherReturn {
           buildUrl('/v7/weather/3d', locationParam),
           buildUrl('/v7/weather/24h', locationParam),
         ]
-        console.log('[天气] now URL:', urls[0].replace(key, '***'))
-        console.log('[天气] 3d URL:', urls[1].replace(key, '***'))
+        // URL 里只有占位符，可以安全打印
+        console.log('[天气] now URL:', urls[0])
+        console.log('[天气] 3d URL:', urls[1])
 
         // 经 Rust 代理请求（打包后 WebView 直连常失败 → status 0）
         const [nowRes, dailyRes, hourlyRes] = await Promise.allSettled([
@@ -385,10 +367,8 @@ export function useWeather(): UseWeatherReturn {
         }
 
         if (nowRes.status !== 'fulfilled') {
+          // 未配置 Key 时 Rust 侧会直接返回"未配置和风天气 API Key（设置 → 天气 API）"
           const reason = String(nowRes.reason || '')
-          if (!key) {
-            throw new Error('未配置天气 API Key（设置 → 天气 API）')
-          }
           throw new Error(`实时天气请求失败: ${reason || '网络错误'}`)
         }
         if (dailyRes.status !== 'fulfilled') {
@@ -524,13 +504,19 @@ export function useWeather(): UseWeatherReturn {
     }
   }, [fetchWeather])
 
-  // 监听设置变更（天气城市切换）
+  // 监听设置变更（天气城市切换 / 天气 Key 重新配置）
   useEffect(() => {
     const handleSettingsChanged = (e: Event) => {
       const detail = (e as CustomEvent).detail
       // 单个字段变更或批量变更中包含 weatherCity
       const isWeatherCityChange =
         detail?.key === 'weatherCity' || (detail?.key === 'batch' && detail.patch?.weatherCity)
+
+      // 设置面板保存了新的天气 API Key（存在凭据管理器里，前端只收到通知）
+      if (detail?.key === 'weatherApiKey') {
+        fetchWeather()
+        return
+      }
 
       if (isWeatherCityChange) {
         const locationId = detail.key === 'batch' ? detail.patch.weatherCity : detail.value
@@ -554,7 +540,7 @@ export function useWeather(): UseWeatherReturn {
 
     window.addEventListener('settings:changed', handleSettingsChanged)
     return () => window.removeEventListener('settings:changed', handleSettingsChanged)
-  }, [setCity])
+  }, [setCity, fetchWeather])
 
   // 显示名称：区 · 城市（如 "海淀 · 北京"），或直接城市名
   const displayName =

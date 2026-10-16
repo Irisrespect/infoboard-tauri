@@ -1,7 +1,9 @@
 /**
  * 天气插件配置常量（和风天气 API）
  *
- * ⚠️ TODO: 生产环境应通过 Electron IPC 代理 API 请求，避免暴露 Key
+ * API Key 不再放在前端：它存在 Windows 凭据管理器里，
+ * 请求 URL 里用 `QWEATHER_KEY_PLACEHOLDER` 占位，
+ * 由 Rust 侧（core/http_proxy.rs）在发请求前替换。
  *
  * 和风天气控制台：https://console.qweather.com
  */
@@ -11,9 +13,6 @@ export const QWEATHER_API_HOST = 'devapi.qweather.com'
 
 /** 和风天气 GeoAPI Host（城市搜索） */
 export const GEO_API_HOST = 'geoapi.qweather.com'
-
-/** 和风天气 API Key（在设置面板 → 天气 API 中填写） */
-export const QWEATHER_API_KEY = ''
 
 /** 默认地区 LocationID（北京 = 101010100） */
 export const DEFAULT_LOCATION_ID = '101010100'

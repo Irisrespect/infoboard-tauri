@@ -31,9 +31,9 @@ describe('sanitizeSettings（localStorage 脏数据不得让设置面板崩溃�
   })
 
   it('字符串字段类型错误时回退默认，autoStart 非布尔回退', () => {
-    const s = sanitizeSettings({ weatherCity: 123, weatherApiKey: null, autoStart: 'yes' })
+    const s = sanitizeSettings({ weatherCity: 123, weatherApiHost: null, autoStart: 'yes' })
     expect(s.weatherCity).toBe(DEFAULT_SETTINGS.weatherCity)
-    expect(s.weatherApiKey).toBe(DEFAULT_SETTINGS.weatherApiKey)
+    expect(s.weatherApiHost).toBe(DEFAULT_SETTINGS.weatherApiHost)
     expect(s.autoStart).toBe(false)
   })
 
@@ -41,7 +41,6 @@ describe('sanitizeSettings（localStorage 脏数据不得让设置面板崩溃�
     const s = sanitizeSettings({
       weatherCity: '101020100',
       weatherCityName: '上海',
-      weatherApiKey: 'k',
       weatherApiHost: 'h',
       theme: 'pink-purple',
       disabledPlugins: ['todo'],
@@ -50,7 +49,6 @@ describe('sanitizeSettings（localStorage 脏数据不得让设置面板崩溃�
     expect(s).toEqual({
       weatherCity: '101020100',
       weatherCityName: '上海',
-      weatherApiKey: 'k',
       weatherApiHost: 'h',
       theme: 'pink-purple',
       disabledPlugins: ['todo'],
@@ -65,5 +63,15 @@ describe('sanitizeSettings（localStorage 脏数据不得让设置面板崩溃�
     >
     expect('minimaxApiKey' in s).toBe(false)
     expect('junk' in s).toBe(false)
+  })
+
+  /// 回归（P1-a）：API Key 不再是设置项，不能回到 localStorage
+  it('weatherApiKey 被丢弃（Key 改存凭据管理器）', () => {
+    const s = sanitizeSettings({
+      weatherCity: '101010100',
+      weatherApiKey: 'plaintext-secret',
+    }) as unknown as Record<string, unknown>
+    expect('weatherApiKey' in s).toBe(false)
+    expect(JSON.stringify(s)).not.toContain('plaintext-secret')
   })
 })

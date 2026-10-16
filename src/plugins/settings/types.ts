@@ -29,9 +29,12 @@ export interface Settings {
   weatherCity: string
   /** 天气城市名称（用于显示） */
   weatherCityName: string
-  /** 和风天气 API Key */
-  weatherApiKey: string
-  /** 和风天气 API Host */
+  /**
+   * 和风天气 API Host
+   *
+   * 注意：API Key **不在这里**，它存在 Windows 凭据管理器里
+   * （见 `plugins/settings/secrets.ts`），前端拿不到明文。
+   */
   weatherApiHost: string
   /** 主题模式 */
   theme: ThemeMode

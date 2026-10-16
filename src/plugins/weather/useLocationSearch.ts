@@ -9,23 +9,21 @@
 import { useState, useCallback, useRef } from 'react'
 import type { CityInfo, UseLocationSearchReturn } from './types'
 import { httpGetJson } from '../../core/http-client'
-import { QWEATHER_API_HOST, QWEATHER_API_KEY, GEO_API_HOST } from './config'
+import { QWEATHER_KEY_PLACEHOLDER } from '../settings/secrets'
+import { QWEATHER_API_HOST, GEO_API_HOST } from './config'
 
-/** 从设置读取 API 配置 */
-function getApiConfig(): { host: string; key: string } {
+/** 从设置读取 API Host（Key 不在这里，由 Rust 侧注入占位符） */
+function getApiHost(): string {
   try {
     const stored = localStorage.getItem('infoboard-settings')
     if (stored) {
       const parsed = JSON.parse(stored)
-      return {
-        host: parsed.weatherApiHost || QWEATHER_API_HOST,
-        key: parsed.weatherApiKey || QWEATHER_API_KEY,
-      }
+      return parsed.weatherApiHost || QWEATHER_API_HOST
     }
   } catch {
     /* 忽略 */
   }
-  return { host: QWEATHER_API_HOST, key: QWEATHER_API_KEY }
+  return QWEATHER_API_HOST
 }
 
 /**
@@ -46,26 +44,22 @@ function resolveGeoHost(apiHost: string): string {
   return apiHost
 }
 
-function maskUrlKey(url: string): string {
-  return url.replace(/([?&]key=)[^&]*/i, '$1***')
-}
-
 /**
  * 用和风天气 GeoAPI 通过坐标反查地区（精确到区/街道）
  * 端点：GET /geo/v2/city/lookup?location={lon},{lat}
  */
 async function reverseGeocode(lat: number, lon: number): Promise<CityInfo | null> {
-  const { host, key } = getApiConfig()
-  console.log('[天气插件] GeoAPI 反查配置:', { host, keyLen: key.length, lat, lon })
-  if (!host || !key) {
-    console.warn('[天气插件] GeoAPI 缺少 host 或 key')
+  const host = getApiHost()
+  console.log('[天气插件] GeoAPI 反查配置:', { host, lat, lon })
+  if (!host) {
+    console.warn('[天气插件] GeoAPI 缺少 host')
     return null
   }
 
   try {
     const geoHost = resolveGeoHost(host)
-    const url = `https://${geoHost}/geo/v2/city/lookup?location=${lon.toFixed(2)},${lat.toFixed(2)}&key=${key}&lang=zh&number=1`
-    console.log('[天气插件] GeoAPI 请求:', maskUrlKey(url), 'geoHost=', geoHost)
+    const url = `https://${geoHost}/geo/v2/city/lookup?location=${lon.toFixed(2)},${lat.toFixed(2)}&key=${QWEATHER_KEY_PLACEHOLDER}&lang=zh&number=1`
+    console.log('[天气插件] GeoAPI 请求:', url, 'geoHost=', geoHost)
     // Geo 接口 host 通常是 geoapi.qweather.com
     const data = await httpGetJson<{ code: string; location?: Array<Record<string, string>> }>(url)
     console.log('[天气插件] GeoAPI 响应数据:', JSON.stringify(data).slice(0, 300))
@@ -222,10 +216,9 @@ export function useLocationSearch(): UseLocationSearchReturn & {
       setSearchError(null)
 
       try {
-        const { host, key } = getApiConfig()
-        const geoHost = resolveGeoHost(host)
-        const url = `https://${geoHost}/geo/v2/city/lookup?location=${encodeURIComponent(query.trim())}&key=${key}&lang=zh&number=8`
-        console.log('[天气插件] 城市搜索:', maskUrlKey(url))
+        const geoHost = resolveGeoHost(getApiHost())
+        const url = `https://${geoHost}/geo/v2/city/lookup?location=${encodeURIComponent(query.trim())}&key=${QWEATHER_KEY_PLACEHOLDER}&lang=zh&number=8`
+        console.log('[天气插件] 城市搜索:', url)
         const data = await httpGetJson<{
           code: string
           location?: Array<Record<string, string>>

@@ -25,6 +25,65 @@ fn host_allowed(host: &str) -> bool {
         .any(|suf| h == *suf || h.ends_with(&format!(".{suf}")))
 }
 
+/// 和风天气域名（占位符只允许出现在这些域名的请求里）
+fn is_qweather_host(host: &str) -> bool {
+    let h = host.to_ascii_lowercase();
+    ["qweather.com", "qweatherapi.com", "heweather.net"]
+        .iter()
+        .any(|suf| h == *suf || h.ends_with(&format!(".{suf}")))
+}
+
+/// 前端请求 URL 里的和风 Key 占位符。
+/// 前端不再持有明文 Key，发请求前由这里替换。
+pub const QWEATHER_KEY_PLACEHOLDER: &str = "{{QWEATHER_KEY}}";
+
+/// 是否要注入 Key（纯函数，便于测试）
+#[derive(Debug, PartialEq, Eq)]
+pub enum KeyInjection {
+    /// URL 里没有占位符，原样发出
+    NotNeeded,
+    /// 有占位符且域名是和风，允许注入
+    Allowed,
+    /// 有占位符但域名不是和风，必须拒绝（否则 Key 会被带到别的域名）
+    HostNotAllowed,
+}
+
+pub fn decide_key_injection(url: &str, host: &str) -> KeyInjection {
+    if !url.contains(QWEATHER_KEY_PLACEHOLDER) {
+        return KeyInjection::NotNeeded;
+    }
+    if !is_qweather_host(host) {
+        return KeyInjection::HostNotAllowed;
+    }
+    KeyInjection::Allowed
+}
+
+/// 把 URL 里的 `{{QWEATHER_KEY}}` 换成凭据库里的和风 Key。
+///
+/// - 没有占位符 → 原样返回（例如 bilibili / 其它白名单域名）
+/// - 有占位符但域名不是和风 → 拒绝
+/// - 没配置 Key → 明确报错，而不是发一个必然 401 的请求
+fn inject_qweather_key(app: &AppHandle, url: &str, host: &str) -> Result<String, String> {
+    match decide_key_injection(url, host) {
+        KeyInjection::NotNeeded => Ok(url.to_string()),
+        KeyInjection::HostNotAllowed => {
+            let msg = format!("[http_proxy] 拒绝在和风以外的域名使用 Key 占位符: {host}");
+            crate::core::app_log::emit(app, "warn", &msg);
+            Err(format!("域名不允许使用天气 API Key: {host}"))
+        }
+        KeyInjection::Allowed => {
+            let key = crate::core::secrets::get(crate::core::secrets::NAME_QWEATHER)?
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            if key.is_empty() {
+                return Err("未配置和风天气 API Key（设置 → 天气 API）".into());
+            }
+            Ok(url.replace(QWEATHER_KEY_PLACEHOLDER, &key))
+        }
+    }
+}
+
 fn build_client(proxy: Option<&str>) -> Result<reqwest::Client, String> {
     let mut b = reqwest::Client::builder()
         .timeout(Duration::from_secs(20))
@@ -86,12 +145,15 @@ pub async fn http_proxy_get(app: AppHandle, url: String) -> Result<String, Strin
     if parsed.scheme() != "https" && parsed.scheme() != "http" {
         return Err("仅支持 http/https".into());
     }
-    let host = parsed.host_str().ok_or_else(|| "缺少 host".to_string())?;
-    if !host_allowed(host) {
+    let host = parsed.host_str().ok_or_else(|| "缺少 host".to_string())?.to_string();
+    if !host_allowed(&host) {
         let msg = format!("[http_proxy] 拒绝非白名单域名: {host}");
         crate::core::app_log::emit(&app, "warn", &msg);
         return Err(format!("域名不在白名单: {host}"));
     }
+
+    // 只在发请求前替换占位符；日志/错误里只用替换前的 URL
+    let url = inject_qweather_key(&app, &url, &host)?;
 
     // 尝试顺序由 core::net 决定：环境变量代理优先（有的话），否则只直连。
     // 不再追加本机常见代理端口。
@@ -155,6 +217,59 @@ mod tests {
         assert!(host_allowed("qweather.com"));
         assert!(!host_allowed("evilqweather.com"));
         assert!(!host_allowed("127.0.0.1"));
+    }
+
+    #[test]
+    fn qweather_host_detection() {
+        assert!(is_qweather_host("devapi.qweather.com"));
+        assert!(is_qweather_host("abc123.qweatherapi.com"));
+        assert!(is_qweather_host("api.heweather.net"));
+        assert!(!is_qweather_host("api.bilibili.com"));
+        assert!(!is_qweather_host("evilqweather.com"));
+    }
+
+    /// 没有占位符时不得触碰凭据库（bilibili 等请求不该因此报错）
+    #[test]
+    fn injection_not_needed_without_placeholder() {
+        let url = "https://api.bilibili.com/x/web-interface/view?bvid=BV1xx";
+        assert_eq!(decide_key_injection(url, "api.bilibili.com"), KeyInjection::NotNeeded);
+    }
+
+    #[test]
+    fn injection_allowed_for_qweather_host() {
+        let url = format!(
+            "https://devapi.qweather.com/v7/weather/now?location=101010100&key={QWEATHER_KEY_PLACEHOLDER}&lang=zh"
+        );
+        assert_eq!(decide_key_injection(&url, "devapi.qweather.com"), KeyInjection::Allowed);
+        assert_eq!(decide_key_injection(&url, "abc.qweatherapi.com"), KeyInjection::Allowed);
+    }
+
+    /// 安全：占位符出现在非和风域名上时必须拒绝，否则 Key 会被带到别的站点
+    #[test]
+    fn injection_rejected_on_other_hosts() {
+        let url = format!("https://api.bilibili.com/x?key={QWEATHER_KEY_PLACEHOLDER}");
+        assert_eq!(decide_key_injection(&url, "api.bilibili.com"), KeyInjection::HostNotAllowed);
+        // 仿冒域名同样拒绝
+        assert_eq!(
+            decide_key_injection(&url, "evilqweather.com"),
+            KeyInjection::HostNotAllowed
+        );
+    }
+
+    /// 前端传的是未编码的原始 URL（含花括号），替换要在原串上做，
+    /// 不能被 url crate 的百分号编码影响
+    #[test]
+    fn placeholder_survives_url_parsing() {
+        let raw = format!(
+            "https://devapi.qweather.com/v7/weather/now?location=101010100&key={QWEATHER_KEY_PLACEHOLDER}&lang=zh"
+        );
+        let parsed = url::Url::parse(&raw).expect("应能解析");
+        assert_eq!(parsed.host_str(), Some("devapi.qweather.com"));
+        // 原串保持不变，替换后不含花括号
+        assert!(raw.contains(QWEATHER_KEY_PLACEHOLDER));
+        let replaced = raw.replace(QWEATHER_KEY_PLACEHOLDER, "abc123");
+        assert!(!replaced.contains('{'));
+        assert!(replaced.contains("key=abc123"));
     }
 
     /// 回归：白名单站点 302 到非白名单地址时必须被拦截（原先默认跟随）

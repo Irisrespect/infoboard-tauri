@@ -19,6 +19,9 @@ const STORE_KEY_APP_ID: &str = "appId";
 const STORE_KEY_API_KEY: &str = "apiKey";
 const STORE_KEY_CHAR_COUNT: &str = "charCount";
 
+/// 凭据名（Windows 凭据管理器里 com.infoboard.tauri / niutrans）
+const SECRET_NAME: &str = crate::core::secrets::NAME_NIUTRANS;
+
 const API_V2: &str = "https://api.niutrans.com/v2/text/translate";
 const API_LEGACY: &str = "https://api.niutrans.com/NiuTransServer/translation";
 
@@ -43,6 +46,71 @@ fn write_field(app: &AppHandle, key: &str, value: &str) -> Result<(), String> {
         .save()
         .map_err(|e| format!("保存配置失败: {e}"))?;
     Ok(())
+}
+
+fn remove_field(app: &AppHandle, key: &str) -> Result<(), String> {
+    let store = app
+        .store(STORE_PATH)
+        .map_err(|e| format!("打开配置失败: {e}"))?;
+    store.delete(key);
+    store
+        .save()
+        .map_err(|e| format!("保存配置失败: {e}"))?;
+    Ok(())
+}
+
+// ─── API Key（凭据管理器，不放明文） ───
+
+/// 读取 API Key。
+///
+/// 老版本把 `apiKey` 明文写在 `niutrans.json` 里，这里顺手做一次性迁移：
+/// 明文 → 凭据管理器 → 从 store 删除。**只有写入成功才删**，
+/// 否则宁可留着明文也不能把用户的 Key 弄丢（并返回错误提示）。
+fn read_api_key(app: &AppHandle) -> Result<String, String> {
+    if let Some(key) = crate::core::secrets::get(SECRET_NAME)? {
+        if !key.trim().is_empty() {
+            return Ok(key);
+        }
+    }
+
+    let legacy = read_field(app, STORE_KEY_API_KEY)?;
+    let legacy = legacy.trim().to_string();
+    if legacy.is_empty() {
+        return Ok(String::new());
+    }
+
+    crate::core::secrets::set(SECRET_NAME, &legacy)?;
+    remove_field(app, STORE_KEY_API_KEY)?;
+    crate::core::app_log::emit(
+        app,
+        "info",
+        "[niutrans] 已将 API Key 从明文配置迁移到 Windows 凭据管理器",
+    );
+    Ok(legacy)
+}
+
+fn write_api_key(app: &AppHandle, key: &str) -> Result<(), String> {
+    let key = key.trim().to_string();
+    if key.is_empty() {
+        // 清空 = 删除凭据（同时清掉可能残留的明文）
+        crate::core::secrets::delete(SECRET_NAME)?;
+        return remove_field(app, STORE_KEY_API_KEY);
+    }
+    crate::core::secrets::set(SECRET_NAME, &key)?;
+    // 迁移后不该再留明文；即便之前没有也确保 field 不存在
+    let _ = remove_field(app, STORE_KEY_API_KEY);
+    Ok(())
+}
+
+/// 启动时调用：把历史明文 Key 迁到凭据管理器（失败只记日志，不影响启动）
+pub fn migrate_legacy_api_key(app: &AppHandle) {
+    match read_api_key(app) {
+        Ok(key) if key.is_empty() => {}
+        Ok(_) => {}
+        Err(e) => {
+            crate::core::app_log::emit(app, "warn", &format!("[niutrans] 凭据迁移失败: {e}"));
+        }
+    }
 }
 
 fn read_char_count(app: &AppHandle) -> Result<u64, String> {
@@ -267,7 +335,7 @@ async fn translate_legacy(
 
 #[tauri::command]
 pub async fn niutrans_set_api_key(app: AppHandle, key: String) -> Result<(), String> {
-    write_field(&app, STORE_KEY_API_KEY, key.trim())
+    write_api_key(&app, &key)
 }
 
 #[tauri::command]
@@ -277,14 +345,13 @@ pub async fn niutrans_set_app_id(app: AppHandle, app_id: String) -> Result<(), S
 
 #[tauri::command]
 pub async fn niutrans_has_api_key(app: AppHandle) -> Result<bool, String> {
-    let key = read_field(&app, STORE_KEY_API_KEY)?;
-    Ok(!key.is_empty())
+    Ok(!read_api_key(&app)?.trim().is_empty())
 }
 
 #[tauri::command]
 pub async fn niutrans_get_config(app: AppHandle) -> Result<TranslateConfig, String> {
     let app_id = read_field(&app, STORE_KEY_APP_ID)?;
-    let api_key = read_field(&app, STORE_KEY_API_KEY)?;
+    let api_key = read_api_key(&app)?;
     Ok(TranslateConfig {
         has_key: !api_key.is_empty(),
         app_id: mask_secret(&app_id),
@@ -312,7 +379,7 @@ pub async fn niutrans_translate(
         return Err("单次翻译不能超过 5000 字符".into());
     }
 
-    let api_key = read_field(&app, STORE_KEY_API_KEY)?;
+    let api_key = read_api_key(&app)?;
     if api_key.is_empty() {
         return Err("未配置小牛翻译 API Key（设置 → 小牛翻译）".into());
     }

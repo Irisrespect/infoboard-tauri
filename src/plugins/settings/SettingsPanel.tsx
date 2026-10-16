@@ -15,6 +15,12 @@ import type { ThemeMode } from './types'
 import { THEME_PREVIEWS } from './types'
 import * as autostart from '../../core/autostart-bridge'
 import * as niutrans from '../translate/bridge'
+import {
+  SECRET_NAME_QWEATHER,
+  notifyWeatherKeyChanged,
+  secretHas,
+  secretSet,
+} from './secrets'
 
 /**
  * 设置面板
@@ -27,6 +33,11 @@ export function SettingsPanel() {
   const [niutransHasKey, setNiutransHasKey] = useState(false)
   const canSaveNiu = !!niutransAppId && (!!niutransApiKey || niutransHasKey)
 
+  // 天气 Key 只存凭据管理器，面板里只显示"是否已配置"
+  const [weatherApiKey, setWeatherApiKey] = useState('')
+  const [weatherHasKey, setWeatherHasKey] = useState(false)
+  const [savingWeatherKey, setSavingWeatherKey] = useState(false)
+
   const allPlugins = pluginRegistry.getAllPlugins()
 
   // 读取小牛翻译配置状态
@@ -36,6 +47,13 @@ export function SettingsPanel() {
       .then((exists) => {
         setNiutransHasKey(exists)
       })
+      .catch(() => {})
+  }, [])
+
+  // 读取天气 Key 是否已配置
+  useEffect(() => {
+    secretHas(SECRET_NAME_QWEATHER)
+      .then(setWeatherHasKey)
       .catch(() => {})
   }, [])
 
@@ -142,13 +160,46 @@ export function SettingsPanel() {
               API Key
             </label>
             <input
-              type="text"
+              type="password"
               className="input text-xs"
-              value={settings.weatherApiKey}
-              placeholder="和风天气 API Key"
-              onChange={(e) => updateSettings({ weatherApiKey: e.target.value })}
+              value={weatherApiKey}
+              placeholder={weatherHasKey ? '已配置（输入新密钥可替换）' : '和风天气 API Key'}
+              onChange={(e) => setWeatherApiKey(e.target.value)}
             />
+            <span className="text-[10px] mt-1 block" style={{ color: 'var(--text-muted)' }}>
+              {weatherHasKey ? '✓ 已保存到 Windows 凭据管理器' : '未配置（保存到 Windows 凭据管理器）'}
+            </span>
           </div>
+          <button
+            className="w-full py-1.5 text-xs font-medium rounded-md transition-all"
+            style={{
+              backgroundColor: weatherApiKey.trim() ? 'var(--accent)' : 'var(--border-subtle)',
+              color: weatherApiKey.trim() ? '#fff' : 'var(--text-muted)',
+              cursor: weatherApiKey.trim() && !savingWeatherKey ? 'pointer' : 'not-allowed',
+            }}
+            disabled={!weatherApiKey.trim() || savingWeatherKey}
+            onClick={async () => {
+              setSavingWeatherKey(true)
+              try {
+                await secretSet(SECRET_NAME_QWEATHER, weatherApiKey.trim())
+                // 输入框立刻清空，明文不留在界面上
+                setWeatherApiKey('')
+                setWeatherHasKey(true)
+                window.toastAPI?.show?.({ message: '天气 API Key 已保存' })
+                notifyWeatherKeyChanged()
+              } catch (err) {
+                console.error('[设置] 保存天气 API Key 失败:', err)
+                window.toastAPI?.show?.({
+                  message: `保存失败：${err instanceof Error ? err.message : String(err)}`,
+                  color: '#ef4444',
+                })
+              } finally {
+                setSavingWeatherKey(false)
+              }
+            }}
+          >
+            保存天气 API Key
+          </button>
         </div>
       </section>
 
