@@ -29,6 +29,13 @@ fn greet(name: &str) -> String {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
+        // 必须最先注册：二次启动（如开机自启后又双击）只唤起已有窗口，不再双开
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            println!("[单实例] 检测到重复启动，唤起已有窗口");
+            if let Some(window) = app.get_webview_window("main") {
+                core::window::show_and_focus(&window);
+            }
+        }))
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_window_state::Builder::new().build())
         .plugin(tauri_plugin_clipboard_manager::init())

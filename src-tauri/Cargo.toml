@@ -41,3 +41,4 @@ base64 = "0.22"
 
 log = "0.4"
 chrono = "0.4"
+tauri-plugin-single-instance = "2"
