@@ -43,15 +43,7 @@ pub fn run() {
                         println!("[快捷键] Ctrl+Shift+I 触发");
                         // 切换主窗口显隐
                         if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.set_skip_taskbar(true);
-                            if window.is_visible().unwrap_or(false) {
-                                println!("[快捷键] 隐藏窗口");
-                                let _ = window.hide();
-                            } else {
-                                println!("[快捷键] 显示窗口");
-                                let _ = window.show();
-                                let _ = window.set_focus();
-                            }
+                            core::window::toggle_main_window(&window, "快捷键");
                         }
                         // 通知前端
                         let _ = app.emit("window_toggle_visibility", ());

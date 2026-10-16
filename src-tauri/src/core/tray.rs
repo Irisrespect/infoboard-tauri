@@ -20,16 +20,7 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         .on_menu_event(move |app, event| match event.id.as_ref() {
             "show_hide" => {
                 if let Some(window) = app.get_webview_window("main") {
-                    if window.is_visible().unwrap_or(false) {
-                        println!("[托盘] 菜单 → 隐藏窗口");
-                        let _ = window.set_skip_taskbar(true);
-                        let _ = window.hide();
-                    } else {
-                        println!("[托盘] 菜单 → 显示窗口");
-                        let _ = window.set_skip_taskbar(true);
-                        let _ = window.show();
-                        let _ = window.set_focus();
-                    }
+                    super::window::toggle_main_window(&window, "托盘菜单");
                 }
             }
             "quit" => {
@@ -47,16 +38,7 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
             {
                 let app = tray.app_handle();
                 if let Some(window) = app.get_webview_window("main") {
-                    if window.is_visible().unwrap_or(false) {
-                        println!("[托盘] 单击图标 → 隐藏窗口");
-                        let _ = window.set_skip_taskbar(true);
-                        let _ = window.hide();
-                    } else {
-                        println!("[托盘] 单击图标 → 显示窗口");
-                        let _ = window.set_skip_taskbar(true);
-                        let _ = window.show();
-                        let _ = window.set_focus();
-                    }
+                    super::window::toggle_main_window(&window, "托盘单击");
                 }
             }
         })
