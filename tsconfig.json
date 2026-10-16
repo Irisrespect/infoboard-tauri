@@ -18,11 +18,5 @@
     "forceConsistentCasingInFileNames": true,
     "esModuleInterop": true
   },
-  "include": ["src"],
-  "exclude": [
-    "src/plugins/dynamic-island",
-    "src/plugins/screenshot",
-    "src/plugins/translate",
-    "src/plugins/_template"
-  ]
+  "include": ["src"]
 }
