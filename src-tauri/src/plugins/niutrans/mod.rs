@@ -96,8 +96,15 @@ fn write_api_key(app: &AppHandle, key: &str) -> Result<(), String> {
         return remove_field(app, STORE_KEY_API_KEY);
     }
     crate::core::secrets::set(SECRET_NAME, &key)?;
-    // 迁移后不该再留明文；即便之前没有也确保 field 不存在
-    let _ = remove_field(app, STORE_KEY_API_KEY);
+    // 迁移后不该再留明文；即便之前没有也确保 field 不存在。
+    // 失败必须记日志：否则明文会一直留在 niutrans.json 里而没人发现。
+    if let Err(e) = remove_field(app, STORE_KEY_API_KEY) {
+        crate::core::app_log::emit(
+            app,
+            "warn",
+            &format!("[niutrans] Key 已存入凭据管理器，但未能从配置文件删除明文残留: {e}"),
+        );
+    }
     Ok(())
 }
 

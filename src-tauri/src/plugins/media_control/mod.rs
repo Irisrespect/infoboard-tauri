@@ -412,12 +412,35 @@ pub async fn media_send_command(command: String) -> Result<bool, String> {
     })
     .await
     .map_err(|e| format!("spawn_blocking 失败: {e}"))?
-    .unwrap_or_else(|e| {
-        eprintln!("[media_send_command] {e}");
-        String::new()
-    });
+    // 原先这里把 PowerShell 超时/启动失败归一成 Ok(false)，前端只看得到"命令没生效"，
+    // 真实原因（超时 / NO_SESSION / PS 报错）全被吞掉。现在原样带出去。
+    .map_err(|e| format!("执行 PowerShell 失败: {e}"))?;
 
-    Ok(output.starts_with("OK:true"))
+    // 注意 PowerShell 把布尔值输出成 "True"/"False"（首字母大写），
+    // 所以这里必须忽略大小写比较，否则成功的命令也会被判成失败。
+    parse_send_command_output(&output)
+}
+
+/// 解析 PS_SEND_COMMAND 的输出（纯函数，便于测试）
+fn parse_send_command_output(output: &str) -> Result<bool, String> {
+    let trimmed = output.trim();
+    let lowered = trimmed.to_ascii_lowercase();
+
+    if lowered == "no_session" {
+        return Err("当前没有可控制的媒体会话".to_string());
+    }
+    if let Some(rest) = lowered.strip_prefix("error:") {
+        // 错误文本保留原始大小写，只用来判断前缀
+        let original = trimmed[trimmed.len() - rest.len()..].trim();
+        return Err(format!("媒体控制失败: {original}"));
+    }
+    match lowered.strip_prefix("ok:") {
+        Some(value) => Ok(value.trim() == "true"),
+        None => {
+            let preview: String = trimmed.chars().take(120).collect();
+            Err(format!("媒体控制返回了意外输出: {preview}"))
+        }
+    }
 }
 
 // ─── 工具函数 ───
@@ -521,5 +544,31 @@ mod tests {
         let (prefix, data) = split_thumbnail_data(uri);
         assert_eq!(prefix, "data:image/jpeg;base64,");
         assert_eq!(data, "ABC123");
+    }
+
+    // ─── media_send_command 输出解析 ───
+
+    /// 回归：PowerShell 输出 "OK:True"（首字母大写），原先的大小写敏感比较
+    /// 会把成功判成失败，前端因此永远看不到命令生效
+    #[test]
+    fn send_command_accepts_powershell_bool_casing() {
+        assert_eq!(parse_send_command_output("OK:True"), Ok(true));
+        assert_eq!(parse_send_command_output("OK:true"), Ok(true));
+        assert_eq!(parse_send_command_output("  OK:TRUE \r\n"), Ok(true));
+        assert_eq!(parse_send_command_output("OK:False"), Ok(false));
+        assert_eq!(parse_send_command_output("OK:false"), Ok(false));
+    }
+
+    /// 回归：失败原因不能被归一成 Ok(false)
+    #[test]
+    fn send_command_surfaces_failures() {
+        let err = parse_send_command_output("NO_SESSION").unwrap_err();
+        assert!(err.contains("没有可控制"), "{err}");
+
+        let err = parse_send_command_output("ERROR: 元素未找到").unwrap_err();
+        assert!(err.contains("元素未找到"), "{err}");
+
+        let err = parse_send_command_output("随便什么输出").unwrap_err();
+        assert!(err.contains("意外输出"), "{err}");
     }
 }

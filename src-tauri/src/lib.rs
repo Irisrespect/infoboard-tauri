@@ -66,7 +66,14 @@ pub fn run() {
             // 注册全局快捷键 Ctrl+Shift+I
             {
                 use tauri_plugin_global_shortcut::GlobalShortcutExt;
-                let _ = app.global_shortcut().register("Ctrl+Shift+I");
+                // 失败（被别的程序占用）时功能会静默消失，必须留下痕迹
+                if let Err(e) = app.global_shortcut().register("Ctrl+Shift+I") {
+                    core::app_log::emit(
+                        app.handle(),
+                        "warn",
+                        &format!("[快捷键] Ctrl+Shift+I 注册失败（可能被其它程序占用）: {e}"),
+                    );
+                }
             }
             // 注册插件状态
             app.manage(plugins::ocr::OcrEngine::new());
