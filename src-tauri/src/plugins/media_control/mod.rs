@@ -224,11 +224,8 @@ fn run_powershell(script: &str, timeout_secs: u64) -> Result<String, String> {
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x08000000;
-        // _ = 忽略 error（仅影响隐藏效果，不影响命令执行）
-        let _ = &mut cmd;
-        unsafe {
-            cmd.creation_flags(CREATE_NO_WINDOW);
-        }
+        // CommandExt::creation_flags 是安全函数，无需 unsafe
+        cmd.creation_flags(CREATE_NO_WINDOW);
     }
     cmd.stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());

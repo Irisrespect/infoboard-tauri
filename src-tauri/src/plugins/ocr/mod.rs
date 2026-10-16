@@ -131,7 +131,8 @@ impl OcrEngine {
         {
             use std::os::windows::process::CommandExt;
             const CREATE_NO_WINDOW: u32 = 0x08000000;
-            unsafe { cmd.creation_flags(CREATE_NO_WINDOW); }
+            // 隐藏控制台窗口；CommandExt::creation_flags 是安全函数，无需 unsafe
+            cmd.creation_flags(CREATE_NO_WINDOW);
         }
         let mut child = cmd
             .current_dir(engine_dir)
@@ -390,7 +391,7 @@ pub async fn ocr_recognize(
 
     let image_base64 = image_base64
         .split(',')
-        .last()
+        .next_back()
         .unwrap_or(&image_base64)
         .to_string();
 

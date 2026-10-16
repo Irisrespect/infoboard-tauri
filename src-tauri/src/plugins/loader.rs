@@ -1,11 +1,9 @@
-/**
- * 外部插件加载器 (Rust 侧)
- *
- * 职责：
- * 1. 扫描 plugins/ 目录
- * 2. 解析每个插件的 manifest.json
- * 3. 返回插件元数据列表给前端
- */
+//! 外部插件加载器 (Rust 侧)
+//!
+//! 职责：
+//! 1. 扫描 plugins/ 目录
+//! 2. 解析每个插件的 manifest.json
+//! 3. 返回插件元数据列表给前端
 
 use serde::{Deserialize, Serialize};
 use std::fs;

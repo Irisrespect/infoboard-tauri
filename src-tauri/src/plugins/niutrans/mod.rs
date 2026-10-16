@@ -5,7 +5,6 @@
 //! authStr = md5( 参数按 key 字典序 key=value&... ，签名时含 apikey )
 
 use md5::{Digest, Md5};
-use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::AppHandle;

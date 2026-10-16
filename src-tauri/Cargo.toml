@@ -5,7 +5,9 @@ description = "InfoBoard - 桌面信息面板"
 authors = ["InfoBoard"]
 license = "MIT"
 edition = "2021"
-rust-version = "1.77"
+# 真实最低版本：代码用到 1.80 才稳定的 API（clippy 的 incompatible_msrv 会据此检查）。
+# 原先写 1.77 与实际不符；依赖里 keyring 3.6.3 的 MSRV 是 1.75，不冲突。
+rust-version = "1.80"
 
 [lib]
 name = "infoboard_tauri_lib"

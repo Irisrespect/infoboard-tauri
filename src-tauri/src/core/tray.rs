@@ -10,9 +10,10 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show_hide, &quit])?;
 
-    let icon = app.default_window_icon()
+    let icon = app
+        .default_window_icon()
         .cloned()
-        .ok_or_else(|| "未找到默认窗口图标")?;
+        .ok_or("未找到默认窗口图标")?;
 
     TrayIconBuilder::new()
         .icon(icon)

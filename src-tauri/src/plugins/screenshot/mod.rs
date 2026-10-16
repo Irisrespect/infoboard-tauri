@@ -20,9 +20,6 @@ fn captured_lock() -> std::sync::MutexGuard<'static, Option<String>> {
 
 const OVERLAY_LABEL: &str = "screenshot-overlay";
 
-/// 兼容旧调用：空实现
-pub fn setup_screenshot(_app: &AppHandle) {}
-
 /// 优先主显示器，否则第一个
 fn capture_screen_native() -> Result<String, String> {
     let monitors = xcap::Monitor::all().map_err(|e| format!("枚举显示器失败: {}", e))?;
