@@ -19,6 +19,7 @@ mod plugins {
     pub mod screenshot;
     pub mod ocr;
     pub mod mail;
+    pub mod loader;
 }
 
 #[tauri::command]
@@ -130,6 +131,8 @@ pub fn run() {
             plugins::mail::mail_mark_read,
             plugins::mail::mail_disconnect_all,
             plugins::mail::mail_connection_info,
+            // 外部插件加载器
+            plugins::loader::scan_external_plugins,
         ])
         .build(tauri::generate_context!())
         .expect("启动 InfoBoard 失败");
