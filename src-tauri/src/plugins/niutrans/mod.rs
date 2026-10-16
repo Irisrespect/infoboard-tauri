@@ -104,27 +104,38 @@ fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
+/// 从候选值里挑出第一个非空代理地址（纯函数，便于测试）
+fn pick_proxy<I: IntoIterator<Item = Option<String>>>(candidates: I) -> Option<String> {
+    candidates
+        .into_iter()
+        .flatten()
+        .map(|p| p.trim().to_string())
+        .find(|p| !p.is_empty())
+}
+
+/// 只认用户显式配置的环境变量代理；没有就直连。
+/// 不再硬编码 127.0.0.1:7897/7890：没跑 Clash 的机器上会必然 Connection refused，
+/// 端口被别的服务占用时请求还会被转发给未知进程。
+fn proxy_from_env() -> Option<String> {
+    pick_proxy([
+        std::env::var("HTTPS_PROXY").ok(),
+        std::env::var("https_proxy").ok(),
+        std::env::var("HTTP_PROXY").ok(),
+        std::env::var("http_proxy").ok(),
+        std::env::var("ALL_PROXY").ok(),
+        std::env::var("all_proxy").ok(),
+    ])
+}
+
 fn build_client() -> Result<reqwest::Client, String> {
     let mut builder = reqwest::Client::builder()
         .timeout(Duration::from_secs(20))
         .connect_timeout(Duration::from_secs(10))
         .user_agent("InfoBoard/0.1");
 
-    // 优先环境变量，其次本机常见代理
-    let proxy_candidates = [
-        std::env::var("HTTPS_PROXY").ok(),
-        std::env::var("HTTP_PROXY").ok(),
-        Some("http://127.0.0.1:7897".into()),
-        Some("http://127.0.0.1:7890".into()),
-    ];
-    for p in proxy_candidates.into_iter().flatten() {
-        if p.trim().is_empty() {
-            continue;
-        }
-        if let Ok(proxy) = reqwest::Proxy::all(&p) {
-            builder = builder.proxy(proxy);
-            break;
-        }
+    if let Some(p) = proxy_from_env() {
+        let proxy = reqwest::Proxy::all(&p).map_err(|e| format!("代理无效 ({p}): {e}"))?;
+        builder = builder.proxy(proxy);
     }
 
     builder
@@ -380,6 +391,19 @@ pub async fn niutrans_translate(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pick_proxy_uses_first_non_empty() {
+        let got = pick_proxy([None, Some("  ".into()), Some("http://p:1".into()), Some("http://q:2".into())]);
+        assert_eq!(got.as_deref(), Some("http://p:1"));
+    }
+
+    /// 回归：没有任何环境变量代理时必须直连，不能凭空返回本地 Clash 端口
+    #[test]
+    fn pick_proxy_none_means_direct() {
+        assert_eq!(pick_proxy([None, None, Some("".into())]), None);
+        assert_eq!(pick_proxy(Vec::<Option<String>>::new()), None);
+    }
 
     #[test]
     fn test_auth_str_stable() {
