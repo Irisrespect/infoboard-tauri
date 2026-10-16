@@ -4,6 +4,9 @@
 
 import type { Settings, ThemeMode } from './types'
 
+/** localStorage 键名（useSettings / 迁移逻辑共用） */
+export const SETTINGS_STORAGE_KEY = 'infoboard-settings'
+
 export const DEFAULT_SETTINGS: Settings = {
   weatherCity: '101010100',
   weatherCityName: '北京',
@@ -44,4 +47,39 @@ export function sanitizeSettings(raw: unknown): Settings {
       : [],
     autoStart: typeof r.autoStart === 'boolean' ? r.autoStart : DEFAULT_SETTINGS.autoStart,
   }
+}
+
+type StorageLike = {
+  getItem: (key: string) => string | null
+  setItem: (key: string, value: string) => void
+}
+
+/**
+ * 把设置写入 localStorage。
+ *
+ * @returns 是否成功。调用方**必须处理 false**（原先 updater 里 catch 掉静默失败，
+ *          用户以为设置已保存）。storage 可注入，便于测试。
+ */
+export function persistSettings(
+  settings: Settings,
+  storage: StorageLike = localStorage
+): boolean {
+  try {
+    storage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings))
+    return true
+  } catch (err) {
+    console.error('[设置] 写入 localStorage 失败:', err)
+    return false
+  }
+}
+
+/** 从 localStorage 读取设置（脏数据回退默认值） */
+export function loadSettings(storage: StorageLike = localStorage): Settings {
+  try {
+    const stored = storage.getItem(SETTINGS_STORAGE_KEY)
+    if (stored) return sanitizeSettings(JSON.parse(stored))
+  } catch {
+    // 解析失败使用默认值
+  }
+  return sanitizeSettings(null)
 }
