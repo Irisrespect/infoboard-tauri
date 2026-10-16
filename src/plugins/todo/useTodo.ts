@@ -10,10 +10,14 @@
 
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import type { Todo, FilterType, UseTodoReturn } from './types'
-import { compareTodosByDeadline, ISO_DATE_REGEX } from './utils'
-
-/** localStorage 键名 */
-const STORAGE_KEY = 'todo-list'
+import {
+  CN_DATE_REGEX,
+  chineseDateToIso,
+  compareTodosByDeadline,
+  loadTodos,
+  parseDeadlineToDayEnd,
+  saveTodos,
+} from './utils'
 
 /** 生成简易 UUID */
 function generateId(): string {
@@ -21,77 +25,23 @@ function generateId(): string {
 }
 
 /**
- * 将日期字符串转换为本地时区当天结束时间（23:59:59.999）
- *
- * 解决两个问题：
- * 1. new Date("YYYY-MM-DD") 按 UTC 解析，与本地时区不一致
- * 2. 截止日期当天即被判定为逾期（应到 23:59:59 才算）
- */
-function parseDeadlineToDayEnd(deadline: string): number | undefined {
-  // ISO 格式：YYYY-MM-DD
-  if (ISO_DATE_REGEX.test(deadline)) {
-    const [year, month, day] = deadline.split('-').map(Number)
-    // 使用本地时区构造当天 23:59:59.999
-    return new Date(year, month - 1, day, 23, 59, 59, 999).getTime()
-  }
-
-  // 中文格式：M月D日
-  const match = deadline.match(/^(\d{1,2})月(\d{1,2})日$/)
-  if (match) {
-    const month = parseInt(match[1], 10) - 1
-    const day = parseInt(match[2], 10)
-    const year = new Date().getFullYear()
-    return new Date(year, month, day, 23, 59, 59, 999).getTime()
-  }
-
-  return undefined
-}
-
-/**
  * 迁移旧版截止时间数据
  * - "YYYY-MM-DD" 格式 → 计算 deadlineTs（当天结束时间）
  * - "6月20日" 格式 → 解析为当前年日期，转 ISO + deadlineTs
- * - 无法解析 → 保持原样，deadlineTs 为 undefined（排到底部）
+ * - 无法解析 / 日期不存在（如 2月30日）→ 清掉截止时间（不替用户改日期）
  */
 function normalizeTodo(todo: Todo): Todo {
-  if (todo.deadline && !todo.deadlineTs) {
-    const ts = parseDeadlineToDayEnd(todo.deadline)
-    if (ts !== undefined) {
-      // 如果是中文格式，同时转换为 ISO 格式
-      if (/^\d{1,2}月\d{1,2}日$/.test(todo.deadline)) {
-        const match = todo.deadline.match(/^(\d{1,2})月(\d{1,2})日$/)!
-        const month = parseInt(match[1], 10)
-        const day = parseInt(match[2], 10)
-        const year = new Date().getFullYear()
-        const iso = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
-        return { ...todo, deadline: iso, deadlineTs: ts }
-      }
-      return { ...todo, deadlineTs: ts }
-    }
-  }
-  return todo
-}
+  if (!todo.deadline || todo.deadlineTs) return todo
 
-/** 从 localStorage 加载待办列表 */
-function loadTodos(): Todo[] {
-  try {
-    const stored = localStorage.getItem(STORAGE_KEY)
-    if (!stored) return []
-    const parsed = JSON.parse(stored)
-    if (Array.isArray(parsed)) return parsed.map(normalizeTodo)
-    return []
-  } catch {
-    return []
+  const ts = parseDeadlineToDayEnd(todo.deadline)
+  if (ts === undefined) {
+    return { ...todo, deadline: undefined, deadlineTs: undefined }
   }
-}
-
-/** 保存待办列表到 localStorage */
-function saveTodos(todos: Todo[]): void {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(todos))
-  } catch (err) {
-    console.warn('[待办插件] 保存失败:', err)
+  if (CN_DATE_REGEX.test(todo.deadline)) {
+    const iso = chineseDateToIso(todo.deadline)
+    return { ...todo, deadline: iso ?? undefined, deadlineTs: ts }
   }
+  return { ...todo, deadlineTs: ts }
 }
 
 /**
@@ -103,15 +53,19 @@ function saveTodos(todos: Todo[]): void {
  * ```
  */
 export function useTodo(): UseTodoReturn {
-  const [todos, setTodos] = useState<Todo[]>(loadTodos)
+  const [todos, setTodos] = useState<Todo[]>(() => loadTodos().map(normalizeTodo))
   const [filter, setFilter] = useState<FilterType>('all')
 
-  // 同步到 localStorage
+  // 同步到 localStorage。写失败必须提示用户，不能静默丢数据。
   useEffect(() => {
-    saveTodos(todos)
+    if (saveTodos(todos)) return
+    window.toastAPI?.show?.({
+      message: '待办保存失败：本地存储写入被拒绝，本次改动可能丢失',
+      color: '#ef4444',
+    })
   }, [todos])
 
-  /** 添加待办 */
+  /** 添加待办（截止日期非法时忽略该项，不替用户改成别的日期） */
   const addTodo = useCallback((text: string, deadline?: string) => {
     const trimmed = text.trim()
     if (!trimmed) return
@@ -119,11 +73,15 @@ export function useTodo(): UseTodoReturn {
     const trimmedDeadline = deadline?.trim() || undefined
     const deadlineTs = trimmedDeadline ? parseDeadlineToDayEnd(trimmedDeadline) : undefined
 
+    if (trimmedDeadline && deadlineTs === undefined) {
+      window.toastAPI?.show?.({ message: `截止日期无效，已忽略：${trimmedDeadline}`, color: '#f59e0b' })
+    }
+
     const newTodo: Todo = {
       id: generateId(),
       text: trimmed,
       completed: false,
-      deadline: trimmedDeadline,
+      deadline: deadlineTs === undefined ? undefined : trimmedDeadline,
       deadlineTs,
       createdAt: Date.now(),
     }
