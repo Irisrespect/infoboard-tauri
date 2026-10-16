@@ -17,8 +17,9 @@ import type { PillState, MediaSession } from './types'
 import { useMediaControl } from './useMediaControl'
 import { PillCollapsed } from './PillCollapsed'
 import { MediaControls } from './MediaControls'
-import { useMusicPlayerBridge } from './useMusicPlayerBridge'
+import { useMusicPlayerBridge, type MusicPlayerBridgeState } from './useMusicPlayerBridge'
 import { LyricsView } from './LyricsView'
+import { PlaybackProgress } from './PlaybackProgress'
 import { eventBus } from '../../core/eventBus'
 
 // ─── Mock 数据（模块级，避免每次渲染重建） ───
@@ -48,19 +49,6 @@ export function DynamicIsland({ manifest, expanded }: PluginComponentProps) {
   // ─── MusicPlayer 桥接 ───
 
   const mpState = useMusicPlayerBridge()
-
-  const mpCurrentIndex = useMemo(() => {
-    if (!mpState.isOnline || mpState.lyrics.length === 0) return -1
-    const adjustedTime = mpState.position + (mpState.lyricsOffset || 0)
-    const isSynced = mpState.lyrics.some((l) => l.time > 0)
-    if (!isSynced) return -1
-    let idx = -1
-    for (let i = 0; i < mpState.lyrics.length; i++) {
-      if (mpState.lyrics[i].time <= adjustedTime) idx = i
-      else break
-    }
-    return idx
-  }, [mpState.lyrics, mpState.position, mpState.lyricsOffset])
 
   // ─── Mock 数据（仅开发环境） ───
 
@@ -169,7 +157,6 @@ export function DynamicIsland({ manifest, expanded }: PluginComponentProps) {
             isMediaLoading={isMediaLoading}
             mediaError={mediaError}
             mpState={mpState}
-            mpCurrentIndex={mpCurrentIndex}
             isDev={isDev}
             useMockData={useMockData}
             onSendCommand={handleSendCommand}
@@ -189,18 +176,7 @@ interface ExpandedViewProps {
   currentMedia: MediaSession | null
   isMediaLoading: boolean
   mediaError: string | null
-  mpState: {
-    isOnline: boolean
-    playbackState: string
-    title: string
-    artist: string
-    thumbnail: string
-    position: number
-    duration: number
-    lyrics: Array<{ time: number; text: string }>
-    lyricsOffset: number
-  }
-  mpCurrentIndex: number
+  mpState: MusicPlayerBridgeState
   isDev: boolean
   useMockData: boolean
   onSendCommand: (command: 'play' | 'pause' | 'toggle' | 'next' | 'previous') => Promise<boolean>
@@ -217,7 +193,6 @@ function ExpandedView({
   isMediaLoading,
   mediaError,
   mpState,
-  mpCurrentIndex,
   isDev,
   useMockData,
   onSendCommand,
@@ -229,27 +204,13 @@ function ExpandedView({
       {/* 媒体控制区 */}
       {currentMedia && <MediaControls media={currentMedia} onSendCommand={onSendCommand} />}
 
-      {/* 播放进度条 */}
-      {mpState.isOnline && mpState.duration > 0 && (
-        <div className="px-3 py-1">
-          <div className="w-full h-1 rounded-full" style={{ background: 'rgba(255,255,255,0.1)' }}>
-            <div
-              className="h-full rounded-full"
-              style={{
-                width: `${Math.min(100, Math.max(0, (mpState.position / mpState.duration) * 100))}%`,
-                background: 'var(--accent)',
-              }}
-            />
-          </div>
-          <div className="flex justify-between mt-1">
-            <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
-              {fmt(mpState.position)}
-            </span>
-            <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
-              {fmt(mpState.duration)}
-            </span>
-          </div>
-        </div>
+      {/* 播放进度条（只在自身内部按 250ms 刷新，不带动整棵灵动岛） */}
+      {mpState.isOnline && (
+        <PlaybackProgress
+          getPosition={mpState.getPosition}
+          duration={mpState.duration}
+          animating={mpState.windowActive && mpState.playbackState === 'playing'}
+        />
       )}
 
       {/* MusicPlayer 歌词区 */}
@@ -264,7 +225,13 @@ function ExpandedView({
             </span>
             <span>🎵 MusicPlayer</span>
           </div>
-          <LyricsView lyrics={mpState.lyrics} currentIndex={mpCurrentIndex} loading={false} />
+          <LyricsView
+            lyrics={mpState.lyrics}
+            loading={false}
+            getPosition={mpState.getPosition}
+            lyricsOffset={mpState.lyricsOffset}
+            animating={mpState.windowActive}
+          />
         </div>
       )}
 
@@ -381,14 +348,3 @@ function ExpandedView({
 }
 
 // ─── 工具函数 ───
-
-function fmt(s: number): string {
-  if (!s || isNaN(s)) return '0:00'
-  return (
-    Math.floor(s / 60) +
-    ':' +
-    Math.floor(s % 60)
-      .toString()
-      .padStart(2, '0')
-  )
-}

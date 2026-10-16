@@ -9,9 +9,9 @@
 pub mod types;
 
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
-use tauri::{AppHandle, State};
 use types::{MediaSession, ThumbnailCache};
 
 // ─── 常量 ───
@@ -168,13 +168,40 @@ try {
 
 pub struct AppState {
     pub thumbnail_cache: Mutex<Option<ThumbnailCache>>,
+    /// 是否已有查询在途。前端每 2 秒轮询一次，而"启动 powershell.exe + COM 查询"
+    /// 经常慢于 2 秒，没有这个标志就会不断堆积 PowerShell 进程。
+    query_in_flight: AtomicBool,
+    /// 上一次查询结果，在途期间直接复用它（避免前端状态闪断）
+    session_cache: Mutex<Option<MediaSession>>,
 }
 
 impl AppState {
     pub fn new() -> Self {
         Self {
             thumbnail_cache: Mutex::new(None),
+            query_in_flight: AtomicBool::new(false),
+            session_cache: Mutex::new(None),
         }
+    }
+
+    /// 缓存的会话（锁中毒时按"无会话"处理，不让一次 panic 永久卡死轮询）
+    fn cached_session(&self) -> Option<MediaSession> {
+        self.session_cache.lock().ok().and_then(|c| c.clone())
+    }
+
+    fn store_session(&self, session: &Option<MediaSession>) {
+        if let Ok(mut cache) = self.session_cache.lock() {
+            *cache = session.clone();
+        }
+    }
+}
+
+/// RAII：无论查询成功、失败还是提前 return，都保证清掉"在途"标志
+struct InFlightGuard<'a>(&'a AtomicBool);
+
+impl Drop for InFlightGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
     }
 }
 
@@ -257,10 +284,15 @@ fn run_powershell(script: &str, timeout_secs: u64) -> Result<String, String> {
 
 #[tauri::command]
 pub async fn media_get_current_session(
-    app: AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<Option<MediaSession>, String> {
     // 高频轮询，不写日志台以免刷屏
+    // 防堆积：已有查询在途时直接返回上一次的结果，不再新起一个 powershell.exe
+    if state.query_in_flight.swap(true, Ordering::SeqCst) {
+        return Ok(state.cached_session());
+    }
+    let _guard = InFlightGuard(&state.query_in_flight);
+
     // 拼接 helper + 查询脚本
     let script = format!("{PS_AWAIT_HELPER}\n{PS_QUERY_COMBINED}");
 
@@ -274,12 +306,15 @@ pub async fn media_get_current_session(
         "PowerShell 查询失败".to_string()
     })?;
 
-    // 解析 JSON
-    eprintln!("[media_get_current_session] 原始 PS 输出: {output}");
+    // 解析 JSON。注意：输出里带缩略图 base64（约 700 KB），只打印长度不打印内容
     let json: serde_json::Value = match serde_json::from_str(&output) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("[media_get_current_session] JSON 解析失败: {e} 输出: {output}");
+            eprintln!(
+                "[media_get_current_session] JSON 解析失败: {e}（输出 {} 字节）",
+                output.len()
+            );
+            state.store_session(&None);
             return Ok(None);
         }
     };
@@ -287,12 +322,14 @@ pub async fn media_get_current_session(
     // 检查错误
     if json.get("error").and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false) {
         eprintln!("[media_get_current_session] PS 错误: {}", json["error"]);
+        state.store_session(&None);
         return Ok(None);
     }
 
     // 检查状态（原始项目逻辑：状态为空 → 无会话）
     let status = json["status"].as_str().unwrap_or("");
     if status.is_empty() {
+        state.store_session(&None);
         return Ok(None);
     }
 
@@ -311,6 +348,7 @@ pub async fn media_get_current_session(
 
     // 窗口标题也空 → 无活跃视频
     if smtc_title.is_empty() || smtc_title == "哔哩哔哩" {
+        state.store_session(&None);
         return Ok(None);
     }
 
@@ -346,13 +384,15 @@ pub async fn media_get_current_session(
     // 标准化播放状态
     let playback_status = normalize_status(status);
 
-    Ok(Some(MediaSession {
+    let session = Some(MediaSession {
         title: smtc_title,
         artist: smtc_artist,
         thumbnail: final_thumb,
         playback_status,
         source_app_id: app_id,
-    }))
+    });
+    state.store_session(&session);
+    Ok(session)
 }
 
 /// 发送播放控制命令

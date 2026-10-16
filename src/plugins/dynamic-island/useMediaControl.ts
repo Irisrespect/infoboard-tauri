@@ -2,13 +2,15 @@
  * 媒体控制 Hook
  *
  * 提供媒体会话状态和控制方法
- * 自动轮询 SMTC 会话变化（每 2 秒），实时更新状态
+ * 窗口活跃时轮询 SMTC 会话变化（每 2 秒），实时更新状态；
+ * 隐藏到托盘 / 最小化后停止轮询（由 Rust 的 window:visibility 事件驱动）
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react'
 import type { MediaSession, PlaybackStatus } from './types'
 import { getCurrentSession, sendCommand as bridgeSendCommand } from './bridge'
 import { enrichMedia } from '../bilibili-info/bridge'
+import { useWindowActive } from '../../core/useWindowActive'
 
 /** B站信息缓存：title → enriched data */
 const bilibiliCache = new Map<
@@ -44,6 +46,9 @@ export function useMediaControl(): UseMediaControlReturn {
   const [currentMedia, setCurrentMedia] = useState<MediaSession | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+
+  /** 窗口是否活跃（隐藏到托盘 / 最小化 → false，前后端都不该再查 SMTC） */
+  const active = useWindowActive()
 
   /** 保存 sendCommand 中 setTimeout 的引用，用于卸载时清理 */
   const commandTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -118,12 +123,15 @@ export function useMediaControl(): UseMediaControlReturn {
   }, [fetchSession])
 
   /**
-   * 初始化：立即获取 + 每 2 秒轮询
+   * 初始化：窗口活跃时立即获取 + 每 2 秒轮询；不活跃时连定时器都不创建，
+   * 变回活跃时先补一次 fetchSession 再启动定时器
    */
   useEffect(() => {
+    if (!active) return
+
     let unmounted = false
 
-    // 立即获取一次
+    // 立即获取一次（还原窗口后立刻刷新，而非等 2 秒）
     fetchSession().catch(() => {})
 
     // 每 2 秒轮询
@@ -133,12 +141,20 @@ export function useMediaControl(): UseMediaControlReturn {
 
     return () => {
       unmounted = true
-      if (commandTimeoutRef.current) {
-        clearTimeout(commandTimeoutRef.current)
-      }
       clearInterval(timer)
     }
-  }, [fetchSession])
+  }, [active, fetchSession])
+
+  /** 卸载时清理未执行的延迟刷新 */
+  useEffect(
+    () => () => {
+      if (commandTimeoutRef.current) {
+        clearTimeout(commandTimeoutRef.current)
+        commandTimeoutRef.current = null
+      }
+    },
+    []
+  )
 
   return {
     currentMedia,

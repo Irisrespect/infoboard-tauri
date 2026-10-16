@@ -15,7 +15,11 @@ import type { MediaSession } from './types'
 export async function getCurrentSession(): Promise<MediaSession | null> {
   try {
     const result = await invoke<MediaSession | null>('media_get_current_session')
-    console.log('[dynamic-island] getCurrentSession 结果:', result)
+    // 不要把整个结果打进控制台：thumbnail 是约 700 KB 的 base64
+    console.debug(
+      '[dynamic-island] getCurrentSession:',
+      result ? `"${result.title}" (${result.playbackStatus})` : '无会话'
+    )
     return result
   } catch (err) {
     console.error('[dynamic-island] getCurrentSession 失败:', err)

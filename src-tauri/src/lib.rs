@@ -88,6 +88,7 @@ pub fn run() {
             core::window::window_minimize,
             core::window::window_maximize,
             core::window::window_close,
+            core::window::window_is_active,
             core::window::window_is_maximized,
             core::window::window_is_visible,
             core::geolocate::geolocate_ip,

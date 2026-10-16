@@ -51,13 +51,23 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
 pub fn handle_run_event(app: &AppHandle, event: RunEvent) {
     if let RunEvent::WindowEvent { label, event: win_event, .. } = &event {
         if label == "main" {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = win_event {
-                println!("[窗口] 关闭按钮 → 拦截并隐藏到托盘");
-                api.prevent_close();
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.set_skip_taskbar(true);
-                    let _ = window.hide();
+            match win_event {
+                tauri::WindowEvent::CloseRequested { api, .. } => {
+                    println!("[窗口] 关闭按钮 → 拦截并隐藏到托盘");
+                    api.prevent_close();
+                    if let Some(window) = app.get_webview_window("main") {
+                        // 与 window_close 同一路径：更新活跃标志并通知前端停止轮询
+                        super::window::set_main_visible(&window, false);
+                    }
                 }
+                // 安全网：最小化后若不是由本应用还原的（例如从系统任务栏还原），
+                // 也要把活跃标志同步回来，否则前端会一直不轮询
+                tauri::WindowEvent::Focused(true) => {
+                    if let Some(window) = app.get_webview_window("main") {
+                        super::window::sync_main_active(&window);
+                    }
+                }
+                _ => {}
             }
         }
     }
