@@ -24,7 +24,6 @@ serde_json = "1"
 reqwest = { version = "0.12", features = ["json", "gzip", "brotli", "deflate"] }
 url = "2"
 regex = "1"
-dirs = "6"
 tokio = { version = "1", features = ["full"] }
 
 tauri-plugin-autostart = "2"

@@ -92,9 +92,11 @@ function push(level: LogLevel, args: unknown[], source: 'web' | 'rust' = 'web') 
     entries.length >= MAX_ENTRIES
       ? [...entries.slice(entries.length - MAX_ENTRIES + 1), entry]
       : [...entries, entry]
-  // 重要级别同步落盘（后端文件）
-  if (level === 'error' || level === 'warn' || source === 'rust') {
-    void invoke('log_append_file', { level, message: `[${source}] ${message}` }).catch(() => {})
+  // 重要级别同步落盘（后端文件）。
+  // 只写 web 侧：source === 'rust' 的日志是后端 emit 推过来的，
+  // 后端已经自己 append_file 过一次，这里再写会重复落盘并写出 `[web] [web]`。
+  if (source === 'web' && (level === 'error' || level === 'warn')) {
+    void invoke('log_append_file', { level, message }).catch(() => {})
   }
   notify()
 }
