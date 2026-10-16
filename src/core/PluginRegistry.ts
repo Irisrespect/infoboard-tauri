@@ -25,18 +25,30 @@ export class PluginRegistry {
 
     this.plugins.set(id, plugin)
 
-    // 调用初始化钩子
-    plugin.onInit?.()
+    // 调用初始化钩子；失败则回滚注册，避免留下"已注册但未初始化"的半成品
+    try {
+      plugin.onInit?.()
+    } catch (error) {
+      this.plugins.delete(id)
+      throw error
+    }
 
     console.log(`[PluginRegistry] 已注册插件: ${id} (${plugin.manifest.section})`)
   }
 
   /**
-   * 批量注册插件
+   * 批量注册插件（单个失败只记录日志，不影响其余插件）
    * @param plugins - 插件数组
    */
   registerAll(plugins: InfoBoardPlugin[]): void {
-    plugins.forEach((plugin) => this.register(plugin))
+    // 单个插件失败（重复 id、onInit 抛错）不能中断整批，否则其后的插件全部丢失
+    for (const plugin of plugins) {
+      try {
+        this.register(plugin)
+      } catch (error) {
+        console.error(`[PluginRegistry] 注册插件失败: ${plugin.manifest?.id ?? '(未知)'}`, error)
+      }
+    }
   }
 
   /**

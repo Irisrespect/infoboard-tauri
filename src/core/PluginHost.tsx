@@ -43,12 +43,18 @@ let initPromise: Promise<void> | null = null
 export function initPluginSystem(): Promise<void> {
   if (initPromise) return initPromise
 
-  initPromise = (async () => {
+  const attempt = (async () => {
     pluginRegistry.clear()
     await importPlugins()
   })()
+  initPromise = attempt
 
-  return initPromise
+  // 失败不缓存：否则 rejected 的 promise 会被永久复用，之后再也无法恢复
+  attempt.catch(() => {
+    if (initPromise === attempt) initPromise = null
+  })
+
+  return attempt
 }
 
 /**
@@ -225,7 +231,9 @@ function PluginRenderer({ plugin }: { plugin: InfoBoardPlugin }) {
  */
 export function usePluginSystem(): void {
   useEffect(() => {
-    initPluginSystem()
+    initPluginSystem().catch((error) => {
+      console.error('[PluginHost] 插件系统初始化失败:', error)
+    })
   }, [])
 }
 
@@ -261,9 +269,12 @@ export function usePlugins(section: 'info' | 'tool'): InfoBoardPlugin[] {
 
   // 初始化插件系统（promise 门防止并发重复调用）
   useEffect(() => {
-    initPluginSystem().then(() => {
-      setVersion((v) => v + 1)
-    })
+    initPluginSystem()
+      .catch((error) => {
+        console.error('[PluginHost] 插件系统初始化失败:', error)
+      })
+      // 无论成败都刷新一次，展示已成功注册的部分
+      .finally(() => setVersion((v) => v + 1))
   }, [])
 
   // 监听设置变更（插件启用/禁用切换时触发重新渲染）
