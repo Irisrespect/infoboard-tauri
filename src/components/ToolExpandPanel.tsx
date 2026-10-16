@@ -5,6 +5,7 @@
  */
 
 import { useRef, useEffect } from 'react'
+import { ErrorBoundary } from '../core/ErrorBoundary'
 import type { InfoBoardPlugin } from '../core/types'
 import { SVG_ICONS, isEmoji } from './ToolSection'
 
@@ -78,7 +79,10 @@ export function ToolExpandPanel({ plugin, onClose }: ToolExpandPanelProps) {
 
       {/* 面板内容 */}
       <div className="flex-1 overflow-auto" style={{ maxHeight: 'calc(100vh - 300px)' }}>
-        <Component manifest={manifest} expanded={true} />
+        {/* 插件级兜底：面板里的插件崩溃不应带走整个面板 */}
+        <ErrorBoundary variant="plugin" label={manifest.name}>
+          <Component manifest={manifest} expanded={true} />
+        </ErrorBoundary>
       </div>
     </div>
   )

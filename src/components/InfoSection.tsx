@@ -9,6 +9,7 @@
 
 import { useState, useCallback, useEffect } from 'react'
 import { usePlugins } from '../core/PluginHost'
+import { ErrorBoundary } from '../core/ErrorBoundary'
 import type { InfoBoardPlugin } from '../core/types'
 import { eventBus } from '../core/eventBus'
 
@@ -165,7 +166,10 @@ function InfoCard({ plugin, isExpanded, onToggle }: InfoCardProps) {
       data-expanded={isExpanded}
     >
       <div className="p-4">
-        <Component manifest={manifest} expanded={isExpanded} />
+        {/* 插件级兜底：单个插件崩溃不该影响其它卡片 */}
+        <ErrorBoundary variant="plugin" label={manifest.name}>
+          <Component manifest={manifest} expanded={isExpanded} />
+        </ErrorBoundary>
       </div>
     </div>
   )

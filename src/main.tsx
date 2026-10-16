@@ -4,6 +4,7 @@ import App from './App'
 import GlobalToast from './core/GlobalToast'
 import LogConsole from './core/LogConsole'
 import { installLogConsole } from './core/appLog'
+import { ErrorBoundary } from './core/ErrorBoundary'
 import { initTauriShim } from './tauri-shim'
 import { ScreenshotOverlayWindow } from './components/ScreenshotOverlayWindow'
 import './styles/globals.css'
@@ -59,7 +60,10 @@ function Root() {
 
   return (
     <div className={titleBarVisible ? '' : 'titlebar-hidden'}>
-      <App />
+      {/* 应用级兜底：组件抛错时不再整窗白屏 */}
+      <ErrorBoundary label="主界面">
+        <App />
+      </ErrorBoundary>
       <GlobalToast />
       <LogConsole open={logOpen} onClose={() => setLogOpen(false)} />
     </div>

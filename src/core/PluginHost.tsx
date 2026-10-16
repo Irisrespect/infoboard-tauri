@@ -10,6 +10,7 @@
 import { useEffect, useState } from 'react'
 import { pluginRegistry } from './PluginRegistry'
 import { pluginLoader } from './PluginLoader'
+import { ErrorBoundary } from './ErrorBoundary'
 import type { InfoBoardPlugin } from './types'
 
 const SETTINGS_KEY = 'infoboard-settings'
@@ -211,7 +212,9 @@ function PluginRenderer({ plugin }: { plugin: InfoBoardPlugin }) {
       data-plugin-id={manifest.id}
       data-plugin-section={manifest.section}
     >
-      <Component manifest={manifest} />
+      <ErrorBoundary variant="plugin" label={manifest.name}>
+        <Component manifest={manifest} />
+      </ErrorBoundary>
     </div>
   )
 }
