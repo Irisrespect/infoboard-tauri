@@ -47,7 +47,20 @@ fn build_client(proxy: Option<&str>) -> Result<reqwest::Client, String> {
     let mut b = reqwest::Client::builder()
         .timeout(Duration::from_secs(20))
         .connect_timeout(Duration::from_secs(10))
-        .user_agent("InfoBoard/0.1 (Tauri)");
+        .user_agent("InfoBoard/0.1 (Tauri)")
+        // 默认会跟随 10 跳重定向且不再校验域名，可借白名单站点跳转访问内网；
+        // 这里每一跳都重新校验白名单
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() >= 5 {
+                return attempt.error("重定向次数过多");
+            }
+            let allowed = attempt.url().host_str().map(host_allowed).unwrap_or(false);
+            if allowed {
+                attempt.follow()
+            } else {
+                attempt.error("重定向目标不在白名单")
+            }
+        }));
 
     if let Some(p) = proxy {
         let proxy = reqwest::Proxy::all(p).map_err(|e| format!("代理无效 ({p}): {e}"))?;
@@ -68,13 +81,14 @@ async fn do_get(client: &reqwest::Client, url: &str) -> Result<String, String> {
         .header("Accept-Encoding", "gzip, deflate, br")
         .send()
         .await
-        .map_err(|e| format!("网络错误: {e}"))?;
+        // reqwest 的错误文本默认带完整 URL（含查询串里的 API Key），必须去掉
+        .map_err(|e| format!("网络错误: {}", e.without_url()))?;
 
     let status = resp.status();
     let text = resp
         .text()
         .await
-        .map_err(|e| format!("读取 body 失败: {e}"))?;
+        .map_err(|e| format!("读取 body 失败: {}", e.without_url()))?;
 
     if !status.is_success() {
         let preview: String = text.chars().take(160).collect();
@@ -147,4 +161,77 @@ pub async fn http_proxy_get(app: AppHandle, url: String) -> Result<String, Strin
     let msg = format!("[http_proxy] 全部尝试失败 host={host} err={last_err}");
     crate::core::app_log::emit(&app, "error", &msg);
     Err(last_err)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 回归：reqwest 错误默认带完整 URL，查询串里的 API Key 不应出现在错误文本中
+    #[tokio::test]
+    async fn network_error_does_not_leak_api_key() {
+        let client = build_client(None).unwrap();
+        // 端口 1 本机必然拒绝连接，产生真实的 reqwest 网络错误
+        let err = do_get(&client, "http://127.0.0.1:1/geo/v2/city/lookup?location=1,2&key=SECRETKEY123")
+            .await
+            .unwrap_err();
+        assert!(!err.contains("SECRETKEY123"), "错误文本泄漏了 Key: {err}");
+    }
+
+    #[test]
+    fn host_allowed_checks_suffix_boundary() {
+        assert!(host_allowed("devapi.qweather.com"));
+        assert!(host_allowed("qweather.com"));
+        assert!(!host_allowed("evilqweather.com"));
+        assert!(!host_allowed("127.0.0.1"));
+    }
+
+    /// 回归：白名单站点 302 到非白名单地址时必须被拦截（原先默认跟随）
+    #[tokio::test]
+    async fn redirect_to_non_whitelisted_host_is_blocked() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        // 本地"目标"服务：若被访问就说明重定向绕过了白名单
+        let target = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target_port = target.local_addr().unwrap().port();
+        let hit = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let hit2 = hit.clone();
+        tokio::spawn(async move {
+            if let Ok((mut sock, _)) = target.accept().await {
+                hit2.store(true, std::sync::atomic::Ordering::SeqCst);
+                let mut buf = [0u8; 512];
+                let _ = sock.read(&mut buf).await;
+                let _ = sock
+                    .write_all(b"HTTP/1.1 200 OK
+Content-Length: 2
+
+ok")
+                    .await;
+            }
+        });
+        // 跳板服务：返回 302 指向上面的内网目标
+        let hop = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let hop_port = hop.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            if let Ok((mut sock, _)) = hop.accept().await {
+                let mut buf = [0u8; 512];
+                let _ = sock.read(&mut buf).await;
+                let resp = format!(
+                    "HTTP/1.1 302 Found
+Location: http://127.0.0.1:{target_port}/secret
+Content-Length: 0
+
+"
+                );
+                let _ = sock.write_all(resp.as_bytes()).await;
+            }
+        });
+
+        let client = build_client(None).unwrap();
+        let res = do_get(&client, &format!("http://127.0.0.1:{hop_port}/")).await;
+        assert!(res.is_err(), "重定向到非白名单地址应失败，实际: {res:?}");
+        assert!(
+            !hit.load(std::sync::atomic::Ordering::SeqCst),
+            "内网目标不应被访问"
+        );
+    }
 }
