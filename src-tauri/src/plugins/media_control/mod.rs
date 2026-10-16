@@ -208,23 +208,42 @@ fn run_powershell(script: &str, timeout_secs: u64) -> Result<String, String> {
 
     let mut child = cmd.spawn().map_err(|e| format!("启动 PowerShell 失败: {e}"))?;
 
+    // 子进程运行期间就必须持续排空 stdout/stderr，否则输出超过管道缓冲（约 4 KB）
+    // 后子进程会阻塞在写入上，永远不退出
+    fn drain<R: std::io::Read + Send + 'static>(
+        pipe: Option<R>,
+    ) -> Option<std::thread::JoinHandle<Vec<u8>>> {
+        pipe.map(|mut r| {
+            std::thread::spawn(move || {
+                let mut buf = Vec::new();
+                let _ = r.read_to_end(&mut buf);
+                buf
+            })
+        })
+    }
+    let stdout_reader = drain(child.stdout.take());
+    let stderr_reader = drain(child.stderr.take());
+
     let start = std::time::Instant::now();
     let timeout = Duration::from_secs(timeout_secs);
 
     loop {
         match child.try_wait() {
             Ok(Some(_status)) => {
-                use std::io::Read;
-                let mut output = String::new();
-                child.stdout.take()
+                let out = stdout_reader
                     .ok_or("无法读取输出")?
-                    .read_to_string(&mut output)
-                    .map_err(|e| format!("读取输出失败: {e}"))?;
-                return Ok(output.trim().to_string());
+                    .join()
+                    .map_err(|_| "读取输出失败: 线程异常".to_string())?;
+                if let Some(h) = stderr_reader {
+                    let _ = h.join();
+                }
+                return Ok(String::from_utf8_lossy(&out).trim().to_string());
             }
             Ok(None) => {
                 if start.elapsed() > timeout {
+                    // 不 join 读取线程：kill 后管道随之关闭，线程会自行结束
                     let _ = child.kill();
+                    let _ = child.wait();
                     return Err("PowerShell 超时".to_string());
                 }
                 std::thread::sleep(Duration::from_millis(50));
@@ -449,6 +468,14 @@ mod tests {
         let (prefix, data) = split_thumbnail_data(uri);
         assert_eq!(prefix, "data:image/png;base64,");
         assert_eq!(data, "ABC123");
+    }
+
+    /// 回归：输出远超管道缓冲（~4 KB）时不应死锁
+    #[cfg(windows)]
+    #[test]
+    fn test_run_powershell_large_output_no_deadlock() {
+        let out = run_powershell("[Console]::Out.Write('a' * 200000)", 20).expect("应成功返回");
+        assert_eq!(out.len(), 200000);
     }
 
     #[test]
