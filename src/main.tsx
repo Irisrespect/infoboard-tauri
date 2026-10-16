@@ -8,6 +8,7 @@ import { ErrorBoundary } from './core/ErrorBoundary'
 import { initTauriShim } from './tauri-shim'
 import { ScreenshotOverlayWindow } from './components/ScreenshotOverlayWindow'
 import './styles/globals.css'
+import './styles/fonts.css'
 import { toggleNativeDevtools } from './core/devtools'
 import { migrateLegacySecrets } from './plugins/settings/secrets'
 

@@ -1,21 +1,10 @@
 {
   "identifier": "default",
   "description": "Default capability for main and screenshot-overlay windows",
-  "windows": ["main", "screenshot-overlay"],
   "permissions": [
     "core:default",
     "core:event:default",
     "core:webview:allow-internal-toggle-devtools",
-    "core:window:allow-close",
-    "core:window:allow-hide",
-    "core:window:allow-show",
-    "core:window:allow-set-focus",
-    "store:default",
-    "window-state:default",
-    "clipboard-manager:default",
-    "clipboard-manager:allow-write-text",
-    "clipboard-manager:allow-read-text",
-    "autostart:default",
-    "global-shortcut:default"
+    "clipboard-manager:allow-write-text"
   ]
 }
