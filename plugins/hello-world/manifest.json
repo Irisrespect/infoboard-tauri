@@ -1,0 +1,10 @@
+{
+  "id": "hello-world",
+  "name": "你好世界",
+  "version": "1.0.0",
+  "author": "InfoBoard Team",
+  "description": "最简单的外部插件示例",
+  "section": "info",
+  "icon": "👋",
+  "entry": "index.tsx"
+}
