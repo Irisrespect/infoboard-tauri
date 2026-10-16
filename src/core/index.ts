@@ -5,10 +5,24 @@
  */
 
 // 类型定义
-export type { PluginManifest, PluginComponentProps, InfoBoardPlugin } from './types'
+export type {
+  PluginManifest,
+  PluginComponentProps,
+  InfoBoardPlugin,
+  ExternalPluginMeta,
+} from './types'
 
 // 插件注册表
 export { PluginRegistry, pluginRegistry } from './PluginRegistry'
 
 // 插件宿主
-export { PluginHost, initPluginSystem, usePluginSystem, usePlugins } from './PluginHost'
+export {
+  PluginHost,
+  initPluginSystem,
+  reloadPluginSystem,
+  usePluginSystem,
+  usePlugins,
+} from './PluginHost'
+
+// 插件加载器
+export { PluginLoader, pluginLoader } from './PluginLoader'

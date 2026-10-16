@@ -49,11 +49,37 @@ export class PluginRegistry {
   }
 
   /**
+   * 获取指定插件（别名方法）
+   * @param id - 插件唯一标识
+   * @returns 插件实例或 undefined
+   */
+  get(id: string): InfoBoardPlugin | undefined {
+    return this.getPlugin(id)
+  }
+
+  /**
    * 获取所有已注册插件
    * @returns 插件数组
    */
   getAllPlugins(): InfoBoardPlugin[] {
     return Array.from(this.plugins.values())
+  }
+
+  /**
+   * 获取所有已注册插件（别名方法）
+   * @returns 插件数组
+   */
+  getAll(): InfoBoardPlugin[] {
+    return this.getAllPlugins()
+  }
+
+  /**
+   * 获取指定区域的插件（别名方法）
+   * @param section - 区域类型
+   * @returns 该区域的插件数组
+   */
+  getBySection(section: 'info' | 'tool'): InfoBoardPlugin[] {
+    return this.getPluginsBySection(section)
   }
 
   /**

@@ -11,3 +11,10 @@ src-tauri/target/
 .agents/
 AGENTS.md
 CONTEXT.md
+
+# 外部插件（用户自己添加的不上传，但保留示例和模板）
+plugins/*
+!plugins/hello-world/
+!plugins/system-info/
+!plugins/.plugin-template/
+!plugins/.gitkeep

@@ -1,0 +1,12 @@
+{
+  "id": "my-plugin",
+  "name": "我的插件",
+  "version": "1.0.0",
+  "author": "Your Name",
+  "description": "插件描述",
+  "section": "info",
+  "icon": "🔧",
+  "entry": "index.tsx",
+  "permissions": [],
+  "tauriCommands": []
+}

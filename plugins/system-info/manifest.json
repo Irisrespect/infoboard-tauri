@@ -1,0 +1,10 @@
+{
+  "id": "system-info",
+  "name": "系统信息",
+  "version": "1.0.0",
+  "author": "InfoBoard Team",
+  "description": "显示系统信息和性能指标",
+  "section": "info",
+  "icon": "💻",
+  "entry": "index.tsx"
+}
