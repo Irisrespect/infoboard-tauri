@@ -17,6 +17,33 @@
 | **翻译**        | 小牛翻译 API                                                                        |
 | **截图**        | 全屏捕获、区域框选、剪贴板；集成 RapidOCR 文字识别                                  |
 | **设置**        | 主题色、开机自启、API Key、邮箱账户、插件开关                                       |
+| **🔌 外部插件** | 热插拔插件系统，无需修改核心代码即可添加新功能                                       |
+
+## 插件系统
+
+InfoBoard 支持**外部插件热加载**，开发者可以编写独立插件包而无需修改核心代码。
+
+### 快速开始
+
+1. 在 `plugins/` 目录创建插件文件夹
+2. 编写 `manifest.json` 和入口文件
+3. 重启应用自动加载
+
+**示例：** 查看 [`plugins/hello-world/`](plugins/hello-world/) 示例插件
+
+**完整教程：** 阅读 [插件开发指南](docs/PLUGIN_TUTORIAL.md)
+
+### 插件目录结构
+
+```
+plugins/
+├── hello-world/          # 示例插件
+│   ├── manifest.json     # 插件元数据
+│   └── index.tsx         # 入口文件
+└── your-plugin/          # 你的插件
+    ├── manifest.json
+    └── index.tsx
+```
 
 ## 技术栈
 
@@ -84,15 +111,19 @@ src-tauri/target/release/infoboard-tauri.exe
 ```
 ├── src/                      # 前端
 │   ├── components/           # 标题栏、分区布局、截图浮层等
-│   ├── core/                 # 插件宿主、注册表、Toast、事件总线
-│   ├── plugins/              # 业务插件（天气、待办、灵动岛、截图…）
+│   ├── core/                 # 插件宿主、注册表、加载器、Toast、事件总线
+│   ├── plugins/              # 内置插件（天气、待办、灵动岛、截图…）
 │   ├── stores/               # 全局 Zustand
 │   └── tauri-shim.ts         # 兼容层（invoke 封装）
 ├── src-tauri/                # Rust 后端
 │   ├── src/core/             # 窗口、托盘、自启、定位、Toast
-│   ├── src/plugins/          # 各插件 command 实现
+│   ├── src/plugins/          # 各插件 command 实现 + loader（插件扫描器）
 │   ├── binaries/rapidocr/    # OCR 引擎与模型（随仓库提供）
 │   └── capabilities/         # Tauri 权限
+├── plugins/                  # 外部插件目录（用户可添加自定义插件）
+│   └── hello-world/          # 示例插件
+├── docs/                     # 文档
+│   └── PLUGIN_TUTORIAL.md    # 插件开发教程
 ├── package.json
 └── vite.config.ts
 ```
