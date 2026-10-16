@@ -1,0 +1,23 @@
+{
+  "name": "infoboard-plugin-template",
+  "version": "1.0.0",
+  "description": "InfoBoard 插件开发模板",
+  "main": "index.tsx",
+  "scripts": {
+    "build": "echo '插件已准备好，直接复制到 plugins/ 目录即可'"
+  },
+  "keywords": [
+    "infoboard",
+    "plugin"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "peerDependencies": {
+    "react": "^19.0.0",
+    "@tauri-apps/api": "^2.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "typescript": "^5.0.0"
+  }
+}
