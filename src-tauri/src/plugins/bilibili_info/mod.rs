@@ -187,7 +187,7 @@ async fn search_video(
     let body: SearchResponse = serde_json::from_str(&text).map_err(|e| {
         format!(
             "B站搜索响应解析失败: {e}; body={}",
-            &text[..text.len().min(200)]
+            crate::core::text::truncate_bytes(&text, 200)
         )
     })?;
 

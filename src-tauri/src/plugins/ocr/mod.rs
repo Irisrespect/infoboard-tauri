@@ -287,7 +287,7 @@ fn worker_loop(
                         continue;
                     }
                     if !line.starts_with('{') {
-                        log::info!("[OCR] 非 JSON: {}", &line[..line.len().min(200)]);
+                        log::info!("[OCR] 非 JSON: {}", crate::core::text::truncate_bytes(&line, 200));
                         continue;
                     }
                     match serde_json::from_str::<OcrResponse>(&line) {
