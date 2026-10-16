@@ -9,34 +9,21 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import type { Settings, ThemeMode, UseSettingsReturn } from './types'
+import { sanitizeSettings } from './settingsStorage'
 
 const STORAGE_KEY = 'infoboard-settings'
 
-/** 默认设置 */
-const DEFAULT_SETTINGS: Settings = {
-  weatherCity: '101010100',
-  weatherCityName: '北京',
-  weatherApiKey: '',
-  weatherApiHost: '',
-  theme: 'system',
-  disabledPlugins: [],
-  autoStart: false,
-}
-
 /**
- * 从 localStorage 加载设置
+ * 从 localStorage 加载设置（经过类型校验，脏数据回退默认值）
  */
 function loadSettings(): Settings {
   try {
     const stored = localStorage.getItem(STORAGE_KEY)
-    if (stored) {
-      const parsed = JSON.parse(stored)
-      return { ...DEFAULT_SETTINGS, ...parsed }
-    }
+    if (stored) return sanitizeSettings(JSON.parse(stored))
   } catch {
     // 解析失败使用默认值
   }
-  return { ...DEFAULT_SETTINGS }
+  return sanitizeSettings(null)
 }
 
 /**
