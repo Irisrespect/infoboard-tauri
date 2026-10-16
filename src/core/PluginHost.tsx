@@ -2,13 +2,14 @@
  * 插件宿主
  *
  * 负责：
- * 1. 加载并注册所有插件
+ * 1. 加载并注册所有插件（内置 + 外部）
  * 2. 根据 section 字段分配到信息区/工具区
  * 3. 渲染每个插件的 Component
  */
 
 import { useEffect, useState } from 'react'
 import { pluginRegistry } from './PluginRegistry'
+import { pluginLoader } from './PluginLoader'
 import type { InfoBoardPlugin } from './types'
 
 const SETTINGS_KEY = 'infoboard-settings'
@@ -51,10 +52,31 @@ export function initPluginSystem(): Promise<void> {
 }
 
 /**
- * 导入并注册所有插件
- * 新增插件时只需在 plugins/index.ts 中添加即可
+ * 重新加载插件系统
+ *
+ * 用于插件热重载场景
+ */
+export async function reloadPluginSystem(): Promise<void> {
+  console.log('[PluginHost] 重新加载插件系统...')
+  initPromise = null
+  await initPluginSystem()
+}
+
+/**
+ * 导入并注册所有插件（内置 + 外部）
  */
 async function importPlugins(): Promise<void> {
+  // 1. 加载内置插件
+  await importBuiltinPlugins()
+
+  // 2. 加载外部插件
+  await importExternalPlugins()
+}
+
+/**
+ * 导入并注册内置插件
+ */
+async function importBuiltinPlugins(): Promise<void> {
   try {
     // 动态导入插件入口
     const pluginsModule = await import('../plugins')
@@ -64,21 +86,46 @@ async function importPlugins(): Promise<void> {
     // 2. 导出单个插件：export const weatherPlugin: InfoBoardPlugin = {...}
     if (pluginsModule.plugins && Array.isArray(pluginsModule.plugins)) {
       // 方式1：数组导出
-      pluginRegistry.registerAll(pluginsModule.plugins)
+      const builtinPlugins = pluginsModule.plugins.map((p) => ({
+        ...p,
+        type: 'builtin' as const,
+      }))
+      pluginRegistry.registerAll(builtinPlugins)
     } else {
       // 方式2：逐个导出
       const allExports = Object.values(pluginsModule)
-      const plugins: InfoBoardPlugin[] = allExports.filter(
-        (item) =>
-          item !== null && typeof item === 'object' && 'manifest' in item && 'Component' in item
-      ) as InfoBoardPlugin[]
+      const plugins: InfoBoardPlugin[] = allExports
+        .filter(
+          (item) =>
+            item !== null && typeof item === 'object' && 'manifest' in item && 'Component' in item
+        )
+        .map((p) => ({
+          ...(p as InfoBoardPlugin),
+          type: 'builtin' as const,
+        }))
       pluginRegistry.registerAll(plugins)
     }
 
-    console.log(`[PluginHost] 已加载 ${pluginRegistry.size} 个插件`)
+    console.log(`[PluginHost] 已加载 ${pluginRegistry.size} 个内置插件`)
   } catch (error) {
     // plugins/index.ts 可能还不存在，这是正常的
-    console.warn('[PluginHost] 加载插件失败或插件目录为空:', error)
+    console.warn('[PluginHost] 加载内置插件失败或插件目录为空:', error)
+  }
+}
+
+/**
+ * 导入并注册外部插件
+ */
+async function importExternalPlugins(): Promise<void> {
+  try {
+    const externalPlugins = await pluginLoader.loadExternalPlugins()
+
+    if (externalPlugins.length > 0) {
+      pluginRegistry.registerAll(externalPlugins)
+      console.log(`[PluginHost] 已加载 ${externalPlugins.length} 个外部插件`)
+    }
+  } catch (error) {
+    console.error('[PluginHost] 加载外部插件失败:', error)
   }
 }
 
