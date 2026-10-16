@@ -114,6 +114,7 @@ pub fn run() {
             // Issue 16: IMAP 邮件
             // 外部插件加载器
             plugins::loader::scan_external_plugins,
+            plugins::loader::read_external_plugin_source,
         ])
         .build(tauri::generate_context!())
         .expect("启动 InfoBoard 失败");
