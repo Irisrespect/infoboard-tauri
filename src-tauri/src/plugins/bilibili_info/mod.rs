@@ -107,26 +107,40 @@ fn normalize_for_match(s: &str) -> String {
         .to_lowercase()
 }
 
+/// 条目可用：必须有非空 bvid（后续要用它取详情）
+fn has_bvid(item: &SearchResultItem) -> bool {
+    item.bvid.as_deref().is_some_and(|b| !b.is_empty())
+}
+
 /// 从搜索结果中找最佳匹配（复刻 Electron findBestMatch）
+///
+/// - 只考虑带 bvid 的条目，否则选中后取详情必失败
+/// - 空标题不参与包含匹配：`x.contains("")` 恒为真，会让坏条目抢走匹配
 fn find_best_match<'a>(
     results: &'a [SearchResultItem],
     target_title: &str,
 ) -> Option<&'a SearchResultItem> {
-    if results.is_empty() {
+    let usable: Vec<&SearchResultItem> = results.iter().filter(|r| has_bvid(r)).collect();
+    if usable.is_empty() {
         return None;
     }
 
     let target = normalize_for_match(target_title);
 
-    for r in results {
-        let r_title = normalize_for_match(r.title.as_deref().unwrap_or(""));
-        if r_title == target || r_title.contains(&target) || target.contains(&r_title) {
-            return Some(r);
+    if !target.is_empty() {
+        for r in &usable {
+            let r_title = normalize_for_match(r.title.as_deref().unwrap_or(""));
+            if r_title.is_empty() {
+                continue;
+            }
+            if r_title == target || r_title.contains(&target) || target.contains(&r_title) {
+                return Some(r);
+            }
         }
     }
 
-    // 无精确匹配，返回第一个
-    Some(&results[0])
+    // 无精确匹配，返回第一个可用条目
+    Some(usable[0])
 }
 
 // ─── HTTP ───
@@ -342,6 +356,50 @@ mod tests {
         ];
         let best = find_best_match(&results, "测试视频A").unwrap();
         assert_eq!(best.bvid.as_deref(), Some("BV1xx"));
+    }
+
+    /// 回归：空标题条目（target.contains("") 恒真）不能抢走匹配
+    #[test]
+    fn test_find_best_match_skips_empty_title() {
+        let results = vec![
+            SearchResultItem { bvid: None, title: Some("".into()) },
+            SearchResultItem { bvid: Some("BV1ok".into()), title: Some("测试视频A".into()) },
+        ];
+        let best = find_best_match(&results, "测试视频A").unwrap();
+        assert_eq!(best.bvid.as_deref(), Some("BV1ok"));
+    }
+
+    /// 回归：纯 HTML/空白标题归一化后为空，同样不能参与包含匹配
+    #[test]
+    fn test_find_best_match_skips_blank_after_normalize() {
+        let results = vec![
+            SearchResultItem { bvid: Some("BVbad".into()), title: Some("<em></em>  ".into()) },
+            SearchResultItem { bvid: Some("BV1ok".into()), title: Some("测试视频A".into()) },
+        ];
+        let best = find_best_match(&results, "测试视频A").unwrap();
+        assert_eq!(best.bvid.as_deref(), Some("BV1ok"));
+    }
+
+    /// 回归：没有 bvid 的条目即使标题匹配也不可用（后续取详情必失败）
+    #[test]
+    fn test_find_best_match_skips_missing_bvid() {
+        let results = vec![
+            SearchResultItem { bvid: None, title: Some("测试视频A".into()) },
+            SearchResultItem { bvid: Some("BV1ok".into()), title: Some("测试视频A 高清".into()) },
+        ];
+        let best = find_best_match(&results, "测试视频A").unwrap();
+        assert_eq!(best.bvid.as_deref(), Some("BV1ok"));
+    }
+
+    /// 回归：目标标题为空时不应"匹配"任何条目，退回首个可用条目
+    #[test]
+    fn test_find_best_match_empty_target_falls_back_to_first_usable() {
+        let results = vec![
+            SearchResultItem { bvid: None, title: Some("甲".into()) },
+            SearchResultItem { bvid: Some("BV1ok".into()), title: Some("乙".into()) },
+        ];
+        let best = find_best_match(&results, "").unwrap();
+        assert_eq!(best.bvid.as_deref(), Some("BV1ok"));
     }
 
     #[test]
