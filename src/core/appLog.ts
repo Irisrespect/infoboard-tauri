@@ -23,7 +23,8 @@ type Listener = () => void
 
 const MAX_ENTRIES = 800
 let seq = 0
-const entries: LogEntry[] = []
+// 不可变快照：每次变更都生成新数组，useSyncExternalStore 靠引用变化判断是否重渲染
+let entries: readonly LogEntry[] = []
 const listeners = new Set<Listener>()
 let installed = false
 let backendListening = false
@@ -87,10 +88,10 @@ function push(level: LogLevel, args: unknown[], source: 'web' | 'rust' = 'web') 
     args: args.map(stringifyArg),
     source,
   }
-  entries.push(entry)
-  if (entries.length > MAX_ENTRIES) {
-    entries.splice(0, entries.length - MAX_ENTRIES)
-  }
+  entries =
+    entries.length >= MAX_ENTRIES
+      ? [...entries.slice(entries.length - MAX_ENTRIES + 1), entry]
+      : [...entries, entry]
   // 重要级别同步落盘（后端文件）
   if (level === 'error' || level === 'warn' || source === 'rust') {
     void invoke('log_append_file', { level, message: `[${source}] ${message}` }).catch(() => {})
@@ -158,7 +159,7 @@ export function getLogFilePath(): string | null {
 }
 
 export function clearLogEntries(): void {
-  entries.length = 0
+  entries = []
   notify()
 }
 
