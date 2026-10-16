@@ -104,27 +104,12 @@ fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
-/// 从候选值里挑出第一个非空代理地址（纯函数，便于测试）
-fn pick_proxy<I: IntoIterator<Item = Option<String>>>(candidates: I) -> Option<String> {
-    candidates
-        .into_iter()
-        .flatten()
-        .map(|p| p.trim().to_string())
-        .find(|p| !p.is_empty())
-}
-
 /// 只认用户显式配置的环境变量代理；没有就直连。
 /// 不再硬编码 127.0.0.1:7897/7890：没跑 Clash 的机器上会必然 Connection refused，
 /// 端口被别的服务占用时请求还会被转发给未知进程。
+/// 逻辑统一在 `core::net`（原先这里是 `http_proxy.rs` 的重复实现，测试也在那边）。
 fn proxy_from_env() -> Option<String> {
-    pick_proxy([
-        std::env::var("HTTPS_PROXY").ok(),
-        std::env::var("https_proxy").ok(),
-        std::env::var("HTTP_PROXY").ok(),
-        std::env::var("http_proxy").ok(),
-        std::env::var("ALL_PROXY").ok(),
-        std::env::var("all_proxy").ok(),
-    ])
+    crate::core::net::env_proxy()
 }
 
 fn build_client() -> Result<reqwest::Client, String> {
@@ -394,15 +379,19 @@ mod tests {
 
     #[test]
     fn pick_proxy_uses_first_non_empty() {
-        let got = pick_proxy([None, Some("  ".into()), Some("http://p:1".into()), Some("http://q:2".into())]);
-        assert_eq!(got.as_deref(), Some("http://p:1"));
+        // 代理选择的纯函数已统一到 core::net，这里只做冒烟检查
+        assert_eq!(
+            crate::core::net::pick_proxy([None, Some("  ".into()), Some("http://p:1".into())])
+                .as_deref(),
+            Some("http://p:1")
+        );
     }
 
     /// 回归：没有任何环境变量代理时必须直连，不能凭空返回本地 Clash 端口
     #[test]
     fn pick_proxy_none_means_direct() {
-        assert_eq!(pick_proxy([None, None, Some("".into())]), None);
-        assert_eq!(pick_proxy(Vec::<Option<String>>::new()), None);
+        assert_eq!(crate::core::net::pick_proxy([None, None, Some("".into())]), None);
+        assert_eq!(crate::core::net::pick_proxy(Vec::<Option<String>>::new()), None);
     }
 
     #[test]

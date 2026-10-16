@@ -1,7 +1,8 @@
 //! 前端 HTTP 代理（绕过 WebView CSP）
 //!
 //! - 仅允许白名单域名
-//! - 支持环境变量代理，并在直连失败时尝试本机常见代理端口
+//! - 代理策略见 `core::net`：只用环境变量代理（有则优先、失败后直连兜底），
+//!   不再硬编码本机常见代理端口
 
 use std::time::Duration;
 use tauri::AppHandle;
@@ -17,30 +18,11 @@ const ALLOWED_HOST_SUFFIXES: &[&str] = &[
     "open-meteo.com",
 ];
 
-/// 本机常见代理（Clash / v2rayN 等）
-const LOCAL_PROXY_CANDIDATES: &[&str] = &[
-    "http://127.0.0.1:7897",
-    "http://127.0.0.1:7890",
-    "http://127.0.0.1:10809",
-    "http://127.0.0.1:1080",
-];
-
 fn host_allowed(host: &str) -> bool {
     let h = host.to_ascii_lowercase();
     ALLOWED_HOST_SUFFIXES
         .iter()
         .any(|suf| h == *suf || h.ends_with(&format!(".{suf}")))
-}
-
-fn env_proxy() -> Option<String> {
-    std::env::var("HTTPS_PROXY")
-        .or_else(|_| std::env::var("https_proxy"))
-        .or_else(|_| std::env::var("HTTP_PROXY"))
-        .or_else(|_| std::env::var("http_proxy"))
-        .or_else(|_| std::env::var("ALL_PROXY"))
-        .or_else(|_| std::env::var("all_proxy"))
-        .ok()
-        .filter(|s| !s.trim().is_empty())
 }
 
 fn build_client(proxy: Option<&str>) -> Result<reqwest::Client, String> {
@@ -111,20 +93,9 @@ pub async fn http_proxy_get(app: AppHandle, url: String) -> Result<String, Strin
         return Err(format!("域名不在白名单: {host}"));
     }
 
-    // 1) 环境变量代理优先
-    // 2) 无环境变量则先直连
-    // 3) 直连失败再试本机常见代理
-    let mut attempts: Vec<Option<String>> = Vec::new();
-    if let Some(p) = env_proxy() {
-        attempts.push(Some(p));
-    }
-    attempts.push(None); // 直连
-    for p in LOCAL_PROXY_CANDIDATES {
-        let s = p.to_string();
-        if !attempts.iter().any(|a| a.as_deref() == Some(s.as_str())) {
-            attempts.push(Some(s));
-        }
-    }
+    // 尝试顺序由 core::net 决定：环境变量代理优先（有的话），否则只直连。
+    // 不再追加本机常见代理端口。
+    let attempts: Vec<Option<String>> = crate::core::net::build_attempts(crate::core::net::env_proxy());
 
     let mut last_err = String::from("未知错误");
     for (i, proxy) in attempts.iter().enumerate() {

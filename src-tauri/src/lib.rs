@@ -6,6 +6,7 @@ mod core {
     pub mod http_proxy;
     pub mod autostart;
     pub mod geolocate;
+    pub mod net;
     pub mod text;
     pub mod toast;
     pub mod tray;
