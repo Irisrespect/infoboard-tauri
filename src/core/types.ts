@@ -28,6 +28,15 @@ export interface PluginManifest {
 
   /** 自定义样式覆盖（可选） */
   style?: Record<string, string>
+
+  /** 版本号（外部插件必填） */
+  version?: string
+
+  /** 作者信息（外部插件可选） */
+  author?: string
+
+  /** 插件描述（外部插件可选） */
+  description?: string
 }
 
 // ─── 功能逻辑层 ─── 只管功能，不管外观
@@ -53,4 +62,31 @@ export interface InfoBoardPlugin {
 
   /** 插件销毁钩子（可选） */
   onDestroy?: () => void
+
+  /** 插件类型：builtin(内置) 或 external(外部) */
+  type?: 'builtin' | 'external'
+
+  /** 插件来源路径（外部插件有效） */
+  sourcePath?: string
+}
+
+// ─── 外部插件元数据 ───
+export interface ExternalPluginMeta {
+  /** 插件唯一标识 */
+  id: string
+
+  /** 插件文件系统路径 */
+  path: string
+
+  /** 入口文件路径 */
+  entryPath: string
+
+  /** manifest.json 内容 */
+  manifest: PluginManifest
+
+  /** 声明的权限列表 */
+  permissions?: string[]
+
+  /** Tauri 命令列表（可选） */
+  tauriCommands?: string[]
 }
