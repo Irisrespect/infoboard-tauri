@@ -41,6 +41,9 @@ pub struct OcrEngine {
     engine_path: PathBuf,
     state: Arc<Mutex<EngineState>>,
     req_tx: Mutex<Option<Sender<PendingRequest>>>,
+    /// 串行化 ensure_started：否则"检查未启动 → 启动"之间并发请求会重复拉起引擎，
+    /// 并且互相 shutdown 对方刚启动的进程
+    start_lock: Mutex<()>,
 }
 
 impl OcrEngine {
@@ -52,6 +55,21 @@ impl OcrEngine {
                 ready: false,
             })),
             req_tx: Mutex::new(None),
+            start_lock: Mutex::new(()),
+        }
+    }
+
+    /// 指定引擎路径构造（测试用：配合假引擎验证启动并发行为）
+    #[cfg(test)]
+    fn with_engine_path(engine_path: PathBuf) -> Self {
+        Self {
+            engine_path,
+            state: Arc::new(Mutex::new(EngineState {
+                process: None,
+                ready: false,
+            })),
+            req_tx: Mutex::new(None),
+            start_lock: Mutex::new(()),
         }
     }
 
@@ -80,6 +98,9 @@ impl OcrEngine {
 
     /// 启动进程与读写线程，并阻塞等待 init completed（有截止时间）
     fn ensure_started(&self) -> Result<(), String> {
+        // 同一时刻只允许一个线程负责启动；其余线程在此排队，
+        // 拿到锁后重新检查状态（已被前一个线程启动好就直接返回）
+        let _start_guard = self.start_lock.lock().unwrap_or_else(|e| e.into_inner());
         {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             let has_tx = self.req_tx.lock().unwrap_or_else(|e| e.into_inner()).is_some();
@@ -420,6 +441,40 @@ pub async fn ocr_engine_status(state: tauri::State<'_, OcrEngine>) -> Result<Val
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 回归：并发请求不应重复拉起引擎（TOCTOU）。
+    /// 需要假引擎：设置 FAKE_OCR_EXE 指向它，FAKE_OCR_LOG 指向启动记录文件；未设置则跳过。
+    #[test]
+    fn concurrent_requests_start_engine_once() {
+        let (exe, log) = match (std::env::var("FAKE_OCR_EXE"), std::env::var("FAKE_OCR_LOG")) {
+            (Ok(e), Ok(l)) => (PathBuf::from(e), PathBuf::from(l)),
+            _ => {
+                eprintln!("跳过：未设置 FAKE_OCR_EXE / FAKE_OCR_LOG");
+                return;
+            }
+        };
+        let _ = std::fs::remove_file(&log);
+        let engine = Arc::new(OcrEngine::with_engine_path(exe));
+
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                let e = Arc::clone(&engine);
+                thread::spawn(move || e.recognize("aGk=".into()))
+            })
+            .collect();
+        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        engine.shutdown();
+
+        let launches = std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .count();
+        assert_eq!(launches, 1, "引擎被重复拉起 {launches} 次");
+        for r in results {
+            assert!(r.is_ok(), "并发请求不应因互相杀进程而失败: {r:?}");
+        }
+    }
 
     #[test]
     fn test_ocr_response_parse_success() {
