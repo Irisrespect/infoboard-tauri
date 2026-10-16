@@ -376,6 +376,14 @@ export function useWeather(): UseWeatherReturn {
             : String((hourlyRes as PromiseRejectedResult).reason)
         )
 
+        // allSettled 会吞掉取消：被新请求取代时直接交给外层 catch 的 AbortError 分支，
+        // 否则会把"已取消"误报成"实时天气请求失败"
+        for (const r of [nowRes, dailyRes, hourlyRes]) {
+          if (r.status === 'rejected' && r.reason instanceof DOMException && r.reason.name === 'AbortError') {
+            throw r.reason
+          }
+        }
+
         if (nowRes.status !== 'fulfilled') {
           const reason = String(nowRes.reason || '')
           if (!key) {
