@@ -7,6 +7,7 @@ import { installLogConsole } from './core/appLog'
 import { initTauriShim } from './tauri-shim'
 import { ScreenshotOverlayWindow } from './components/ScreenshotOverlayWindow'
 import './styles/globals.css'
+import { toggleNativeDevtools } from './core/devtools'
 
 // 尽早拦截 console，确保后续插件日志都能进面板
 installLogConsole()
@@ -41,9 +42,7 @@ function Root() {
         e.preventDefault()
         // 打包后优先打开应用内日志台；同时尝试原生 DevTools（dev 可用）
         setLogOpen((v) => !v)
-        import('@tauri-apps/api/core').then(({ invoke }) => {
-          invoke('plugin:core|internal_toggle_devtools').catch(() => {})
-        })
+        void toggleNativeDevtools()
       }
     }
     window.addEventListener('keydown', onKeyDown)
