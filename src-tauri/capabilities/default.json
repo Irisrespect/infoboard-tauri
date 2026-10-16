@@ -1,6 +1,7 @@
 {
   "identifier": "default",
   "description": "Default capability for main and screenshot-overlay windows",
+  "windows": ["main", "screenshot-overlay"],
   "permissions": [
     "core:default",
     "core:event:default",

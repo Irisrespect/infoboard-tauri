@@ -13,6 +13,15 @@ rust-version = "1.80"
 name = "infoboard_tauri_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+# 生产构建开关（Tauri 官方模板同名特性，不要删）。
+# tauri 的 build.rs 用 `dev = !custom-protocol` 判断：不启用它，即使
+# `cargo build --release` 出来的也是"开发态"二进制——仍然去连 app.devUrl
+# （localhost:5173）而不是打包进去的 dist/。`tauri build` 会自动带上这个特性，
+# 但直接用 cargo 打包时必须自己加：
+#   cargo build --release --features custom-protocol
+custom-protocol = ["tauri/custom-protocol"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
