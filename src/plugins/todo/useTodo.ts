@@ -142,14 +142,6 @@ export function useTodo(): UseTodoReturn {
     setTodos((prev) => prev.filter((todo) => todo.id !== id))
   }, [])
 
-  /** 编辑待办内容 */
-  const editTodo = useCallback((id: string, text: string) => {
-    const trimmed = text.trim()
-    if (!trimmed) return
-
-    setTodos((prev) => prev.map((todo) => (todo.id === id ? { ...todo, text: trimmed } : todo)))
-  }, [])
-
   /** 清除所有已完成 */
   const clearCompleted = useCallback(() => {
     setTodos((prev) => prev.filter((todo) => !todo.completed))
@@ -186,7 +178,6 @@ export function useTodo(): UseTodoReturn {
     addTodo,
     toggleTodo,
     deleteTodo,
-    editTodo,
     clearCompleted,
     filter,
     setFilter,

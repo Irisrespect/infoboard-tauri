@@ -33,8 +33,6 @@ export interface UseTodoReturn {
   toggleTodo: (id: string) => void
   /** 删除待办 */
   deleteTodo: (id: string) => void
-  /** 编辑待办内容 */
-  editTodo: (id: string, text: string) => void
   /** 清除所有已完成 */
   clearCompleted: () => void
   /** 当前筛选 */

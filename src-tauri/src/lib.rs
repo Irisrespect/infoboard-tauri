@@ -1,4 +1,4 @@
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 use tauri_plugin_window_state::{WindowExt, StateFlags};
 
 mod core {
@@ -9,7 +9,6 @@ mod core {
     pub mod net;
     pub mod secrets;
     pub mod text;
-    pub mod toast;
     pub mod tray;
     pub mod window;
 }
@@ -21,11 +20,6 @@ mod plugins {
     pub mod screenshot;
     pub mod ocr;
     pub mod loader;
-}
-
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("你好, {}! 欢迎使用 InfoBoard", name)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -50,12 +44,10 @@ pub fn run() {
                 .with_handler(|app, _shortcut, event| {
                     if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
                         println!("[快捷键] Ctrl+Shift+I 触发");
-                        // 切换主窗口显隐
+                        // 切换主窗口显隐（show/hide 内部会 emit window:visibility 通知前端）
                         if let Some(window) = app.get_webview_window("main") {
                             core::window::toggle_main_window(&window, "快捷键");
                         }
-                        // 通知前端
-                        let _ = app.emit("window_toggle_visibility", ());
                     }
                 })
                 .build(),
@@ -83,7 +75,6 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            greet,
             core::app_log::log_get_path,
             core::app_log::log_append_file,
             core::http_proxy::http_proxy_get,
