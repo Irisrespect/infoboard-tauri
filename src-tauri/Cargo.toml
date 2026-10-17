@@ -55,6 +55,6 @@ tauri-plugin-single-instance = "2"
 
 # P1-a: 凭据存储（Windows 凭据管理器）。
 # 固定 3.6.3：4.x 改了架构（keyring-core + 独立 store crate），且要求 rustc >= 1.88，
-# 与 Cargo.toml 声明的 rust-version = "1.77" 不符；3.6.3 的 MSRV 是 1.75。
+# 与本文件声明的 rust-version = "1.80" 不符；3.6.3 的 MSRV 是 1.75。
 # 平台后端必须显式开启，windows-native = Windows Credential Manager。
 keyring = { version = "=3.6.3", features = ["windows-native"] }
