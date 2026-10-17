@@ -30,6 +30,7 @@ PowerShell 用户：`cd "$env:APPDATA\com.infoboard.tauri\plugins"`。
 ```
 
 **重要字段说明:**
+
 - `id`: 必须唯一，推荐全小写加连字符
 - `section`: `"info"` 放在信息区，`"tool"` 放在工具区
 - `entry`: 入口文件，相对于插件目录
@@ -78,9 +79,7 @@ Component: () => {
   return (
     <div style={{ padding: '20px' }}>
       <p>点击次数: {count}</p>
-      <button onClick={() => setCount(count + 1)}>
-        点击我
-      </button>
+      <button onClick={() => setCount(count + 1)}>点击我</button>
     </div>
   )
 }
@@ -97,8 +96,8 @@ Component: () => {
 
   useEffect(() => {
     invoke('some_rust_command')
-      .then(result => setData(result))
-      .catch(err => console.error(err))
+      .then((result) => setData(result))
+      .catch((err) => console.error(err))
   }, [])
 
   return <div>{data ? JSON.stringify(data) : '加载中...'}</div>
@@ -111,12 +110,8 @@ Component: () => {
 Component: () => {
   return (
     <div className="p-6 bg-surface-1 rounded-xl shadow-lg">
-      <h2 className="text-xl font-bold text-text-primary mb-2">
-        标题
-      </h2>
-      <p className="text-text-muted">
-        使用 Tailwind 类名快速构建 UI
-      </p>
+      <h2 className="text-xl font-bold text-text-primary mb-2">标题</h2>
+      <p className="text-text-muted">使用 Tailwind 类名快速构建 UI</p>
     </div>
   )
 }

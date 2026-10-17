@@ -9,18 +9,21 @@
 ### 1. 核心架构 (3 个提交)
 
 **前端加载器 (`PluginLoader.ts`)**
+
 - 调用 Rust 扫描 `plugins/` 目录
 - 动态导入外部插件模块
 - 验证插件格式合法性
 - 支持热重载
 
 **Rust 扫描器 (`loader.rs`)**
+
 - 扫描 `plugins/` 目录结构
 - 解析 `manifest.json` 并验证字段
 - 返回插件元数据给前端
 - 自动创建 `plugins/` 目录
 
 **类型定义扩展**
+
 - `ExternalPluginMeta` 接口
 - 扩展 `PluginManifest` 支持版本、作者、描述
 - `InfoBoardPlugin` 新增 `type` 和 `sourcePath`
@@ -28,6 +31,7 @@
 ### 2. 宿主改造 (1 个提交)
 
 **PluginHost 重构**
+
 - 拆分 `importBuiltinPlugins()` 和 `importExternalPlugins()`
 - 内置插件标记 `type: 'builtin'`
 - 外部插件标记 `type: 'external'`
@@ -36,11 +40,13 @@
 ### 3. 开发工具 (3 个提交)
 
 **插件模板 (`.plugin-template/`)**
+
 - 完整的目录结构模板
 - 包含注释的示例代码
 - package.json 和 README
 
 **示例插件**
+
 - `hello-world/` - 最简单示例
 - `system-info/` - 定时更新和状态管理
 
@@ -129,6 +135,7 @@ docs/
 ## 已完成提交
 
 共 **13 次提交**，划分为：
+
 - 3 次 feat: 核心功能实现
 - 6 次 docs: 文档完善
 - 3 次 chore: 配置和优化

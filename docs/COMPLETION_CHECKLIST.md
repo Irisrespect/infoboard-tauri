@@ -131,6 +131,7 @@
 ## 📦 交付物清单
 
 ### 源代码
+
 - [x] `src/core/PluginLoader.ts` (154 行)
 - [x] `src-tauri/src/plugins/loader.rs` (191 行)
 - [x] `src/core/types.ts` (扩展 36 行)
@@ -138,13 +139,16 @@
 - [x] `src/core/PluginRegistry.ts` (增强 26 行)
 
 ### 插件模板
+
 - [x] `plugins/.plugin-template/` (4 个文件)
 
 ### 示例插件
+
 - [x] `plugins/hello-world/` (2 个文件)
 - [x] `plugins/system-info/` (2 个文件)
 
 ### 文档
+
 - [x] `docs/PLUGIN_QUICKSTART.md` (179 行)
 - [x] `docs/PLUGIN_TUTORIAL.md` (204 行)
 - [x] `docs/PLUGIN_API.md` (484 行)
@@ -152,6 +156,7 @@
 - [x] `CHANGELOG.md` (47 行)
 
 ### 配置
+
 - [x] `.gitignore` 更新
 - [x] `README.md` 更新
 
@@ -168,16 +173,19 @@
 ## 🚀 下一步建议
 
 ### 短期优化
+
 - [ ] 添加插件管理 UI（启用/禁用/刷新）
 - [ ] 实现运行时权限检查
 - [ ] 添加插件错误边界
 
 ### 中期扩展
+
 - [ ] 插件依赖管理
 - [ ] 插件配置持久化
 - [ ] 插件间通信机制
 
 ### 长期规划
+
 - [ ] 在线插件市场
 - [ ] 插件签名验证
 - [ ] 沙箱隔离增强

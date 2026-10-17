@@ -10,16 +10,16 @@
 
 ```typescript
 interface PluginManifest {
-  id: string                    // 唯一标识（必填）
-  name: string                  // 显示名称（必填）
-  section: 'info' | 'tool'      // 所属区域（必填）
-  icon: string                  // 图标 emoji 或路径（必填）
-  badge?: number | string       // 角标数字或文本
-  color?: string                // 主题色（CSS 颜色值）
+  id: string // 唯一标识（必填）
+  name: string // 显示名称（必填）
+  section: 'info' | 'tool' // 所属区域（必填）
+  icon: string // 图标 emoji 或路径（必填）
+  badge?: number | string // 角标数字或文本
+  color?: string // 主题色（CSS 颜色值）
   style?: Record<string, string> // 自定义 CSS 样式
-  version?: string              // 版本号
-  author?: string               // 作者信息
-  description?: string          // 插件描述
+  version?: string // 版本号
+  author?: string // 作者信息
+  description?: string // 插件描述
 }
 ```
 
@@ -45,7 +45,7 @@ interface InfoBoardPlugin {
 ```typescript
 interface PluginComponentProps {
   manifest: PluginManifest
-  expanded?: boolean  // 工具区插件是否展开
+  expanded?: boolean // 工具区插件是否展开
 }
 ```
 
@@ -332,6 +332,7 @@ console.warn('[MyPlugin] 警告:', message)
 ### 浏览器开发者工具
 
 按 F12 打开开发者工具，可以：
+
 - 查看 Console 日志
 - 设置断点调试
 - 检查网络请求
@@ -357,12 +358,14 @@ println!("[MyPlugin] Rust 日志");
 ### 安全限制
 
 外部插件在主进程沙箱中运行，可以：
+
 - 访问所有 Tauri API
 - 调用已注册的 Rust 命令
 - 读写本地存储
 - 访问剪贴板
 
 但无法：
+
 - 执行任意系统命令
 - 访问文件系统任意路径
 - 发起不受限的网络请求（受 CSP 限制）

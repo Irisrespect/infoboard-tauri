@@ -29,18 +29,18 @@ plugins/
 
 ### 字段说明
 
-| 字段 | 必填 | 说明 |
-|------|------|------|
-| `id` | ✅ | 插件唯一标识，全局不可重复 |
-| `name` | ✅ | 插件显示名称 |
-| `version` | ✅ | 版本号，建议使用语义化版本 |
-| `author` | ❌ | 插件作者 |
-| `description` | ❌ | 插件描述 |
-| `section` | ✅ | 插件所属区域，`info` 或 `tool` |
-| `icon` | ✅ | 插件图标，支持 emoji 或图片路径 |
-| `entry` | ✅ | 入口文件路径，相对于插件目录 |
-| `permissions` | ❌ | 声明的权限列表 (未来版本) |
-| `tauriCommands` | ❌ | 自定义 Tauri 命令列表 (未来版本) |
+| 字段            | 必填 | 说明                             |
+| --------------- | ---- | -------------------------------- |
+| `id`            | ✅   | 插件唯一标识，全局不可重复       |
+| `name`          | ✅   | 插件显示名称                     |
+| `version`       | ✅   | 版本号，建议使用语义化版本       |
+| `author`        | ❌   | 插件作者                         |
+| `description`   | ❌   | 插件描述                         |
+| `section`       | ✅   | 插件所属区域，`info` 或 `tool`   |
+| `icon`          | ✅   | 插件图标，支持 emoji 或图片路径  |
+| `entry`         | ✅   | 入口文件路径，相对于插件目录     |
+| `permissions`   | ❌   | 声明的权限列表 (未来版本)        |
+| `tauriCommands` | ❌   | 自定义 Tauri 命令列表 (未来版本) |
 
 ## index.tsx
 
@@ -131,7 +131,7 @@ export default MyPlugin
 import { invoke } from '@tauri-apps/api/core'
 
 const MyPlugin: InfoBoardPlugin = {
-  manifest: { /* ... */ },
+  manifest: {/* ... */},
   Component: () => {
     const handleClick = async () => {
       const result = await invoke('some_command')
@@ -188,6 +188,7 @@ await reloadPluginSystem()
 ### 插件可以访问哪些 API？
 
 外部插件运行在受控环境里，只能 import 下面这些模块（与应用共用同一份实例）：
+
 - `react`、`react/jsx-runtime`、`react-dom`
 - `@tauri-apps/api/core`（`invoke` 等）、`@tauri-apps/api/event`
 
