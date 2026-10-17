@@ -40,10 +40,26 @@ export const SVG_ICONS: Record<string, React.ReactNode> = {
 }
 
 /**
- * 判断图标字符串是否为 emoji（非 SVG 图标名）
+ * 判断图标字符串是否为 emoji（非 SVG 图标名）。
+ *
+ * 原实现是 `str.length <= 2 && !/^[a-z]/`，两个方向都会判错：
+ * - 带变体选择符 / 肤色修饰符 / ZWJ 序列的 emoji 长度是 4~7 个 UTF-16 码元
+ *   （如 "👋🏽"、"🏳️‍🌈"），会被判成**不是** emoji → 落到"未知图标"分支显示小号灰字
+ * - 两个汉字（如 "设置"）长度是 2 且不以小写字母开头 → 被判成 emoji
+ *
+ * 改为按 Unicode 属性判断。注意国旗是**两个** Regional_Indicator 组成，
+ * 且它们不属于 Extended_Pictographic，必须单独匹配一对。
  */
+const EMOJI_TAIL = /(?:\uFE0F|\p{Emoji_Modifier}|\u200D(?:\p{Extended_Pictographic}|\p{Regional_Indicator}))*/u
+const EMOJI_REGEX = new RegExp(
+  `^(?:\\p{Regional_Indicator}{2}|\\p{Extended_Pictographic}${EMOJI_TAIL.source})$`,
+  'u'
+)
+
 export function isEmoji(str: string): boolean {
-  return str.length <= 2 && !/^[a-z]/.test(str)
+  const s = str.trim()
+  if (!s) return false
+  return EMOJI_REGEX.test(s)
 }
 
 /**
