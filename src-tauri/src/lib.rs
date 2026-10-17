@@ -20,6 +20,7 @@ mod plugins {
     pub mod screenshot;
     pub mod ocr;
     pub mod loader;
+    pub mod pack;
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -35,6 +36,8 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_window_state::Builder::new().build())
         .plugin(tauri_plugin_clipboard_manager::init())
+        // 「设置 → 插件管理 → 选择插件包」用系统文件选择器
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None::<Vec<&'static str>>,
@@ -77,6 +80,10 @@ pub fn run() {
             }
             // 注册插件状态
             app.manage(plugins::ocr::OcrEngine::new());
+            // 清理上次安装/卸载中断留下的临时目录（.installing-* / .replacing-* / .uninstalled-*）
+            if let Ok(dir) = plugins::loader::plugins_dir(app.handle()) {
+                plugins::pack::cleanup_stale_dirs(&dir);
+            }
             // P1-a：把历史明文 API Key 迁到 Windows 凭据管理器
             plugins::niutrans::migrate_legacy_api_key(app.handle());
             Ok(())
@@ -121,6 +128,11 @@ pub fn run() {
             // 外部插件加载器
             plugins::loader::scan_external_plugins,
             plugins::loader::read_external_plugin_source,
+            // 插件包导入 / 卸载
+            plugins::pack::install_plugin_package_cmd,
+            plugins::pack::list_installed_plugins,
+            plugins::pack::uninstall_plugin,
+            plugins::pack::purge_uninstalled_plugin,
         ])
         .build(tauri::generate_context!())
         .expect("启动 InfoBoard 失败");

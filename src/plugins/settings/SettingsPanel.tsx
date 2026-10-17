@@ -12,6 +12,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { useSettings } from './useSettings'
 import { pluginRegistry } from '../../core/PluginRegistry'
 import { reloadPluginSystem } from '../../core/PluginHost'
+import { PluginManager } from './PluginManager'
 import type { ThemeMode } from './types'
 import { THEME_PREVIEWS } from './types'
 import * as autostart from '../../core/autostart-bridge'
@@ -363,6 +364,17 @@ export function SettingsPanel() {
           >
             {reloadingPlugins ? '正在重新加载…' : `重新加载插件（当前 ${pluginCount} 个）`}
           </button>
+
+          {/* 外部插件的导入 / 卸载：不用去 %APPDATA% 找目录 */}
+          <div
+            className="mt-3 pt-3"
+            style={{ borderTop: '1px solid var(--border-subtle)' }}
+          >
+            <div className="text-[11px] font-semibold mb-1.5" style={{ color: 'var(--text-muted)' }}>
+              外部插件
+            </div>
+            <PluginManager onChanged={() => setPluginCount(pluginRegistry.getAllPlugins().length)} />
+          </div>
         </div>
       </section>
     </div>

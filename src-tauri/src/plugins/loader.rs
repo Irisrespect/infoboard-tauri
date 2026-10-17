@@ -195,7 +195,10 @@ pub fn scan_external_plugins(app: AppHandle) -> Result<Vec<ExternalPluginMeta>, 
 }
 
 /// 加载并解析 manifest.json
-fn load_plugin_manifest(path: &PathBuf) -> Result<PluginManifest, String> {
+///
+/// 可见性为 `pub(crate)`：`super::pack` 安装插件时要用同一套校验，
+/// 避免"扫描时校验一套、安装时另一套"导致装上却扫不出来。
+pub(crate) fn load_plugin_manifest(path: &PathBuf) -> Result<PluginManifest, String> {
     let content = fs::read_to_string(path)
         .map_err(|e| format!("读取 manifest.json 失败: {}", e))?;
 

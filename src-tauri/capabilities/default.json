@@ -6,6 +6,7 @@
     "core:default",
     "core:event:default",
     "core:webview:allow-internal-toggle-devtools",
-    "clipboard-manager:allow-write-text"
+    "clipboard-manager:allow-write-text",
+    "dialog:allow-open"
   ]
 }
