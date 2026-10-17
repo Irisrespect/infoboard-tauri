@@ -281,6 +281,21 @@ fn worker_loop(
     line_rx: Receiver<Result<String, String>>,
     state: Arc<Mutex<EngineState>>,
 ) {
+    // 用 defer guard 保证退出时清理状态
+    struct StateGuard(Arc<Mutex<EngineState>>);
+    impl Drop for StateGuard {
+        fn drop(&mut self) {
+            if let Ok(mut st) = self.0.lock() {
+                st.ready = false;
+                if let Some(mut p) = st.process.take() {
+                    let _ = p.kill();
+                    let _ = p.wait();
+                }
+            }
+        }
+    }
+    let _guard = StateGuard(Arc::clone(&state));
+
     for req in req_rx {
         // 确保 ready
         if !state.lock().map(|s| s.ready).unwrap_or(false) {
