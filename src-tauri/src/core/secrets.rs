@@ -104,6 +104,79 @@ mod tests {
         }
     }
 
+    /// 回归：凭据必须**跨进程重启**可读（这是"重启后 Key 消失"的核心不变量）。
+    ///
+    /// 用 `niutrans` 这个名字（白名单内的另一个名字，不影响天气 Key），
+    /// 写一个探针值后**再去读一次**。Windows 凭据管理器的写入是同步落盘的，
+    /// 所以"写完立刻读得到"就意味着重启后依然在 —— 反过来，一旦有人把
+    /// `SERVICE` / 名字常量改掉，或把持久化写成 Session 级，这个测试就会失败。
+    ///
+    /// 默认跳过（会临时覆盖同名真实凭据）：
+    /// `$env:INFOBOARD_KEYRING_TEST=1; cargo test`
+    #[test]
+    fn credential_survives_process_restart_when_enabled() {
+        if std::env::var("INFOBOARD_KEYRING_TEST").ok().as_deref() != Some("1") {
+            eprintln!("跳过：未设置 INFOBOARD_KEYRING_TEST=1（该用例会覆盖真实凭据）");
+            return;
+        }
+
+        const NAME: &str = NAME_NIUTRANS;
+        let original = get(NAME).expect("凭据库不可用");
+        let probe = format!("infoboard-persist-{}", std::process::id());
+
+        // 写
+        set(NAME, &probe).expect("写入凭据失败");
+
+        // 用一个**全新的 Entry** 读（模拟重启后重新打开凭据库，不复用任何缓存）
+        let fresh = Entry::new(SERVICE, NAME).expect("重新打开凭据库失败");
+        let read_back = fresh
+            .get_password()
+            .expect("重启后应能读到凭据（若这里失败说明凭据没真正落盘）");
+        assert_eq!(read_back, probe, "跨进程读回的值必须一致");
+
+        // 名字/服务名是对外契约：改了会让老用户的 Key「凭空消失」
+        assert_eq!(SERVICE, "com.infoboard.tauri");
+        assert_eq!(NAME_QWEATHER, "qweather");
+
+        // 还原
+        match original {
+            Some(v) => set(NAME, &v).unwrap(),
+            None => delete(NAME).unwrap(),
+        }
+    }
+
+    /// 只读探针：报告真实凭据的可读性与大致长度，**不写入、不覆盖任何东西**。
+    ///
+    /// 用于排查"设置里显示已配置、但重启后天气说没配"这类问题：
+    /// 能区分"凭据真的不存在"和"存在但读不出来/读出来是空串"。
+    ///
+    /// ```powershell
+    /// $env:INFOBOARD_SECRETS_PROBE=1; cargo test secrets::tests::probe -- --nocapture
+    /// ```
+    #[test]
+    fn probe_when_enabled() {
+        if std::env::var("INFOBOARD_SECRETS_PROBE").ok().as_deref() != Some("1") {
+            eprintln!("跳过：未设置 INFOBOARD_SECRETS_PROBE=1");
+            return;
+        }
+
+        for name in ALLOWED_NAMES {
+            match get(name) {
+                Ok(Some(v)) => eprintln!(
+                    "[probe] {name}: 存在，长度 {} 字符（首尾空白={:?}）",
+                    v.chars().count(),
+                    v.trim() != v.as_str()
+                ),
+                Ok(None) => eprintln!("[probe] {name}: 凭据不存在（NoEntry）"),
+                Err(e) => eprintln!("[probe] {name}: 读取失败 → {e}"),
+            }
+            match has(name) {
+                Ok(b) => eprintln!("[probe] {name}: has() = {b}"),
+                Err(e) => eprintln!("[probe] {name}: has() 失败 → {e}"),
+            }
+        }
+    }
+
     /// 真机凭据库往返（写→读→删）。
     ///
     /// 默认**跳过**：它会临时覆盖同名真实凭据（跑测试的机器上可能真配了 Key），
