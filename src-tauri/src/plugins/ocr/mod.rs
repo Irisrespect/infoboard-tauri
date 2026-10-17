@@ -138,7 +138,7 @@ impl OcrEngine {
             .current_dir(engine_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::null())
             .spawn()
             .map_err(|e| format!("启动 OCR 引擎失败: {}", e))?;
 
@@ -381,7 +381,7 @@ fn get_engine_path() -> PathBuf {
 // ─── Commands ───
 
 #[tauri::command]
-pub async fn ocr_recognize(
+pub fn ocr_recognize(
     state: tauri::State<'_, OcrEngine>,
     image_base64: String,
 ) -> Result<Value, String> {
@@ -408,7 +408,8 @@ pub async fn ocr_recognize(
         state.path().display()
     );
 
-    // 内部已有队列与 recv_timeout
+    // recognize 内部有阻塞调用（recv_timeout），但整个 command 是同步的，
+    // Tauri 会在线程池里运行它，不会阻塞主线程或 tokio worker
     let result = state.recognize(image_base64);
 
     match result {

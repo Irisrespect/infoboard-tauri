@@ -415,6 +415,27 @@ export function useWeather(): UseWeatherReturn {
           throw new Error(errorMap[nowData.code] || `请求失败 (${nowData.code})`)
         }
 
+        // 检查 3 日预报业务状态码
+        if (dailyData.code !== '200') {
+          const errorMap: Record<string, string> = {
+            '204': '请求成功，但你查询的地区暂时没有你需要的数据',
+            '400': '请求错误，可能参数有误',
+            '401': '认证失败，请检查 API Key 和 API Host',
+            '402': '超过访问次数或余额不足（3 日预报可能需要付费版）',
+            '403': '无访问权限，请在控制台检查',
+            '404': '查询的地区不存在',
+            '429': '超过限定的访问次数',
+            '500': '和风天气服务异常',
+          }
+          throw new Error(`预报数据: ${errorMap[dailyData.code] || `请求失败 (${dailyData.code})`}`)
+        }
+
+        // 检查逐时预报业务状态码（可选接口，失败时不影响主流程）
+        if (hourlyData && hourlyData.code !== '200') {
+          console.warn(`[天气] 逐时预报返回非 200: ${hourlyData.code}（可能需要付费版），忽略`)
+          hourlyData = null
+        }
+
         // 转换数据
         const weatherData = transformWeatherData(nowData, dailyData, hourlyData, cityName)
         console.log(

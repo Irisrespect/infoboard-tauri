@@ -196,7 +196,7 @@ function isBilibiliSource(sourceAppId?: string): boolean {
 async function enrichBilibiliSession(session: MediaSession): Promise<MediaSession> {
   const title = session.title
 
-  // 检查缓存
+  // 检查缓存（包括负缓存）
   const cached = bilibiliCache.get(title)
   if (cached && cached.expires > Date.now()) {
     return {
@@ -212,6 +212,13 @@ async function enrichBilibiliSession(session: MediaSession): Promise<MediaSessio
     const info = await enrichMedia(title)
     if (!info) {
       console.debug('[B站] 封面补全：API 无结果')
+      // 负缓存：无结果也缓存，避免重复请求
+      bilibiliCache.set(title, {
+        thumbnail: '',
+        artist: '',
+        ownerAvatar: '',
+        expires: Date.now() + BILI_CACHE_TTL,
+      })
       return session
     }
 
@@ -243,6 +250,13 @@ async function enrichBilibiliSession(session: MediaSession): Promise<MediaSessio
     }
   } catch (err) {
     console.warn('[useMediaControl] B站信息补充失败:', err)
+    // 负缓存：失败也缓存，避免反复重试
+    bilibiliCache.set(title, {
+      thumbnail: '',
+      artist: '',
+      ownerAvatar: '',
+      expires: Date.now() + BILI_CACHE_TTL,
+    })
     return session
   }
 }

@@ -141,8 +141,12 @@ export class PluginRegistry {
       return false
     }
 
-    // 调用销毁钩子
-    plugin.onDestroy?.()
+    // 调用销毁钩子（捕获异常，避免一个插件的错误中断整个清理流程）
+    try {
+      plugin.onDestroy?.()
+    } catch (err) {
+      console.error(`[PluginRegistry] 插件 "${id}" 的 onDestroy 抛出错误:`, err)
+    }
 
     this.plugins.delete(id)
     console.log(`[PluginRegistry] 已注销插件: ${id}`)
@@ -154,9 +158,13 @@ export class PluginRegistry {
    * 清空所有插件（开发环境热重载时使用）
    */
   clear(): void {
-    // 调用所有插件的销毁钩子
-    this.plugins.forEach((plugin) => {
-      plugin.onDestroy?.()
+    // 调用所有插件的销毁钩子（捕获异常，避免一个插件的错误中断清理）
+    this.plugins.forEach((plugin, id) => {
+      try {
+        plugin.onDestroy?.()
+      } catch (err) {
+        console.error(`[PluginRegistry] 插件 "${id}" 的 onDestroy 抛出错误:`, err)
+      }
     })
 
     this.plugins.clear()

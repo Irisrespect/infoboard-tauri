@@ -14,7 +14,6 @@ import * as React from 'react'
 import * as ReactJsxRuntime from 'react/jsx-runtime'
 import * as ReactDom from 'react-dom'
 import * as TauriCore from '@tauri-apps/api/core'
-import * as TauriEvent from '@tauri-apps/api/event'
 
 export type SharedModules = Record<string, unknown>
 
@@ -24,7 +23,7 @@ export const SHARED_MODULES: SharedModules = {
   'react/jsx-runtime': ReactJsxRuntime,
   'react-dom': ReactDom,
   '@tauri-apps/api/core': TauriCore,
-  '@tauri-apps/api/event': TauriEvent,
+  // '@tauri-apps/api/event' 不再导出：插件不应监听宿主事件（如 screenshot:data）
 }
 
 /**

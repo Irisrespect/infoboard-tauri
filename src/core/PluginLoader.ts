@@ -154,6 +154,12 @@ export class PluginLoader {
       return false
     }
 
+    // 必须有 icon（tool 插件会在 ToolSection 里调用 icon.length）
+    if (typeof manifest.icon !== 'string' || !manifest.icon) {
+      console.error('[PluginLoader] manifest.icon 无效')
+      return false
+    }
+
     return true
   }
 
