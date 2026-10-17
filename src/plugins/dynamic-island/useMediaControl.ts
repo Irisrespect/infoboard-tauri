@@ -11,13 +11,40 @@ import type { MediaSession, PlaybackStatus } from './types'
 import { getCurrentSession, sendCommand as bridgeSendCommand } from './bridge'
 import { enrichMedia } from '../bilibili-info/bridge'
 import { useWindowActive } from '../../core/useWindowActive'
+import { MAX_BILI_CACHE_ENTRIES, selectEvictions } from './biliCache'
 
-/** B站信息缓存：title → enriched data */
+/** B站信息缓存：title → enriched data（容量上限见 biliCache.MAX_BILI_CACHE_ENTRIES） */
 const bilibiliCache = new Map<
   string,
   { thumbnail: string; artist: string; ownerAvatar: string; expires: number }
 >()
 const BILI_CACHE_TTL = 30 * 60 * 1000 // 30 分钟
+
+/**
+ * 失败的标题 → 下次允许重试的时间戳。
+ * 失败不写负缓存（否则一次网络抖动会让封面空 30 分钟），但也不能每 2 秒
+ * 轮询就重试一次：这里做 60s 退避，既有恢复机会又不会打爆接口。
+ */
+const biliRetryAfter = new Map<string, number>()
+const BILI_RETRY_BACKOFF = 60 * 1000
+
+/**
+ * 写入缓存（含负缓存），并做容量控制。
+ * 原先只 `set` 不 `delete`：一直换歌就一直涨，负缓存也占位。
+ */
+function cacheBiliEntry(
+  title: string,
+  value: { thumbnail: string; artist: string; ownerAvatar: string }
+): void {
+  for (const key of selectEvictions(
+    bilibiliCache.entries(),
+    Date.now(),
+    MAX_BILI_CACHE_ENTRIES
+  )) {
+    bilibiliCache.delete(key)
+  }
+  bilibiliCache.set(title, { ...value, expires: Date.now() + BILI_CACHE_TTL })
+}
 
 /** Hook 返回值类型 */
 interface UseMediaControlReturn {
@@ -213,18 +240,20 @@ async function enrichBilibiliSession(session: MediaSession): Promise<MediaSessio
     }
   }
 
+  // 刚失败过：先不重试也不写缓存，等退避窗口过去
+  const retryAt = biliRetryAfter.get(title)
+  if (retryAt && retryAt > Date.now()) {
+    return session
+  }
+
   // 调用 Tauri invoke 获取B站视频信息
   try {
     const info = await enrichMedia(title)
+    biliRetryAfter.delete(title)
     if (!info) {
       console.debug('[B站] 封面补全：API 无结果')
-      // 负缓存：无结果也缓存，避免重复请求
-      bilibiliCache.set(title, {
-        thumbnail: '',
-        artist: '',
-        ownerAvatar: '',
-        expires: Date.now() + BILI_CACHE_TTL,
-      })
+      // 负缓存：确实没有匹配，缓存 30 分钟避免重复请求
+      cacheBiliEntry(title, { thumbnail: '', artist: '', ownerAvatar: '' })
       return session
     }
 
@@ -235,12 +264,7 @@ async function enrichBilibiliSession(session: MediaSession): Promise<MediaSessio
     const ownerAvatar = safeUrl(info.ownerAvatar || '')
 
     // 写入缓存
-    bilibiliCache.set(title, {
-      thumbnail,
-      artist: info.ownerName,
-      ownerAvatar,
-      expires: Date.now() + BILI_CACHE_TTL,
-    })
+    cacheBiliEntry(title, { thumbnail, artist: info.ownerName, ownerAvatar })
 
     console.debug('[B站] 封面补全成功', {
       title,
@@ -255,14 +279,10 @@ async function enrichBilibiliSession(session: MediaSession): Promise<MediaSessio
       ownerAvatar,
     }
   } catch (err) {
-    console.warn('[useMediaControl] B站信息补充失败:', err)
-    // 负缓存：失败也缓存，避免反复重试
-    bilibiliCache.set(title, {
-      thumbnail: '',
-      artist: '',
-      ownerAvatar: '',
-      expires: Date.now() + BILI_CACHE_TTL,
-    })
+    // 这里是"请求失败"（接口不通 / 风控 / 超时），不是"没有这个视频"。
+    // 不写负缓存（否则一次抖动封面空 30 分钟），改为 60s 退避后重试。
+    console.warn('[useMediaControl] B站信息补充失败（60s 后重试）:', err)
+    biliRetryAfter.set(title, Date.now() + BILI_RETRY_BACKOFF)
     return session
   }
 }

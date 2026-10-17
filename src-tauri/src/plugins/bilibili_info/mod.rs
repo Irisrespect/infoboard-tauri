@@ -259,38 +259,47 @@ async fn get_view(client: &reqwest::Client, bvid: &str) -> Result<BilibiliVideoI
 // ─── Tauri Command ───
 
 /// 通过 B站 API 补充视频信息（封面 + UP主）
+///
+/// 返回 `Result<Option<_>, String>`：`Ok(None)` 表示"查了但没有匹配"，
+/// `Err` 表示"请求/解析失败"。原先一律返回 `Option`，前端把
+/// "B站接口不通 / 被风控 / 超时"与"确实没有这个视频"都当成"没有结果"，
+/// 用户看不到任何异常（只在日志里）。
 #[tauri::command]
-pub async fn bilibili_enrich_media(app: AppHandle, title: String) -> Option<BilibiliVideoInfo> {
+pub async fn bilibili_enrich_media(
+    app: AppHandle,
+    title: String,
+) -> Result<Option<BilibiliVideoInfo>, String> {
     let clean = clean_title(&title);
     if clean.is_empty() {
-        return None;
+        return Ok(None);
     }
 
     crate::core::app_log::emit(&app, "info", &format!("[bilibili] 搜索: {clean}"));
 
-    let client = match build_client() {
-        Ok(c) => c,
-        Err(e) => {
-            crate::core::app_log::emit(&app, "error", &format!("[bilibili] 客户端失败: {e}"));
-            return None;
-        }
-    };
+    let client = build_client().map_err(|e| {
+        let msg = format!("B站客户端初始化失败: {e}");
+        crate::core::app_log::emit(&app, "error", &format!("[bilibili] {msg}"));
+        msg
+    })?;
 
-    let results = match search_video(&client, &clean).await {
-        Ok(r) => r,
-        Err(e) => {
-            crate::core::app_log::emit(&app, "error", &format!("[bilibili] 搜索失败: {e}"));
-            return None;
-        }
-    };
+    let results = search_video(&client, &clean).await.map_err(|e| {
+        crate::core::app_log::emit(&app, "error", &format!("[bilibili] 搜索失败: {e}"));
+        e
+    })?;
 
     if results.is_empty() {
         crate::core::app_log::emit(&app, "warn", &format!("[bilibili] 无搜索结果: {clean}"));
-        return None;
+        return Ok(None);
     }
 
-    let best = find_best_match(&results, &clean)?;
-    let bvid = best.bvid.as_deref().filter(|s| !s.is_empty())?;
+    // 有结果但没有可用条目（缺 bvid / 标题全空）→ 同样是"没匹配上"，不是错误
+    let Some(best) = find_best_match(&results, &clean) else {
+        crate::core::app_log::emit(&app, "warn", &format!("[bilibili] 结果中无可用条目: {clean}"));
+        return Ok(None);
+    };
+    let Some(bvid) = best.bvid.as_deref().filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
 
     crate::core::app_log::emit(
         &app,
@@ -308,11 +317,11 @@ pub async fn bilibili_enrich_media(app: AppHandle, title: String) -> Option<Bili
                     info.owner_name, info.cover
                 ),
             );
-            Some(info)
+            Ok(Some(info))
         }
         Err(e) => {
             crate::core::app_log::emit(&app, "error", &format!("[bilibili] 详情失败: {e}"));
-            None
+            Err(e)
         }
     }
 }

@@ -25,8 +25,13 @@ export interface BilibiliVideoInfo {
 /**
  * 补充 B站视频信息
  *
+ * 三种结果要区分开（原先都返回 null，用户分不清）：
+ * - 有匹配 → `BilibiliVideoInfo`
+ * - 查了但没有匹配（无搜索结果 / 结果里没有可用条目）→ `null`
+ * - 请求或解析失败（接口不通、风控、超时）→ **抛错**，并派发 `bilibili-enrich-error`
+ *   让界面能提示"B站信息补全失败"，而不是把失败显示成"没有结果"
+ *
  * @param title - 视频标题
- * @returns B站视频信息，失败或无匹配时返回 null
  *
  * @example
  * ```ts
@@ -40,7 +45,11 @@ export async function enrichMedia(title: string): Promise<BilibiliVideoInfo | nu
   try {
     return await invoke<BilibiliVideoInfo | null>('bilibili_enrich_media', { title })
   } catch (err) {
-    console.error('[bilibili-info] enrichMedia 失败:', err)
-    return null
+    const message = err instanceof Error ? err.message : String(err)
+    console.error('[bilibili-info] enrichMedia 失败:', message)
+    window.dispatchEvent(
+      new CustomEvent('bilibili-enrich-error', { detail: { title, message } })
+    )
+    throw new Error(message)
   }
 }
