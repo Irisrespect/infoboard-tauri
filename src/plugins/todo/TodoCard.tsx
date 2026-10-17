@@ -272,7 +272,10 @@ function ExpandedView({
             type="text"
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
-            onKeyDown={onKeyDown}
+            onKeyDown={(e) => {
+              e.stopPropagation()
+              onKeyDown(e)
+            }}
             placeholder="添加新待办..."
             className="flex-1 bg-transparent text-[13px] outline-none"
             style={{ color: 'var(--text-primary)', fontFamily: 'Inter' }}
@@ -290,7 +293,10 @@ function ExpandedView({
             value={deadlineValue}
             placeholder="YYYY-MM-DD 或 7月8日"
             onChange={(e) => setDeadlineValue(e.target.value)}
-            onKeyDown={onKeyDown}
+            onKeyDown={(e) => {
+              e.stopPropagation()
+              onKeyDown(e)
+            }}
             className="flex-1 bg-transparent text-[12px] outline-none"
             style={{ color: 'var(--text-primary)', fontFamily: 'Inter' }}
             onClick={(e) => e.stopPropagation()}

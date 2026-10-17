@@ -24,6 +24,7 @@ const COMMAND_TIMEOUT_SECS: u64 = 5;
 /// 已验证的 PS_AWAIT_HELPER（原始项目生产可用）
 /// 注意：`IAsyncOperation`1` 只需一个反引号！
 const PS_AWAIT_HELPER: &str = r#"
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 Add-Type -AssemblyName System.Runtime.WindowsRuntime
 $asTaskGeneric = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' })[0]
 function Await($WinRtTask, $ResultType) {
@@ -112,7 +113,7 @@ try {
         $status = $playbackInfo.PlaybackStatus.ToString()
 
         try {
-            $mediaProperties = Await ($session.TryGetMediaPropertiesAsync()) ([System.Object])
+            $mediaProperties = Await ($session.TryGetMediaPropertiesAsync()) ([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionMediaProperties])
             if ($mediaProperties -ne $null) {
                 $smtcTitle = [string]$mediaProperties.Title
                 $smtcArtist = [string]$mediaProperties.Artist
@@ -120,7 +121,7 @@ try {
                 try {
                     $thumbRef = $mediaProperties.Thumbnail
                     if ($thumbRef -ne $null) {
-                        $stream = Await ($thumbRef.OpenReadAsync()) ([System.Object])
+                        $stream = Await ($thumbRef.OpenReadAsync()) ([Windows.Storage.Streams.IRandomAccessStreamWithContentType])
                         if ($stream -ne $null -and $stream.Size -gt 0 -and $stream.Size -lt 524288) {
                             $ms = New-Object System.IO.MemoryStream
                             $stream.AsStreamForRead().CopyTo($ms)

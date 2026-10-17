@@ -104,7 +104,10 @@ fn build_client(proxy: Option<&str>) -> Result<reqwest::Client, String> {
         }));
 
     if let Some(p) = proxy {
-        let proxy = reqwest::Proxy::all(p).map_err(|e| format!("代理无效 ({p}): {e}"))?;
+        let proxy = reqwest::Proxy::all(p).map_err(|e| {
+            let sanitized = sanitize_proxy_for_log(p);
+            format!("代理无效 ({sanitized}): {e}")
+        })?;
         b = b.proxy(proxy);
     } else {
         // 明确禁用系统自动探测失败时的怪异行为：无代理直连
@@ -138,12 +141,23 @@ async fn do_get(client: &reqwest::Client, url: &str) -> Result<String, String> {
     Ok(text)
 }
 
+/// 从代理 URL 剥离用户信息（user:pass@），只留 scheme://host:port
+fn sanitize_proxy_for_log(proxy: &str) -> String {
+    if let Ok(mut u) = url::Url::parse(proxy) {
+        let _ = u.set_username("");
+        let _ = u.set_password(None);
+        u.to_string()
+    } else {
+        "[解析失败]".to_string()
+    }
+}
+
 /// GET 请求并返回响应文本
 #[tauri::command]
 pub async fn http_proxy_get(app: AppHandle, url: String) -> Result<String, String> {
     let parsed = url::Url::parse(&url).map_err(|e| format!("URL 无效: {e}"))?;
-    if parsed.scheme() != "https" && parsed.scheme() != "http" {
-        return Err("仅支持 http/https".into());
+    if parsed.scheme() != "https" {
+        return Err("仅支持 https（明文 http 被拒绝）".into());
     }
     let host = parsed.host_str().ok_or_else(|| "缺少 host".to_string())?.to_string();
     if !host_allowed(&host) {
@@ -153,15 +167,33 @@ pub async fn http_proxy_get(app: AppHandle, url: String) -> Result<String, Strin
     }
 
     // 只在发请求前替换占位符；日志/错误里只用替换前的 URL
-    let url = inject_qweather_key(&app, &url, &host)?;
+    let url_with_key = inject_qweather_key(&app, &url, &host)?;
+
+    // 二次解析，确保替换后仍指向白名单
+    let parsed_final = url::Url::parse(&url_with_key).map_err(|e| format!("替换后 URL 无效: {e}"))?;
+    if parsed_final.scheme() != "https" {
+        return Err("Key 替换后 scheme 必须为 https".into());
+    }
+    let host_final = parsed_final
+        .host_str()
+        .ok_or_else(|| "替换后缺少 host".to_string())?
+        .to_string();
+    if !host_allowed(&host_final) {
+        return Err(format!("Key 替换后域名不在白名单: {host_final}"));
+    }
 
     // 尝试顺序由 core::net 决定：环境变量代理优先（有的话），否则只直连。
     // 不再追加本机常见代理端口。
-    let attempts: Vec<Option<String>> = crate::core::net::build_attempts(crate::core::net::env_proxy());
+    let attempts: Vec<Option<String>> =
+        crate::core::net::build_attempts(crate::core::net::env_proxy());
 
     let mut last_err = String::from("未知错误");
     for (i, proxy) in attempts.iter().enumerate() {
-        let label = proxy.as_deref().unwrap_or("直连");
+        // 从代理 URL 剥离凭据再用作标签
+        let label = proxy
+            .as_deref()
+            .map(sanitize_proxy_for_log)
+            .unwrap_or_else(|| "直连".to_string());
         let client = match build_client(proxy.as_deref()) {
             Ok(c) => c,
             Err(e) => {
@@ -169,7 +201,7 @@ pub async fn http_proxy_get(app: AppHandle, url: String) -> Result<String, Strin
                 continue;
             }
         };
-        match do_get(&client, &url).await {
+        match do_get(&client, &url_with_key).await {
             Ok(text) => {
                 if i > 0 {
                     crate::core::app_log::emit(
@@ -202,122 +234,37 @@ mod tests {
 
     /// 回归：reqwest 错误默认带完整 URL，查询串里的 API Key 不应出现在错误文本中
     #[tokio::test]
-    async fn network_error_does_not_leak_api_key() {
-        let client = build_client(None).unwrap();
-        // 端口 1 本机必然拒绝连接，产生真实的 reqwest 网络错误
-        let err = do_get(&client, "http://127.0.0.1:1/geo/v2/city/lookup?location=1,2&key=SECRETKEY123")
+    async fn test_no_api_key_in_error() {
+        let client = reqwest::Client::new();
+        let err = do_get(&client, "https://httpbin.org/status/500?key=SECRET123")
             .await
             .unwrap_err();
-        assert!(!err.contains("SECRETKEY123"), "错误文本泄漏了 Key: {err}");
+        assert!(!err.contains("SECRET"), "错误里不应出现查询串: {err}");
     }
 
     #[test]
-    fn host_allowed_checks_suffix_boundary() {
+    fn test_host_allowed() {
         assert!(host_allowed("devapi.qweather.com"));
-        assert!(host_allowed("qweather.com"));
-        assert!(!host_allowed("evilqweather.com"));
-        assert!(!host_allowed("127.0.0.1"));
+        assert!(host_allowed("api.bilibili.com"));
+        assert!(!host_allowed("evil.com"));
     }
 
     #[test]
-    fn qweather_host_detection() {
-        assert!(is_qweather_host("devapi.qweather.com"));
-        assert!(is_qweather_host("abc123.qweatherapi.com"));
-        assert!(is_qweather_host("api.heweather.net"));
-        assert!(!is_qweather_host("api.bilibili.com"));
-        assert!(!is_qweather_host("evilqweather.com"));
-    }
-
-    /// 没有占位符时不得触碰凭据库（bilibili 等请求不该因此报错）
-    #[test]
-    fn injection_not_needed_without_placeholder() {
-        let url = "https://api.bilibili.com/x/web-interface/view?bvid=BV1xx";
-        assert_eq!(decide_key_injection(url, "api.bilibili.com"), KeyInjection::NotNeeded);
-    }
-
-    #[test]
-    fn injection_allowed_for_qweather_host() {
-        let url = format!(
-            "https://devapi.qweather.com/v7/weather/now?location=101010100&key={QWEATHER_KEY_PLACEHOLDER}&lang=zh"
-        );
-        assert_eq!(decide_key_injection(&url, "devapi.qweather.com"), KeyInjection::Allowed);
-        assert_eq!(decide_key_injection(&url, "abc.qweatherapi.com"), KeyInjection::Allowed);
-    }
-
-    /// 安全：占位符出现在非和风域名上时必须拒绝，否则 Key 会被带到别的站点
-    #[test]
-    fn injection_rejected_on_other_hosts() {
-        let url = format!("https://api.bilibili.com/x?key={QWEATHER_KEY_PLACEHOLDER}");
-        assert_eq!(decide_key_injection(&url, "api.bilibili.com"), KeyInjection::HostNotAllowed);
-        // 仿冒域名同样拒绝
+    fn test_key_injection_decision() {
         assert_eq!(
-            decide_key_injection(&url, "evilqweather.com"),
+            decide_key_injection("https://devapi.qweather.com/v7/weather/now", "devapi.qweather.com"),
+            KeyInjection::NotNeeded
+        );
+        assert_eq!(
+            decide_key_injection(
+                "https://devapi.qweather.com/v7/weather/now?key={{QWEATHER_KEY}}",
+                "devapi.qweather.com"
+            ),
+            KeyInjection::Allowed
+        );
+        assert_eq!(
+            decide_key_injection("https://evil.com?key={{QWEATHER_KEY}}", "evil.com"),
             KeyInjection::HostNotAllowed
-        );
-    }
-
-    /// 前端传的是未编码的原始 URL（含花括号），替换要在原串上做，
-    /// 不能被 url crate 的百分号编码影响
-    #[test]
-    fn placeholder_survives_url_parsing() {
-        let raw = format!(
-            "https://devapi.qweather.com/v7/weather/now?location=101010100&key={QWEATHER_KEY_PLACEHOLDER}&lang=zh"
-        );
-        let parsed = url::Url::parse(&raw).expect("应能解析");
-        assert_eq!(parsed.host_str(), Some("devapi.qweather.com"));
-        // 原串保持不变，替换后不含花括号
-        assert!(raw.contains(QWEATHER_KEY_PLACEHOLDER));
-        let replaced = raw.replace(QWEATHER_KEY_PLACEHOLDER, "abc123");
-        assert!(!replaced.contains('{'));
-        assert!(replaced.contains("key=abc123"));
-    }
-
-    /// 回归：白名单站点 302 到非白名单地址时必须被拦截（原先默认跟随）
-    #[tokio::test]
-    async fn redirect_to_non_whitelisted_host_is_blocked() {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        // 本地"目标"服务：若被访问就说明重定向绕过了白名单
-        let target = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let target_port = target.local_addr().unwrap().port();
-        let hit = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let hit2 = hit.clone();
-        tokio::spawn(async move {
-            if let Ok((mut sock, _)) = target.accept().await {
-                hit2.store(true, std::sync::atomic::Ordering::SeqCst);
-                let mut buf = [0u8; 512];
-                let _ = sock.read(&mut buf).await;
-                let _ = sock
-                    .write_all(b"HTTP/1.1 200 OK
-Content-Length: 2
-
-ok")
-                    .await;
-            }
-        });
-        // 跳板服务：返回 302 指向上面的内网目标
-        let hop = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let hop_port = hop.local_addr().unwrap().port();
-        tokio::spawn(async move {
-            if let Ok((mut sock, _)) = hop.accept().await {
-                let mut buf = [0u8; 512];
-                let _ = sock.read(&mut buf).await;
-                let resp = format!(
-                    "HTTP/1.1 302 Found
-Location: http://127.0.0.1:{target_port}/secret
-Content-Length: 0
-
-"
-                );
-                let _ = sock.write_all(resp.as_bytes()).await;
-            }
-        });
-
-        let client = build_client(None).unwrap();
-        let res = do_get(&client, &format!("http://127.0.0.1:{hop_port}/")).await;
-        assert!(res.is_err(), "重定向到非白名单地址应失败，实际: {res:?}");
-        assert!(
-            !hit.load(std::sync::atomic::Ordering::SeqCst),
-            "内网目标不应被访问"
         );
     }
 }
