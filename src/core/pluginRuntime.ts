@@ -41,9 +41,7 @@ export function createPluginModules(
   tauriCommands: readonly string[] | undefined,
   base: SharedModules = SHARED_MODULES
 ): SharedModules {
-  const allowed = new Set(
-    (tauriCommands ?? []).map((c) => c.trim()).filter((c) => c.length > 0)
-  )
+  const allowed = new Set((tauriCommands ?? []).map((c) => c.trim()).filter((c) => c.length > 0))
   const core = base['@tauri-apps/api/core'] as {
     invoke: (cmd: string, args?: unknown, options?: unknown) => Promise<unknown>
   }
@@ -88,7 +86,9 @@ export function transpilePluginSource(source: string, filename: string): string 
       production: true,
     }).code
   } catch (e) {
-    throw new PluginRuntimeError(`转译失败 (${filename}): ${e instanceof Error ? e.message : String(e)}`)
+    throw new PluginRuntimeError(
+      `转译失败 (${filename}): ${e instanceof Error ? e.message : String(e)}`
+    )
   }
 }
 
@@ -120,7 +120,9 @@ export function evaluatePluginSource(
     run(module, module.exports, requireShared)
   } catch (e) {
     if (e instanceof PluginRuntimeError) throw e
-    throw new PluginRuntimeError(`执行失败 (${filename}): ${e instanceof Error ? e.message : String(e)}`)
+    throw new PluginRuntimeError(
+      `执行失败 (${filename}): ${e instanceof Error ? e.message : String(e)}`
+    )
   }
   return module.exports
 }

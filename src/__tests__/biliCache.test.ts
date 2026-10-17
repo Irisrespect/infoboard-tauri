@@ -66,7 +66,10 @@ describe('selectEvictions（bilibiliCache 只增不减）', () => {
 
   it('恰好等于上限也触发淘汰（否则 set 之后会超限）', () => {
     const e = entries(
-      Array.from({ length: MAX_BILI_CACHE_ENTRIES }, (_, i) => [`k${i}`, NOW + i] as [string, number])
+      Array.from(
+        { length: MAX_BILI_CACHE_ENTRIES },
+        (_, i) => [`k${i}`, NOW + i] as [string, number]
+      )
     )
     const out = selectEvictions(e, NOW)
     expect(out).toHaveLength(1)
@@ -79,9 +82,7 @@ describe('selectEvictions（bilibiliCache 只增不减）', () => {
 
   it('淘汰数量刚好让写入后不超过上限', () => {
     const max = 5
-    const e = entries(
-      Array.from({ length: 9 }, (_, i) => [`k${i}`, NOW + i] as [string, number])
-    )
+    const e = entries(Array.from({ length: 9 }, (_, i) => [`k${i}`, NOW + i] as [string, number]))
     const out = selectEvictions(e, NOW, max)
     // 9 - 淘汰数 + 1(新写入) <= 5
     expect(9 - out.length + 1).toBeLessThanOrEqual(max)

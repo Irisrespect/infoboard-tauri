@@ -19,7 +19,9 @@ const rustCoreSources = import.meta.glob('../../src-tauri/src/core/*.rs', {
 function rustSource(fileName: string): string {
   const key = Object.keys(rustCoreSources).find((path) => path.endsWith(`/${fileName}`))
   if (!key) {
-    throw new Error(`找不到 Rust 源文件 ${fileName}，已加载: ${Object.keys(rustCoreSources).join(', ')}`)
+    throw new Error(
+      `找不到 Rust 源文件 ${fileName}，已加载: ${Object.keys(rustCoreSources).join(', ')}`
+    )
   }
   return rustCoreSources[key]
 }

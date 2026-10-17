@@ -42,13 +42,10 @@ export interface WindowActiveStore {
 
 const defaultDeps: WindowActiveDeps = {
   invoke: (cmd) => tauriInvoke<unknown>(cmd),
-  listen: (event, handler) =>
-    tauriListen(event, (e) => handler({ payload: e.payload })),
+  listen: (event, handler) => tauriListen(event, (e) => handler({ payload: e.payload })),
 }
 
-export function createWindowActiveStore(
-  deps: WindowActiveDeps = defaultDeps
-): WindowActiveStore {
+export function createWindowActiveStore(deps: WindowActiveDeps = defaultDeps): WindowActiveStore {
   let active = true
   /** 是否已收到过事件：收到过就不能再用 invoke 的初值覆盖（初值可能更旧） */
   let gotEvent = false

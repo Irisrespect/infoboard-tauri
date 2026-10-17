@@ -1,0 +1,32 @@
+# 生成物 / 依赖 / 构建产物
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/
+
+# 锁文件与包管理器元数据（工具生成，格式化只会制造噪声）
+pnpm-lock.yaml
+package-lock.json
+pnpm-workspace.yaml
+
+# 资源与二进制（无需格式化）
+public/
+src-tauri/icons/
+src-tauri/binaries/
+src/plugins/weather/icons/
+**/*.png
+**/*.ico
+**/*.woff2
+
+# 审查/交接文档：篇幅大且含大量手工对齐的表格，格式化会把 diff 冲掉
+CODE_REVIEW.md
+CODE_REVIEW.full.md
+REMAINING_ISSUES.md
+REMAINING_ISSUES_STATUS.md
+CHANGELOG.md
+
+# Rust 侧由 rustfmt 负责，不用 prettier
+src-tauri/
+
+# 外部插件示例由插件作者自己决定风格
+plugins/

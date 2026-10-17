@@ -12,12 +12,10 @@ function makeDeps() {
         resolveInvoke = resolve
       })
   )
-  const listen = vi.fn(
-    async (_event: string, h: (event: { payload: unknown }) => void) => {
-      handler = h
-      return unlisten
-    }
-  )
+  const listen = vi.fn(async (_event: string, h: (event: { payload: unknown }) => void) => {
+    handler = h
+    return unlisten
+  })
   return {
     deps: { invoke, listen },
     unlisten,
@@ -113,9 +111,7 @@ describe('窗口活跃状态 store', () => {
     let resolveListen: (off: () => void) => void = () => {}
     const store = createWindowActiveStore({
       invoke: vi.fn(() => Promise.resolve(true)),
-      listen: vi.fn(
-        () => new Promise<() => void>((resolve) => (resolveListen = resolve))
-      ),
+      listen: vi.fn(() => new Promise<() => void>((resolve) => (resolveListen = resolve))),
     })
 
     const started = store.start()

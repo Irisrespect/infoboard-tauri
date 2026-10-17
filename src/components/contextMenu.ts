@@ -27,11 +27,7 @@ export const MENU_MARGIN = 4
  * @param viewport  可视区尺寸（通常 window.innerWidth / innerHeight）
  * @param menu      菜单尺寸（默认 MENU_SIZE）
  */
-export function clampMenuPosition(
-  requested: Point,
-  viewport: Size,
-  menu: Size = MENU_SIZE
-): Point {
+export function clampMenuPosition(requested: Point, viewport: Size, menu: Size = MENU_SIZE): Point {
   const maxX = Math.max(MENU_MARGIN, viewport.width - menu.width - MENU_MARGIN)
   const maxY = Math.max(MENU_MARGIN, viewport.height - menu.height - MENU_MARGIN)
   return {

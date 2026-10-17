@@ -9,9 +9,9 @@ const win = (...parts: string[]) => parts.join('\\')
 
 describe('fileNameOf', () => {
   it('Windows 反斜杠路径', () => {
-    expect(fileNameOf(win('C:', 'Users', 'a', 'AppData', 'Roaming', 'plugins', 'p', 'index.tsx'))).toBe(
-      'index.tsx'
-    )
+    expect(
+      fileNameOf(win('C:', 'Users', 'a', 'AppData', 'Roaming', 'plugins', 'p', 'index.tsx'))
+    ).toBe('index.tsx')
   })
 
   it('正斜杠与混合分隔符', () => {

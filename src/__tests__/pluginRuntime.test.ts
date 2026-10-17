@@ -21,7 +21,9 @@ describe('evaluatePluginSource', () => {
       const P: InfoBoardPlugin = { manifest: { id: 'x' } as any, Component: () => null }
       export default P
     `
-    const exp = evaluatePluginSource(src, 'index.tsx', MODULES) as { default: { manifest: { id: string } } }
+    const exp = evaluatePluginSource(src, 'index.tsx', MODULES) as {
+      default: { manifest: { id: string } }
+    }
     expect(exp.default.manifest.id).toBe('x')
   })
 
@@ -54,9 +56,9 @@ describe('evaluatePluginSource', () => {
   })
 
   it('相对路径 import 同样被拒绝（单文件插件，不支持多文件）', () => {
-    expect(() => evaluatePluginSource(`import x from './other'\nexport default x`, 'a.ts', MODULES)).toThrow(
-      PluginRuntimeError
-    )
+    expect(() =>
+      evaluatePluginSource(`import x from './other'\nexport default x`, 'a.ts', MODULES)
+    ).toThrow(PluginRuntimeError)
   })
 
   it('语法错误：抛 PluginRuntimeError 且带文件名', () => {
@@ -71,7 +73,9 @@ describe('evaluatePluginSource', () => {
   })
 
   it('顶层运行时错误：抛 PluginRuntimeError 而不是原始异常', () => {
-    expect(() => evaluatePluginSource(`throw new Error('boom')`, 'x.ts', MODULES)).toThrow(/执行失败.*boom/s)
+    expect(() => evaluatePluginSource(`throw new Error('boom')`, 'x.ts', MODULES)).toThrow(
+      /执行失败.*boom/s
+    )
   })
 
   it('插件拿不到调用处的局部变量（不是 eval）', () => {

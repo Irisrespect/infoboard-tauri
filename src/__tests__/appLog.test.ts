@@ -9,9 +9,7 @@ const nativeConsole = {
   debug: console.debug,
 }
 
-const invokeMock = vi.fn((_cmd: string, _args?: Record<string, unknown>) =>
-  Promise.resolve('')
-)
+const invokeMock = vi.fn((_cmd: string, _args?: Record<string, unknown>) => Promise.resolve(''))
 let appLogHandler: ((event: { payload: unknown }) => void) | null = null
 
 vi.mock('@tauri-apps/api/core', () => ({

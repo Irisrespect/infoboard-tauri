@@ -66,7 +66,11 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
   componentDidCatch(error: unknown, info: ErrorInfo): void {
     const err = toError(error)
     // 打到控制台（进应用内日志台 + app.log），别再让错误无影无踪
-    console.error(`[ErrorBoundary] ${this.props.label || '界面'} 渲染出错:`, err, info.componentStack)
+    console.error(
+      `[ErrorBoundary] ${this.props.label || '界面'} 渲染出错:`,
+      err,
+      info.componentStack
+    )
     this.props.onError?.(err, info)
   }
 

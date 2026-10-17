@@ -26,7 +26,11 @@ describe('eventBus.emit', () => {
     const off = eventBus.on('t:plain', handler, 'test-plain')
     eventBus.emit('t:plain', { x: 1 }, 'src')
     expect(handler).toHaveBeenCalledTimes(1)
-    expect(handler.mock.calls[0][0]).toMatchObject({ type: 't:plain', source: 'src', payload: { x: 1 } })
+    expect(handler.mock.calls[0][0]).toMatchObject({
+      type: 't:plain',
+      source: 'src',
+      payload: { x: 1 },
+    })
     off()
   })
 

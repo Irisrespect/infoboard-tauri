@@ -50,7 +50,8 @@ export const SVG_ICONS: Record<string, React.ReactNode> = {
  * 改为按 Unicode 属性判断。注意国旗是**两个** Regional_Indicator 组成，
  * 且它们不属于 Extended_Pictographic，必须单独匹配一对。
  */
-const EMOJI_TAIL = /(?:\uFE0F|\p{Emoji_Modifier}|\u200D(?:\p{Extended_Pictographic}|\p{Regional_Indicator}))*/u
+const EMOJI_TAIL =
+  /(?:\uFE0F|\p{Emoji_Modifier}|\u200D(?:\p{Extended_Pictographic}|\p{Regional_Indicator}))*/u
 const EMOJI_REGEX = new RegExp(
   `^(?:\\p{Regional_Indicator}{2}|\\p{Extended_Pictographic}${EMOJI_TAIL.source})$`,
   'u'
