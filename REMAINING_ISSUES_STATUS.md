@@ -128,21 +128,105 @@
 
 - 全仓中文硬编码。提取 `src/i18n/zh-CN.ts` 是大范围机械改动，单独一个 PR 更合适。
 
-### 5. 「小项（10）」等未展开条目
+### 5. 其余未修项
 
-- 原清单「体验 8」指向 `CODE_REVIEW.md` 的「小项（10）」，本报告未逐条核对，
-  需要时可从 `CODE_REVIEW.md` 再拉一次清单。
+详见第四节末尾「新增的未修项」，共 3 条（`ToolSection` screenshot 特判、
+翻译配置非原子写入、待办 hover 整列表重渲染）。
+
+---
+
+## 二·补、第二轮新修复（核对 `CODE_REVIEW.md` 详细条目）
+
+`REMAINING_ISSUES.md` 是 `CODE_REVIEW.md` 的摘要，摘要丢掉了「小项（10）」等细节。
+逐条核对 `CODE_REVIEW.md` 后又修掉 4 条：
+
+### 7. `isEmoji` 用字符串长度判断，组合 emoji 判错
+
+- **文件**：`src/components/ToolSection.tsx`（`ToolExpandPanel` 也复用）
+- **问题**：原实现 `str.length <= 2 && !/^[a-z]/`，**两个方向都错**：
+  - `👋🏽`（肤色修饰符）、`🏳️‍🌈`（ZWJ）长度 4~6 → 判成**不是** emoji，
+    落到"未知图标"分支用小号灰字显示
+  - `设置` 这类两个汉字长度是 2 且不以小写字母开头 → 被判成 emoji
+- **修复**：改按 Unicode 属性判断（`\p{Extended_Pictographic}` /
+  `\p{Regional_Indicator}`），并覆盖变体选择符、肤色修饰符、ZWJ 序列。
+  注意国旗是**两个** Regional_Indicator 且不属于 Extended_Pictographic，必须单独匹配一对。
+- **测试**：`src/__tests__/toolIcon.test.ts`（8 例）
+
+### 8. 渲染期改写模块级可变主题色（React 反模式）
+
+- **文件**：`src/plugins/weather/WeatherCard.tsx`、`src/plugins/todo/TodoCard.tsx`、
+  新增 `src/hooks/useAccent.tsx`
+- **问题**：两个卡片都用模块级 `let ACCENT` + 在渲染期 `ACCENT = accent`，
+  12 个子组件读这个模块级变量。渲染期产生副作用；React 18+ 并发渲染下会撕裂，
+  同一卡片被渲染两份（主区 + 展开面板）时互相覆盖。
+- **修复**：改为 `AccentProvider` + `useAccent()` Context。
+  `WeatherCard` 因有三个 early return（Loading/Error/Empty），
+  拆出 `WeatherCardBody` 以确保**所有分支**都在 Provider 内 ——
+  否则子组件会静默退回兜底色，这类 bug 最难发现。
+- **测试**：`src/__tests__/cardAccent.test.ts`（9 例，含 Provider 传值、嵌套覆盖、
+  以及"源码里不得再有 `let ACCENT` / 渲染期赋值"的静态断言）
+
+### 9. `String(err)` 会把对象型错误渲染成 `[object Object]`
+
+- **文件**：新增 `src/core/errorMessage.ts`，改 `ScreenshotOverlayWindow.tsx`、
+  `ScreenshotOverlay.tsx`（3 处）
+- **问题**：Tauri 的 `invoke` 拒绝时抛字符串，但第三方/包装层可能抛对象；
+  `String(e)` 对对象给出 `[object Object]`，用户和排查者都看不到原因。
+- **修复**：`errorMessage()` 统一处理字符串 / Error / `{message}` / `{error}` /
+  `{msg}` / `{code}` 形状；循环引用也不返回 `[object Object]`（列出字段名兜底）。
+- **测试**：`src/__tests__/errorMessage.test.ts`（10 例）
+
+### 10. `TitleBar` 最大化状态乐观翻转
+
+- **文件**：`src/components/TitleBar.tsx`
+- **问题**：`setIsMaximized(prev => !prev)` 假定命令一定成功、且期间状态没被别人改
+  （用户可能同时用 Win+↑）。窗口管理器拒绝最大化时图标会与真实状态相反。
+- **修复**：改为 `maximize()` 之后回读 `isMaximized()`；读取失败只记警告。
+
+### 顺带修掉的一处
+
+- `src/hooks/useThemeColors.ts` 的 `useSyncExternalStore` 缺第三个参数
+  （`getServerSnapshot`），任何服务端渲染 / SSR 测试都会抛
+  "Missing getServerSnapshot"。补上后基于 `renderToStaticMarkup` 的测试才可写。
 
 ---
 
 ## 四、本轮验证结果
-
 ```
 npx tsc --noEmit          → 0 errors
-npx vitest run            → 19 files / 118 tests passed   （新增 3 个测试文件 / 16 例）
+npx vitest run            → 22 files / 143 tests passed
 cargo test                → 61 passed, 0 failed
 cargo check               → Finished（无新增 warning）
+npm run build             → ✓ built（tsc + vite 全流程）
 ```
+
+### `CODE_REVIEW.md`「小项（10）」逐条核对结果
+
+| 小项 | 状态 |
+|---|---|
+| `ToolSection` 硬编码 screenshot 特判 | ⚠️ 仍在（属产品决策，见下） |
+| `isEmoji` 用 length 判断 | ✅ **本轮修复**（第 7 项） |
+| `TitleBar` 最大化状态乐观翻转 | ✅ **本轮修复**（第 10 项） |
+| `useSettings` 密钥输入框 `type="text"` | ✅ 已修 —— 密钥字段现为 `type="password"`（`text` 只用于 API Host / App ID 这类非密字段） |
+| 翻译配置两条命令写入非原子 | ⚠️ 仍在（见下） |
+| 邮箱表单只挡非空、`String(err)` 显示 `[object Object]` | ✅ `String(err)` 已修（第 9 项）；mail 模块已删除，表单部分不适用 |
+| `useTodo` 截止日期不校验 | ✅ 已修 —— 无效日期会 toast 提示并忽略 |
+| 待办保存失败静默丢数据 | ✅ 已修 —— `useTodo` 保存失败会 toast |
+| `TodoCard` 模块级可变 `ACCENT` | ✅ **本轮修复**（第 8 项） |
+| 待办 hover 驱动整列表重渲染 | ⚠️ 仍在（见下） |
+
+### 新增的未修项（来自「小项」核对）
+
+1. **`ToolSection` 硬编码 `screenshot` 特判**（`ToolSection.tsx:75`）：
+   点击工具图标时对 id 为 `screenshot` 的插件直接 `invoke('screenshot_start')`，
+   属"插件行为泄漏进内核"。正确做法是在 manifest 里声明 `onClickAction`
+   之类的字段，属**插件契约扩展**，需产品决策，不宜顺手改。
+2. **翻译配置两条命令写入非原子**（`translate/bridge.ts:53/57`）：
+   `niutrans_set_api_key` 与 `niutrans_set_app_id` 分两次 invoke，
+   中间失败会留下"新 Key + 旧 App ID"的组合。修法需要一个合并命令或事务语义。
+3. **待办 hover 驱动整列表重渲染**：`hoveredId` 存在 `TodoCard` 顶层 state，
+   鼠标划过每一项都重渲染整个列表。修法是把 hover 态下放到 `TodoItem` 内部
+   （或改用 CSS `:hover`），属性能优化，需要在实机上量收益。
 
 ### 原始验证清单对照
 
