@@ -222,6 +222,7 @@ node scripts/pack-plugin.mjs <插件目录>
 
 ## 更多资源
 
+- [`.ibplugin` 插件包开发者文档](PLUGIN_PACKAGE.md) —— 包格式、校验规则、打包与分发、排错
 - [完整教程](PLUGIN_TUTORIAL.md)
 - [API 文档](PLUGIN_API.md)
 - [插件模板](../plugins/.plugin-template/)

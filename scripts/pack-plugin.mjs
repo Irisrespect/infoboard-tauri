@@ -132,10 +132,63 @@ export function validatePluginId(id) {
   return null
 }
 
+/** 与 Rust 侧 loader::MAX_ENTRY_BYTES 保持一致（2 MB） */
+export const MAX_ENTRY_BYTES = 2 * 1024 * 1024
+
+/**
+ * 应用侧运行时允许 import 的模块（与 `src/core/pluginRuntime.ts` 的
+ * SHARED_MODULES 保持一致）。`import type` 会被擦除，所以不在此列也算合法。
+ */
+export const ALLOWED_MODULES = ['react', 'react/jsx-runtime', 'react-dom', '@tauri-apps/api/core']
+
+/**
+ * 静态分析入口源码里**会真正生效**的 import 说明符。
+ *
+ * - 跳过 `import type ...`（sucrase 转译时整体擦除，运行时不会 require）
+ * - 副作用 import（`import 'x'`）也计入，它同样会被 require
+ * - 这是尽力而为的正则扫描，不解析语法树；目的是在打包时提前报出最常见的问题
+ */
+export function findRuntimeImports(source) {
+  const found = new Set()
+  const re = /^[ \t]*import\s+(type\s+)?(?:[\s\S]*?\sfrom\s*)?['"]([^'"]+)['"]/gm
+  let m
+  while ((m = re.exec(source)) !== null) {
+    if (m[1]) continue // import type：会被擦除
+    found.add(m[2])
+  }
+  // 动态 import()（单文件插件里少见，但同样会被 require 拦下）
+  const dyn = /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g
+  while ((m = dyn.exec(source)) !== null) {
+    found.add(m[1])
+  }
+  return [...found]
+}
+
+/**
+ * 检查入口里是否 import 了运行时不允许的模块。
+ * @returns 问题描述列表（空数组表示没问题）
+ */
+export function checkRuntimeImports(source) {
+  const problems = []
+  for (const spec of findRuntimeImports(source)) {
+    if (ALLOWED_MODULES.includes(spec)) continue
+    if (spec.startsWith('.')) {
+      problems.push(
+        `import "${spec}"：插件必须是单文件，不支持相对路径 import（请把代码合并进入口文件）`
+      )
+    } else {
+      problems.push(
+        `import "${spec}"：不在运行时白名单里。可用：${ALLOWED_MODULES.join('、')}（import type 不受限，会被擦除）`
+      )
+    }
+  }
+  return problems
+}
+
 /**
  * 读插件目录、校验、产出 zip buffer
  * @param {string} pluginDir
- * @returns {{ id: string, version: string, buffer: Buffer, files: string[] }}
+ * @returns {{ id: string, version: string, buffer: Buffer, files: string[], warnings: string[] }}
  */
 export function packPlugin(pluginDir) {
   const manifestPath = join(pluginDir, 'manifest.json')
@@ -173,6 +226,29 @@ export function packPlugin(pluginDir) {
     throw new Error(`入口文件不存在: ${manifest.entry}`)
   }
 
+  const entrySource = readFileSync(entryPath, 'utf8')
+
+  // 依赖预检：应用侧会拒绝的 import 直接在这里报错，不用等装上去才发现
+  const importProblems = checkRuntimeImports(entrySource)
+  if (importProblems.length > 0) {
+    throw new Error(`入口文件 import 检查未通过：\n  - ${importProblems.join('\n  - ')}`)
+  }
+
+  const warnings = []
+  const entryBytes = Buffer.byteLength(entrySource, 'utf8')
+  if (entryBytes > MAX_ENTRY_BYTES) {
+    throw new Error(
+      `入口文件过大（${entryBytes} 字节，上限 ${MAX_ENTRY_BYTES}）—— 应用侧会拒绝加载`
+    )
+  }
+  if (!manifest.tauriCommands || manifest.tauriCommands.length === 0) {
+    if (/\binvoke\s*(<[^>]*>)?\s*\(/.test(entrySource)) {
+      warnings.push(
+        '入口里用到了 invoke，但 manifest.json 没有声明 tauriCommands —— 运行时所有 invoke 都会被拒绝（fail-closed）'
+      )
+    }
+  }
+
   const buffer = createZip([
     { name: 'manifest.json', data: readFileSync(manifestPath) },
     { name: entryRel, data: readFileSync(entryPath) },
@@ -183,6 +259,7 @@ export function packPlugin(pluginDir) {
     version: manifest.version || '0.0.0',
     buffer,
     files: ['manifest.json', entryRel],
+    warnings,
   }
 }
 
@@ -193,13 +270,16 @@ function isPluginDir(dir) {
 }
 
 function packOne(pluginDir, outDir) {
-  const { id, version, buffer, files } = packPlugin(pluginDir)
+  const { id, version, buffer, files, warnings } = packPlugin(pluginDir)
   mkdirSync(outDir, { recursive: true })
   const outFile = join(outDir, `${id}-${version}.ibplugin`)
   writeFileSync(outFile, buffer)
   const kb = (buffer.length / 1024).toFixed(1)
   console.log(`✅ ${id} ${version}  →  ${outFile}  (${kb} KB)`)
   console.log(`   包含: ${files.join(', ')}`)
+  for (const w of warnings ?? []) {
+    console.log(`   ⚠️  ${w}`)
+  }
   return outFile
 }
 
@@ -207,6 +287,26 @@ function main() {
   const argv = process.argv.slice(2)
   let outDir = resolve('dist-plugins')
   const targets = []
+
+  if (argv.includes('-h') || argv.includes('--help')) {
+    console.log(`用法: node scripts/pack-plugin.mjs <插件目录|包含多个插件的目录> [-o <输出目录>]
+
+把插件目录打包成可分发的 .ibplugin 文件（其实就是一个 zip）。
+使用者把 .ibplugin 拖进「设置 → 插件管理」即可安装，不需要知道插件目录在哪。
+
+参数:
+  <目录>              插件目录（含 manifest.json），或含多个插件的父目录
+  -o, --out <目录>    输出目录，默认 dist-plugins
+  -h, --help          显示本帮助
+
+示例:
+  node scripts/pack-plugin.mjs plugins/hello-world
+  node scripts/pack-plugin.mjs plugins -o build
+
+打包前会做与运行时一致的校验（id 规则、section、entry 路径、import 白名单、
+入口大小），不合格直接报错，不必等装上去才发现。`)
+    return
+  }
 
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]

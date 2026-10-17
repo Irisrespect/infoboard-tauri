@@ -521,3 +521,5 @@ A: 三种方式：
 ```bash
 node scripts/pack-plugin.mjs <插件目录>
 ```
+
+包格式、校验规则与排错详见 [`.ibplugin` 插件包开发者文档](PLUGIN_PACKAGE.md)。

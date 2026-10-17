@@ -44,7 +44,14 @@ InfoBoard 支持**外部插件热加载**，开发者可以编写独立插件包
 
 **示例：** 查看 [`plugins/hello-world/`](plugins/hello-world/) 示例插件
 
-**完整教程：** 阅读 [插件开发指南](docs/PLUGIN_TUTORIAL.md)
+**文档：**
+
+| 文档                                                     | 内容                                               |
+| -------------------------------------------------------- | -------------------------------------------------- |
+| [`docs/PLUGIN_PACKAGE.md`](docs/PLUGIN_PACKAGE.md)       | **`.ibplugin` 包格式、校验规则、打包与分发、排错** |
+| [`docs/PLUGIN_QUICKSTART.md`](docs/PLUGIN_QUICKSTART.md) | 5 分钟写出第一个插件                               |
+| [`docs/PLUGIN_API.md`](docs/PLUGIN_API.md)               | 可用 API 与 Rust 命令清单                          |
+| [`docs/PLUGIN_TUTORIAL.md`](docs/PLUGIN_TUTORIAL.md)     | 完整教程                                           |
 
 ### 打包与分发
 
@@ -52,9 +59,12 @@ InfoBoard 支持**外部插件热加载**，开发者可以编写独立插件包
 
 ```bash
 node scripts/pack-plugin.mjs plugins/hello-world        # 产出 dist-plugins/hello-world-1.0.0.ibplugin
+node scripts/pack-plugin.mjs plugins                    # 打一个目录下的所有插件
 ```
 
 `.ibplugin` 就是一个 zip，根目录含 `manifest.json` 与入口文件（入口名由 manifest 的 `entry` 指定）。
+打包前会做与运行时一致的校验（`id` 规则、`section`、`entry` 路径、**import 白名单**、入口大小），
+不合格直接报错，不必等装上去才发现。详见 [包开发者文档](docs/PLUGIN_PACKAGE.md)。
 
 ### 插件目录结构
 

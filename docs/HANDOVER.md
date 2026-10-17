@@ -205,7 +205,7 @@ npx tsc --noEmit                # 无输出即通过
 - 插件必须**单文件**；只能 import `react`、`react/jsx-runtime`、`react-dom`、`@tauri-apps/api/core`（白名单见 `pluginRuntime.ts` 的 `SHARED_MODULES`）。`@tauri-apps/api/event` **已移除**（插件不应监听宿主事件，如 `screenshot:data`）。
 - 插件代码跑在主窗口里，**权限等同于应用本身**。`manifest.tauriCommands` 已落地为**护栏**（声明之外一律拒绝，有 `pluginRuntime.test.ts` 的 fail-closed 用例）；但 `manifest.permissions` **仍无任何消费方**（保留字段），且这层护栏**不是安全边界** —— 插件仍可直接用 `window.__TAURI_INTERNALS__.invoke` 绕过。
 - 热重载入口**已有**：设置面板「插件管理 → 重新加载插件」调用 `reloadPluginSystem()`（提交 `d5cd79b` 落地）。
-- 插件导入/卸载**已有**：`.ibplugin` 插件包拖进设置面板即可安装，列表里可卸载（`plugins/pack.rs` 的 `install_plugin_package` / `uninstall_plugin` / `list_installed_plugins`，界面在 `SettingsPanel` 的插件管理区）。
+- 插件导入/卸载**已有**：`.ibplugin` 插件包拖进设置面板即可安装，列表里可卸载（`src-tauri/src/plugins/pack.rs` 的 `install_plugin_package` / `uninstall_plugin` / `list_installed_plugins`，界面在 `SettingsPanel` 的插件管理区）。包格式与打包流程见 `docs/PLUGIN_PACKAGE.md`。
 - `_template`、`plugins/.plugin-template` 的 import 写法已统一成 `'@/core/types'`，并有 `?raw` 加载用例覆盖。
 - 要更严的隔离需要 iframe/Worker 沙箱，工作量大，未做。
 

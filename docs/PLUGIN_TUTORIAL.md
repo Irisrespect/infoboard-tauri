@@ -242,6 +242,8 @@ node scripts/pack-plugin.mjs <插件目录>
 
 ## 下一步
 
-- 查看更多插件示例：`docs/PLUGIN_EXAMPLES.md`
-- 了解插件 API 文档：`docs/PLUGIN_API.md`
-- 开发自定义 Tauri 命令：`docs/PLUGIN_RUST.md`
+- 插件包格式、打包与分发：[`.ibplugin` 开发者文档](PLUGIN_PACKAGE.md)
+- 了解插件 API 文档：[PLUGIN_API.md](PLUGIN_API.md)
+- 5 分钟快速上手：[PLUGIN_QUICKSTART.md](PLUGIN_QUICKSTART.md)
+- 查看更多插件示例：[`plugins/hello-world/`](../plugins/hello-world/)、
+  [`plugins/.plugin-template/`](../plugins/.plugin-template/)
