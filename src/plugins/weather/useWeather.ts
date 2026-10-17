@@ -4,11 +4,12 @@
  * 负责：
  * 1. 调用和风天气 API 获取实时天气和 3 天预报
  * 2. localStorage 缓存（30 分钟过期）
- * 3. 定时刷新（30 分钟间隔）
+ * 3. 定时刷新（30 分钟间隔，**仅窗口活跃时**）
  * 4. 错误处理 + 离线检测
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { useWindowActive } from '../../core/useWindowActive'
 import type {
   WeatherData,
   ForecastDay,
@@ -268,6 +269,12 @@ export function useWeather(): UseWeatherReturn {
   const dataRef = useRef(data)
   dataRef.current = data
 
+  /** 窗口是否活跃；隐藏到托盘 / 最小化时停止定时刷新 */
+  const active = useWindowActive()
+
+  /** 轮询 effect 是否已跑过第一轮（第一轮不补请求：初始 fetch 已经发过） */
+  const pollStartedRef = useRef(false)
+
   /**
    * 保存到缓存
    */
@@ -285,10 +292,12 @@ export function useWeather(): UseWeatherReturn {
    * @returns 是否真的刷新成功（供"刷新"按钮提示用；失败原因已写进 error 状态）
    */
   const fetchWeather = useCallback(
-    async (config?: CityInfo): Promise<boolean> => {
+    async (config?: CityInfo, options?: { silent?: boolean }): Promise<boolean> => {
       const city = config || cityConfig
       const locationParam = getLocationParam(city)
       const cityName = city.name
+      // 后台自动刷新（还原窗口 / 定时器）不切 loading，避免卡片闪回骨架屏
+      const silent = options?.silent === true
 
       console.log('[天气] ========== fetchWeather 开始 ==========')
       console.log('[天气] 城市:', cityName, 'locationParam:', locationParam)
@@ -320,7 +329,7 @@ export function useWeather(): UseWeatherReturn {
       const controller = new AbortController()
       abortControllerRef.current = controller
 
-      setLoading(true)
+      if (!silent) setLoading(true)
       setError(null)
 
       try {
@@ -472,7 +481,7 @@ export function useWeather(): UseWeatherReturn {
         }
         return false
       } finally {
-        setLoading(false)
+        if (!silent) setLoading(false)
       }
     },
     [cityConfig, saveToCache]
@@ -505,13 +514,24 @@ export function useWeather(): UseWeatherReturn {
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 定时刷新
+  // 定时刷新：只在窗口活跃（可见且未最小化）时轮询。
+  // 原先无脑 setInterval，隐藏到托盘后仍每 30 分钟穿一次 WebView → reqwest，
+  // 与"隐藏后停止轮询"的目标相悖（媒体轮询已经这么做了）。
   useEffect(() => {
+    if (!active) return
+
+    // 第一轮不补请求（上面的初始 fetch 已经发过）；之后每次"从不活跃变回活跃"
+    // 都立即补一次，避免从托盘还原后还显示着几十分钟前的数据
+    if (pollStartedRef.current) {
+      fetchWeather(undefined, { silent: true })
+    }
+    pollStartedRef.current = true
+
     const timer = setInterval(() => {
-      fetchWeather()
+      fetchWeather(undefined, { silent: true })
     }, REFRESH_INTERVAL)
     return () => clearInterval(timer)
-  }, [fetchWeather])
+  }, [active, fetchWeather])
 
   // 监听网络状态变化
   useEffect(() => {

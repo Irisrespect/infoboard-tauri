@@ -17,6 +17,7 @@ import { useLocationSearch } from './useLocationSearch'
 import { WeatherIcon } from './WeatherIcon'
 import { useThemeColors } from '../../hooks/useThemeColors'
 import { withAlpha } from '../../utils/themeColor'
+import { formatUvIndex } from './display'
 
 // ─── 主题色（模块级，由 WeatherCard 主组件在每次渲染时更新）───
 let ACCENT = '#DA7756'
@@ -264,11 +265,13 @@ function ExpandedView({
 // ─── 详情网格（4 列，按 Pencil 设计）───
 
 function DetailGrid({ data }: { data: WeatherData }) {
+  const uvText = formatUvIndex(data.uvIndex)
   const items = [
     { label: '湿度', value: `${data.humidity}%`, icon: 'droplets' },
     { label: '风速', value: `${data.windSpeed} km/h`, icon: 'wind' },
     { label: '能见度', value: `${data.visibility} km`, icon: 'eye' },
-    { label: '紫外线', value: data.uvIndex || '--', icon: 'sun' },
+    // 只有紫外线可能是文案而非数字（缺数据时显示「暂无」），单独标记以缩小字号
+    { label: '紫外线', value: uvText, icon: 'sun', isText: uvText === '暂无' },
   ]
 
   return (
@@ -281,8 +284,11 @@ function DetailGrid({ data }: { data: WeatherData }) {
         >
           <WeatherIcon name={item.icon} size={14} color={ACCENT} />
           <span
-            className="text-sm font-semibold"
-            style={{ fontFamily: 'Geist', color: 'var(--text-primary)' }}
+            className={item.isText ? 'text-[11px] font-medium' : 'text-sm font-semibold'}
+            style={{
+              fontFamily: 'Geist',
+              color: item.isText ? 'var(--text-muted)' : 'var(--text-primary)',
+            }}
           >
             {item.value}
           </span>
