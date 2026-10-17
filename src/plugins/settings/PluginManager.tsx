@@ -37,6 +37,9 @@ export function PluginManager({ onChanged }: PluginManagerProps) {
   const [dragActive, setDragActive] = useState(false)
   const [message, setMessage] = useState<{ text: string; ok: boolean } | null>(null)
   const messageTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // 拖拽监听只注册一次，回调里通过这两个 ref 取最新实现（见下面 effect 的注释）
+  const installRef = useRef<(path: string) => Promise<void>>(async () => {})
+  const messageRef = useRef<(text: string, ok: boolean) => void>(() => {})
 
   const showMessage = useCallback((text: string, ok: boolean) => {
     setMessage({ text, ok })
@@ -127,7 +130,15 @@ export function PluginManager({ onChanged }: PluginManagerProps) {
     [removingId, reloadAfterChange, refreshList, showMessage]
   )
 
+  // 每次渲染刷新 ref，保证拖拽回调总能拿到最新的实现
+  installRef.current = doInstall
+  messageRef.current = showMessage
+
   // 拖拽：用 Tauri 的文件拖放事件（WebView 里 HTML5 的 drop 拿不到真实路径）
+  //
+  // 注意依赖必须是**稳定**的：doInstall 依赖 installing，安装期间身份会变，
+  // 若把它写进依赖数组，监听器会在安装过程中被拆掉重建 —— 正好丢掉后续事件。
+  // 所以这里通过 ref 读最新实现，effect 只在挂载时注册一次。
   useEffect(() => {
     let unlisten: (() => void) | undefined
     let cancelled = false
@@ -142,14 +153,14 @@ export function PluginManager({ onChanged }: PluginManagerProps) {
           setDragActive(false)
           const pkg = payload.paths.find(looksLikePluginPackage)
           if (pkg) {
-            void doInstall(pkg)
+            void installRef.current(pkg)
           } else if (payload.paths.length > 0) {
-            showMessage(`请拖入 .${PLUGIN_PACKAGE_EXT} 插件包`, false)
+            messageRef.current(`请拖入 .${PLUGIN_PACKAGE_EXT} 插件包`, false)
           }
-        } else {
-          // over：光标移动，不用管；leave：取消拖拽，取消高亮
-          if (payload.type === 'leave') setDragActive(false)
+        } else if (payload.type === 'leave') {
+          setDragActive(false)
         }
+        // over：光标移动，不用管
       })
       .then((fn) => {
         if (cancelled) fn()
@@ -163,7 +174,7 @@ export function PluginManager({ onChanged }: PluginManagerProps) {
       cancelled = true
       unlisten?.()
     }
-  }, [doInstall, showMessage])
+  }, [])
 
   const busy = installing || removingId !== null
 
