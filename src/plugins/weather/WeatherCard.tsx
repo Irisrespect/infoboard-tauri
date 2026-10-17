@@ -16,11 +16,13 @@ import { useWeather } from './useWeather'
 import { useLocationSearch } from './useLocationSearch'
 import { WeatherIcon } from './WeatherIcon'
 import { useThemeColors } from '../../hooks/useThemeColors'
+import { AccentProvider, useAccent } from '../../hooks/useAccent'
 import { withAlpha } from '../../utils/themeColor'
 import { formatUvIndex } from './display'
 
-// ─── 主题色（模块级，由 WeatherCard 主组件在每次渲染时更新）───
-let ACCENT = '#DA7756'
+// ─── 主题色 ───
+// 子组件通过 useAccent() 从 Context 读取，不再用模块级可变变量
+// （原先 `let ACCENT` + 渲染期赋值：渲染期副作用，并发渲染下会撕裂）
 
 // ─── Toast ───
 
@@ -35,8 +37,6 @@ interface ToastState {
 export function WeatherCard({ manifest, expanded }: PluginComponentProps) {
   const { data, loading, error, refresh, city, setCity, isOffline } = useWeather()
   const { accent } = useThemeColors()
-  // 更新模块级主题色，供子组件使用
-  ACCENT = accent
   const [toast, setToast] = useState<ToastState | null>(null)
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -68,8 +68,48 @@ export function WeatherCard({ manifest, expanded }: PluginComponentProps) {
     }
   }, [])
 
+  // 所有分支都要能读到主题色，所以在最外层统一提供（而不是只在 data 分支里）
+  return (
+    <AccentProvider value={accent}>
+      <WeatherCardBody
+        data={data}
+        loading={loading}
+        error={error}
+        isOffline={isOffline}
+        city={city}
+        setCity={setCity}
+        expanded={expanded}
+        toast={toast}
+        onRefresh={handleRefresh}
+      />
+    </AccentProvider>
+  )
+}
+
+/** 卡片主体（与上方 Provider 分离，避免 early return 绕过 Provider） */
+function WeatherCardBody({
+  data,
+  loading,
+  error,
+  isOffline,
+  city,
+  setCity,
+  expanded,
+  toast,
+  onRefresh,
+}: {
+  data: WeatherData | null
+  loading: boolean
+  error: string | null
+  isOffline: boolean
+  city: string
+  setCity: (city: CityInfo) => void
+  expanded: boolean | undefined
+  toast: ToastState | null
+  onRefresh: () => void
+}) {
   if (loading && !data) return <LoadingState />
-  if (error && !data) return <ErrorState message={error} onRetry={handleRefresh} />
+  if (error && !data) return <ErrorState message={error} onRetry={onRefresh} />
 
   if (data) {
     return (
@@ -90,7 +130,7 @@ export function WeatherCard({ manifest, expanded }: PluginComponentProps) {
               data={data}
               city={city}
               setCity={setCity}
-              onRefresh={handleRefresh}
+              onRefresh={onRefresh}
               isOffline={isOffline}
             />
           </div>
@@ -112,12 +152,13 @@ export function WeatherCard({ manifest, expanded }: PluginComponentProps) {
     )
   }
 
-  return <EmptyState onRetry={handleRefresh} />
+  return <EmptyState onRetry={onRefresh} />
 }
 
 // ─── 折叠视图 ───
 
 function CompactView({ data, isOffline }: { data: WeatherData; isOffline: boolean }) {
+  const ACCENT = useAccent()
   return (
     <div className="flex items-center gap-3">
       {/* 图标带圆形背景 */}
@@ -158,6 +199,7 @@ function ExpandedView({
   onRefresh: () => void
   isOffline: boolean
 }) {
+  const ACCENT = useAccent()
   const { results, searching, autoLocate, clearResults } = useLocationSearch()
 
   // 自动定位完成后，自动选择结果
@@ -265,6 +307,7 @@ function ExpandedView({
 // ─── 详情网格（4 列，按 Pencil 设计）───
 
 function DetailGrid({ data }: { data: WeatherData }) {
+  const ACCENT = useAccent()
   const uvText = formatUvIndex(data.uvIndex)
   const items = [
     { label: '湿度', value: `${data.humidity}%`, icon: 'droplets' },
@@ -304,6 +347,7 @@ function DetailGrid({ data }: { data: WeatherData }) {
 // ─── 逐时预报 ───
 
 function HourlySection({ hourly }: { hourly: HourlyForecast[] }) {
+  const ACCENT = useAccent()
   return (
     <div className="flex flex-col gap-1.5">
       <span
@@ -344,6 +388,7 @@ function HourlySection({ hourly }: { hourly: HourlyForecast[] }) {
 // ─── 3 日预报（按 Pencil 设计：横向 3 列卡片）───
 
 function ForecastSection({ forecast }: { forecast: ForecastDay[] }) {
+  const ACCENT = useAccent()
   const labels = ['今天', '明天', '后天']
   return (
     <div className="flex flex-col gap-1.5">
@@ -380,6 +425,7 @@ function ForecastSection({ forecast }: { forecast: ForecastDay[] }) {
 // ─── 状态组件 ───
 
 function LoadingState() {
+  const ACCENT = useAccent()
   return (
     <div className="flex items-center justify-center py-6">
       <div className="flex flex-col items-center gap-2">
@@ -396,6 +442,7 @@ function LoadingState() {
 }
 
 function ErrorState({ message, onRetry }: { message: string; onRetry: () => void }) {
+  const ACCENT = useAccent()
   return (
     <div className="flex flex-col items-center gap-2 py-4">
       <WeatherIcon name="alert" size={32} color={ACCENT} />
@@ -417,6 +464,7 @@ function ErrorState({ message, onRetry }: { message: string; onRetry: () => void
 }
 
 function EmptyState({ onRetry }: { onRetry: () => void }) {
+  const ACCENT = useAccent()
   return (
     <div className="flex flex-col items-center gap-2 py-4">
       <WeatherIcon name="cloud-sun" size={32} color={ACCENT} />

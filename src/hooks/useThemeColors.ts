@@ -20,7 +20,10 @@ import { withAlpha } from '../utils/themeColor'
  * ```
  */
 export function useThemeColors() {
-  const accent = useSyncExternalStore(subscribe, getSnapshot)
+  // 第三个参数（getServerSnapshot）必须给：缺了它，任何服务端渲染或基于
+  // renderToStaticMarkup 的测试都会抛 "Missing getServerSnapshot"。
+  // 这个 store 无副作用，直接复用同一个读函数即可。
+  const accent = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
 
   return { accent, withAlpha }
 }

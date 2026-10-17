@@ -12,11 +12,13 @@ import type { PluginComponentProps } from '../../core/types'
 import type { Todo, FilterType } from './types'
 import { useTodo } from './useTodo'
 import { useThemeColors } from '../../hooks/useThemeColors'
+import { AccentProvider, useAccent } from '../../hooks/useAccent'
 import { withAlpha } from '../../utils/themeColor'
 import { getFirstActiveTodo, ISO_DATE_REGEX } from './utils'
 
-// ─── 主题色（模块级，由 TodoCard 主组件在每次渲染时更新）───
-let ACCENT = '#DA7756'
+// ─── 主题色 ───
+// 子组件通过 useAccent() 从 Context 读取，不再用模块级可变变量
+// （原先 `let ACCENT` + 渲染期赋值：渲染期副作用，并发渲染下会撕裂）
 
 // ─── 日期格式化 ───
 
@@ -62,8 +64,6 @@ export function TodoCard({ manifest, expanded }: PluginComponentProps) {
     stats,
   } = useTodo()
   const { accent } = useThemeColors()
-  // 更新模块级主题色，供子组件使用
-  ACCENT = accent
   const [inputValue, setInputValue] = useState('')
   const [deadlineValue, setDeadlineValue] = useState('')
   const [hoveredId, setHoveredId] = useState<string | null>(null)
@@ -102,47 +102,50 @@ export function TodoCard({ manifest, expanded }: PluginComponentProps) {
   }, [expanded])
 
   return (
-    <div className="relative">
-      {/* 折叠摘要：始终可见 */}
-      <CompactView activeCount={stats.active} firstTodo={firstActiveTodo} />
+    <AccentProvider value={accent}>
+      <div className="relative">
+        {/* 折叠摘要：始终可见 */}
+        <CompactView activeCount={stats.active} firstTodo={firstActiveTodo} />
 
-      {/* 展开详情：grid 行高动画 0fr ↔ 1fr */}
-      <div
-        className="transition-[grid-template-rows] duration-500 ease-[cubic-bezier(0.4,0,0.2,1)]"
-        style={{
-          display: 'grid',
-          gridTemplateRows: expanded ? '1fr' : '0fr',
-        }}
-      >
-        <div className="overflow-hidden min-h-0">
-          <ExpandedView
-            todos={todos}
-            stats={stats}
-            filter={filter}
-            setFilter={setFilter}
-            inputValue={inputValue}
-            setInputValue={setInputValue}
-            deadlineValue={deadlineValue}
-            setDeadlineValue={setDeadlineValue}
-            inputRef={inputRef}
-            datePickerRef={datePickerRef}
-            hoveredId={hoveredId}
-            setHoveredId={setHoveredId}
-            onAdd={handleAdd}
-            onKeyDown={handleKeyDown}
-            onToggle={toggleTodo}
-            onDelete={deleteTodo}
-            onClearCompleted={clearCompleted}
-          />
+        {/* 展开详情：grid 行高动画 0fr ↔ 1fr */}
+        <div
+          className="transition-[grid-template-rows] duration-500 ease-[cubic-bezier(0.4,0,0.2,1)]"
+          style={{
+            display: 'grid',
+            gridTemplateRows: expanded ? '1fr' : '0fr',
+          }}
+        >
+          <div className="overflow-hidden min-h-0">
+            <ExpandedView
+              todos={todos}
+              stats={stats}
+              filter={filter}
+              setFilter={setFilter}
+              inputValue={inputValue}
+              setInputValue={setInputValue}
+              deadlineValue={deadlineValue}
+              setDeadlineValue={setDeadlineValue}
+              inputRef={inputRef}
+              datePickerRef={datePickerRef}
+              hoveredId={hoveredId}
+              setHoveredId={setHoveredId}
+              onAdd={handleAdd}
+              onKeyDown={handleKeyDown}
+              onToggle={toggleTodo}
+              onDelete={deleteTodo}
+              onClearCompleted={clearCompleted}
+            />
+          </div>
         </div>
       </div>
-    </div>
+    </AccentProvider>
   )
 }
 
 // ─── 折叠视图 ───
 
 function CompactView({ activeCount, firstTodo }: { activeCount: number; firstTodo?: Todo }) {
+  const ACCENT = useAccent()
   return (
     <div className="flex flex-col gap-2.5">
       {/* 顶部行：图标 + 标题 + 未完成数 + chevron */}
@@ -235,6 +238,7 @@ function ExpandedView({
   onDelete,
   onClearCompleted,
 }: ExpandedViewProps) {
+  const ACCENT = useAccent()
   const progressPercent = stats.total > 0 ? (stats.completed / stats.total) * 100 : 0
 
   return (
@@ -406,6 +410,7 @@ function TodoItem({
   onToggle,
   onDelete,
 }: TodoItemProps) {
+  const ACCENT = useAccent()
   // 计算是否逾期（截止日期当天不算逾期，因为我们存储的是当天 23:59:59）
   const isOverdue = !todo.completed && todo.deadlineTs != null && todo.deadlineTs < Date.now()
 
