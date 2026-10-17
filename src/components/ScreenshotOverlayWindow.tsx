@@ -7,6 +7,7 @@
 
 import { useEffect, useState } from 'react'
 import { ScreenshotOverlay } from '../plugins/screenshot/ScreenshotOverlay'
+import { errorMessage } from '../core/errorMessage'
 import { invoke } from '@tauri-apps/api/core'
 import { emit, listen } from '@tauri-apps/api/event'
 
@@ -32,7 +33,8 @@ export function ScreenshotOverlayWindow() {
         const v = await invoke<string | null>('screenshot_get_image')
         if (!cancelled && v) setImage(v)
       } catch (e) {
-        if (!cancelled) setError(String(e))
+        // String(e) 遇到对象型拒绝值会渲染成 [object Object]，用户看不到原因
+        if (!cancelled) setError(errorMessage(e))
       }
     })()
 

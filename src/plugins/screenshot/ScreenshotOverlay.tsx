@@ -11,6 +11,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import * as screenshotBridge from './bridge'
 import * as ocrBridge from './ocr-bridge'
+import { errorMessage } from '../../core/errorMessage'
 
 interface SelectionRect {
   x: number
@@ -166,7 +167,7 @@ export function ScreenshotOverlay({ onClose, initialImage }: ScreenshotOverlayPr
         }
       } catch (err) {
         if (!cancelled) {
-          setError(String(err))
+          setError(errorMessage(err))
           setState('idle')
         }
       }
@@ -228,7 +229,7 @@ export function ScreenshotOverlay({ onClose, initialImage }: ScreenshotOverlayPr
       onClose()
     } catch (err) {
       console.error('[截图] 写入剪贴板失败:', err)
-      setError(String(err))
+      setError(errorMessage(err))
     }
   }, [selection, screenImage, onClose])
 
@@ -298,7 +299,7 @@ export function ScreenshotOverlay({ onClose, initialImage }: ScreenshotOverlayPr
         setError(errMsg)
       }
     } catch (err) {
-      setError(String(err))
+      setError(errorMessage(err))
     } finally {
       setOcrLoading(false)
     }

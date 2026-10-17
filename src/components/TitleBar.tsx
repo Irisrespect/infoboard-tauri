@@ -24,9 +24,14 @@ export function TitleBar() {
 
   const handleMaximize = async () => {
     console.log('[窗口] 点击最大化/还原按钮')
-    if (window.electronAPI) {
-      await window.electronAPI.maximize()
-      setIsMaximized((prev) => !prev)
+    if (!window.electronAPI) return
+    await window.electronAPI.maximize()
+    // 不乐观翻转本地状态：窗口管理器可能拒绝最大化（如被系统策略限制），
+    // 或用户在此期间用 Win+↑ 改了状态。改成回读真实状态，图标才不会和窗口不一致。
+    try {
+      setIsMaximized(await window.electronAPI.isMaximized())
+    } catch (err) {
+      console.warn('[窗口] 读取最大化状态失败:', err)
     }
   }
 
