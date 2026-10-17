@@ -6,7 +6,7 @@
  * 和风天气 GeoAPI 用坐标反查可精确到区/街道级 LocationID
  */
 
-import { useState, useCallback, useRef } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import type { CityInfo, UseLocationSearchReturn } from './types'
 import { httpGetJson } from '../../core/http-client'
 import { QWEATHER_KEY_PLACEHOLDER } from '../settings/secrets'
@@ -103,6 +103,25 @@ export function useLocationSearch(): UseLocationSearchReturn & {
   const [searchError, setSearchError] = useState<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  /**
+   * 卸载时清理防抖定时器与在途请求。
+   *
+   * 原先只 clearTimeout 在 `search()` 内部，组件卸载后 300ms 的定时器仍会触发，
+   * 在已卸载组件上 setState，并在窗口关闭途中白白发一个请求。
+   */
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) {
+        clearTimeout(timerRef.current)
+        timerRef.current = null
+      }
+      if (abortRef.current) {
+        abortRef.current.abort()
+        abortRef.current = null
+      }
+    }
+  }, [])
 
   /**
    * 请求浏览器 GPS 精确定位（需要用户授权）

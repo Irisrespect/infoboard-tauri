@@ -94,6 +94,44 @@ export function ScreenshotOverlay({ onClose, initialImage }: ScreenshotOverlayPr
     setState('selected')
   }, [state, startPos, currentPos, calcRect])
 
+  // 最新坐标的快照：document 级兜底回调里必须读到最新值，不能依赖闭包捕获
+  const startPosRef = useRef(startPos)
+  startPosRef.current = startPos
+  const currentPosRef = useRef(currentPos)
+  currentPosRef.current = currentPos
+
+  // 松手兜底：拖拽时把指针移出窗口外再松手，覆盖层的 onMouseUp 收不到事件，
+  // 会永远停在 'selecting'（之后再按左键也不响应，等于截图卡死）。
+  // 这里在 document 上监听 pointerup / pointercancel，并用最后一帧坐标结算。
+  useEffect(() => {
+    if (state !== 'selecting') return
+
+    const settle = () => {
+      const rect = calcRect(
+        startPosRef.current.x,
+        startPosRef.current.y,
+        currentPosRef.current.x,
+        currentPosRef.current.y
+      )
+      if (rect.width < 5 || rect.height < 5) {
+        setState('idle')
+        return
+      }
+      setSelection(rect)
+      setState('selected')
+    }
+
+    document.addEventListener('pointerup', settle)
+    document.addEventListener('pointercancel', settle)
+    // 指针移出窗口后 WebView 可能不再转发 pointer 事件，窗口失焦作为最后兜底
+    window.addEventListener('blur', settle)
+    return () => {
+      document.removeEventListener('pointerup', settle)
+      document.removeEventListener('pointercancel', settle)
+      window.removeEventListener('blur', settle)
+    }
+  }, [state, calcRect])
+
   // 键盘事件处理
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
