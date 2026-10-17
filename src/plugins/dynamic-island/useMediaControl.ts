@@ -56,7 +56,12 @@ export function useMediaControl(): UseMediaControlReturn {
   /** 上次日志签名，避免 2s 轮询刷屏 */
   const lastLogKeyRef = useRef('')
 
+  /** 在途请求标志：防止定时器触发时上一次请求还没返回而产生并发调用 */
+  const isFetchingRef = useRef(false)
+
   const fetchSession = useCallback(async () => {
+    if (isFetchingRef.current) return
+    isFetchingRef.current = true
     try {
       setError(null)
       const session = await getCurrentSession()
@@ -84,6 +89,7 @@ export function useMediaControl(): UseMediaControlReturn {
       setError('获取媒体会话失败')
     } finally {
       setIsLoading(false)
+      isFetchingRef.current = false
     }
   }, [])
 
