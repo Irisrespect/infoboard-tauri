@@ -29,18 +29,18 @@ plugins/
 
 ### 字段说明
 
-| 字段            | 必填 | 说明                             |
-| --------------- | ---- | -------------------------------- |
-| `id`            | ✅   | 插件唯一标识，全局不可重复       |
-| `name`          | ✅   | 插件显示名称                     |
-| `version`       | ✅   | 版本号，建议使用语义化版本       |
-| `author`        | ❌   | 插件作者                         |
-| `description`   | ❌   | 插件描述                         |
-| `section`       | ✅   | 插件所属区域，`info` 或 `tool`   |
-| `icon`          | ✅   | 插件图标，支持 emoji 或图片路径  |
-| `entry`         | ✅   | 入口文件路径，相对于插件目录     |
-| `permissions`   | ❌   | 声明的权限列表 (未来版本)        |
-| `tauriCommands` | ❌   | 自定义 Tauri 命令列表 (未来版本) |
+| 字段            | 必填 | 说明                                                       |
+| --------------- | ---- | ---------------------------------------------------------- |
+| `id`            | ✅   | 插件唯一标识，全局不可重复                                 |
+| `name`          | ✅   | 插件显示名称                                               |
+| `version`       | ✅   | 版本号，建议使用语义化版本                                 |
+| `author`        | ❌   | 插件作者                                                   |
+| `description`   | ❌   | 插件描述                                                   |
+| `section`       | ✅   | 插件所属区域，`info` 或 `tool`                             |
+| `icon`          | ✅   | 插件图标，支持 emoji 或图片路径                            |
+| `entry`         | ✅   | 入口文件路径，相对于插件目录                               |
+| `permissions`   | ❌   | 声明的权限列表（**当前无消费方**，保留字段）               |
+| `tauriCommands` | ❌   | **要调用 `invoke` 就必须在这里声明命令名**，否则运行时被拒 |
 
 ## index.tsx
 
@@ -163,7 +163,10 @@ useEffect(() => {
 
 ## 热重载
 
-开发时修改外部插件后，调用以下方法重新加载：
+**设置 → 插件管理 → 重新加载插件** 即可，不用重启应用。它会先
+`pluginRegistry.clear()`（触发每个插件的 `onDestroy`）再重新扫描 `plugins/` 目录。
+
+想在代码里触发同样的动作：
 
 ```tsx
 import { reloadPluginSystem } from '@/core/PluginHost'
@@ -171,6 +174,32 @@ import { reloadPluginSystem } from '@/core/PluginHost'
 // 在开发面板或控制台执行
 await reloadPluginSystem()
 ```
+
+## 安装 / 卸载 / 分发
+
+### 安装插件包（给使用者）
+
+把 `.ibplugin` 文件**拖到 设置 → 插件管理 的虚线框**里，或点「选择插件包」，
+安装后自动加载。不需要知道插件目录在哪，也不需要重启。
+
+### 卸载
+
+**设置 → 插件管理** 的插件列表里点「卸载」，会删除插件目录并重新加载。
+
+### 打包分发（给作者）
+
+```bash
+node scripts/pack-plugin.mjs <插件目录>        # 例如 plugins/my-first-plugin
+# 产出 dist-plugins/<id>-<version>.ibplugin
+```
+
+`.ibplugin` 就是一个 zip，根目录含 `manifest.json` 与入口文件。
+使用者拖进去即可安装；同 id 的包会覆盖安装（等于升级）。
+
+### 手动安装（开发时）
+
+直接把插件目录放到 `%APPDATA%\com.infoboard.tauri\plugins\` 下，
+再点「重新加载插件」。改完源码点一下就能看到效果。
 
 ## 常见问题
 
@@ -181,22 +210,35 @@ await reloadPluginSystem()
 3. 检查 `entry` 文件路径是否正确
 4. 按 F12 打开应用内日志台，搜索 `PluginLoader`：转译失败、import 了不支持的模块等原因都会写在这里
 
+导入 `.ibplugin` 失败时界面会直接弹出原因（包损坏 / 缺 manifest.json / id 不合法 / 包过大等）。
+
 ### 如何调试插件？
 
-在插件代码中使用 `console.log` 或浏览器开发者工具断点调试。
+在插件代码中使用 `console.log`，日志会进应用内日志台（F12 打开）。
 
 ### 插件可以访问哪些 API？
 
 外部插件运行在受控环境里，只能 import 下面这些模块（与应用共用同一份实例）：
 
 - `react`、`react/jsx-runtime`、`react-dom`
-- `@tauri-apps/api/core`（`invoke` 等）、`@tauri-apps/api/event`
+- `@tauri-apps/api/core`（`invoke`）—— 且只能调用 manifest 的 `tauriCommands` 里声明过的命令
 
-不支持：相对路径 import（插件必须是单文件）、其他 npm 包、`@/core/*` 运行时模块（如 `pluginRegistry`）。`import type` 会被擦除，所以 `import type { InfoBoardPlugin } from '@/core/types'` 仍然可用。
+不支持：相对路径 import（插件必须是单文件）、其他 npm 包、`@/core/*` 运行时模块（如 `pluginRegistry`）、
+以及 `@tauri-apps/api/event`（插件不应监听宿主事件）。`import type` 会被擦除，所以
+`import type { InfoBoardPlugin } from '@/core/types'` 仍然可用。
 
 ### 如何分发插件？
 
-将整个插件目录（包含 `manifest.json` 和 `entry` 文件）打包为 ZIP，用户解压到 `%APPDATA%\com.infoboard.tauri\plugins\` 即可使用。
+用仓库自带脚本打包成**单个 `.ibplugin` 文件**，对方在 设置 → 插件管理 里拖进去即可安装
+（见上面「打包分发」）：
+
+```bash
+node scripts/pack-plugin.mjs <插件目录>
+```
+
+也仍然可以直接把整个插件目录压成 ZIP，让对方解压到
+`%APPDATA%\com.infoboard.tauri\plugins\` —— 但那样对方需要手动找目录，
+`.ibplugin` 是更省事的方式。
 
 ## 下一步
 

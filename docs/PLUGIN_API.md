@@ -80,9 +80,11 @@ const count = pluginRegistry.size
 ## Tauri API
 
 外部插件**只能 import 运行时白名单里的模块**（见 `src/core/pluginRuntime.ts` 的
-`SHARED_MODULES`）：`react`、`react/jsx-runtime`、`react-dom`、
-`@tauri-apps/api/core`、`@tauri-apps/api/event`。
-import 其它模块（含 `@tauri-apps/plugin-*`）会在加载时报错。
+`SHARED_MODULES`）：`react`、`react/jsx-runtime`、`react-dom`、`@tauri-apps/api/core`。
+
+import 其它模块（含 `@tauri-apps/plugin-*`）会在加载时报错，并列出当前可用模块。
+注意 `@tauri-apps/api/event` **已从白名单移除** —— 插件不应监听宿主事件
+（例如 `screenshot:data` 里带整屏截图）。
 
 ### 调用 Rust 命令
 
@@ -119,36 +121,47 @@ const active = await invoke<boolean>('window_is_active')
 
 ### 存储数据
 
+`@tauri-apps/plugin-store` **不在**白名单里，插件无法 import。
+
+用浏览器自带的 `localStorage` 即可（数据在 WebView 的存储目录里，随插件 id 自行加前缀避免冲突）：
+
 ```typescript
-import { Store } from '@tauri-apps/plugin-store'
+const KEY = 'my-plugin:settings'
 
-const store = new Store('my-plugin.json')
+// 保存
+localStorage.setItem(KEY, JSON.stringify({ value: 'data' }))
 
-// 保存数据
-await store.set('key', { value: 'data' })
+// 读取（务必处理解析失败）
+function load(): { value: string } | null {
+  try {
+    const raw = localStorage.getItem(KEY)
+    return raw ? JSON.parse(raw) : null
+  } catch {
+    return null
+  }
+}
 
-// 读取数据
-const value = await store.get('key')
-
-// 删除数据
-await store.delete('key')
-
-// 保存到磁盘
-await store.save()
+// 删除
+localStorage.removeItem(KEY)
 ```
 
 ### 监听事件
 
+`@tauri-apps/api/event` **不在**白名单里，`listen()` 用不了（这是有意的：
+宿主事件里含截图等敏感数据）。
+
+插件内部通信请自己用 `window` 的 `CustomEvent`：
+
 ```typescript
-import { listen } from '@tauri-apps/api/event'
+// 发送
+window.dispatchEvent(new CustomEvent('my-plugin:changed', { detail: { id: 1 } }))
 
-// 监听自定义事件
-const unlisten = await listen<string>('my-event', (event) => {
-  console.log('收到事件:', event.payload)
-})
-
-// 取消监听
-unlisten()
+// 接收（记得在组件卸载时移除监听）
+useEffect(() => {
+  const handler = (e: Event) => console.log('收到:', (e as CustomEvent).detail)
+  window.addEventListener('my-plugin:changed', handler)
+  return () => window.removeEventListener('my-plugin:changed', handler)
+}, [])
 ```
 
 ## React Hooks
@@ -489,8 +502,22 @@ A: 编写 Rust 函数并在 `lib.rs` 中注册（需要重新编译）。
 
 **Q: 插件可以相互通信吗？**
 
-A: 可以通过事件系统或共享状态实现。
+A: 可以用 `window` 的 `CustomEvent`（见上面「监听事件」）。注意没有共享的
+事件总线实例可用，`@tauri-apps/api/event` 也不在白名单里。
 
-**Q: 如何处理插件更新？**
+**Q: 如何安装 / 更新 / 卸载插件？**
 
-A: 目前需要手动替换插件文件夹并重启应用。
+A: 三种方式：
+
+1. **拖入插件包**：把 `.ibplugin` 拖到 **设置 → 插件管理** 的虚线框里，自动安装并加载
+2. **手动放文件夹**：放到 `%APPDATA%\com.infoboard.tauri\plugins\<插件名>\`，再点「重新加载插件」
+3. **卸载**：**设置 → 插件管理** 的插件列表里点「卸载」
+
+更新 = 用同 id 的插件包覆盖安装（会自动替换旧版本），或替换文件夹后重新加载。
+**都不需要重启应用。**
+
+打包插件包用仓库里的脚本：
+
+```bash
+node scripts/pack-plugin.mjs <插件目录>
+```

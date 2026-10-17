@@ -22,28 +22,53 @@
 
 InfoBoard 支持**外部插件热加载**，开发者可以编写独立插件包而无需修改核心代码。
 
-### 快速开始
+### 安装插件
+
+两种方式，都不用改核心代码：
+
+**方式一：拖入插件包（推荐给使用者）**
+
+1. 打开 **设置 → 插件管理**
+2. 把 `.ibplugin` 插件包**拖到虚线框里**（或点「选择插件包」）
+3. 自动安装并重新加载，装好即可用；卸载同样在插件管理里点「卸载」
+
+**方式二：手动放文件夹（推荐给开发者，改完即时生效）**
 
 1. 在 `%APPDATA%\com.infoboard.tauri\plugins\` 下创建插件文件夹（首次启动会自动创建该目录）
-2. 编写 `manifest.json` 和单文件入口（`.tsx` / `.ts`，应用会在运行时转译）
-3. 重启应用自动加载
+2. 编写 `manifest.json` 和单文件入口（`.tsx` / `.ts` / `.js`，应用会在运行时转译）
+3. **设置 → 插件管理 → 重新加载插件**（不必重启应用）
 
-插件只能 import：`react`、`react/jsx-runtime`、`react-dom`、`@tauri-apps/api/core`、`@tauri-apps/api/event`；`import type` 会被擦除，可照常引用核心类型。
+插件只能 import：`react`、`react/jsx-runtime`、`react-dom`、`@tauri-apps/api/core` ——
+`@tauri-apps/api/event` **不在白名单**（插件不应监听宿主事件）。
+`import type` 会被擦除，可照常引用核心类型。
 
 **示例：** 查看 [`plugins/hello-world/`](plugins/hello-world/) 示例插件
 
 **完整教程：** 阅读 [插件开发指南](docs/PLUGIN_TUTORIAL.md)
 
+### 打包与分发
+
+仓库自带打包脚本，把插件目录压成可分发的 `.ibplugin`：
+
+```bash
+node scripts/pack-plugin.mjs plugins/hello-world        # 产出 dist-plugins/hello-world-1.0.0.ibplugin
+```
+
+`.ibplugin` 就是一个 zip，根目录含 `manifest.json` 与入口文件（入口名由 manifest 的 `entry` 指定）。
+
 ### 插件目录结构
 
-仓库里的 `plugins/` 只存放示例，运行时扫描的是 `%APPDATA%\com.infoboard.tauri\plugins\`，请把示例复制过去。
+仓库里的 `plugins/` 只存放示例，运行时扫描的是 `%APPDATA%\com.infoboard.tauri\plugins\`。
 
 ```
-plugins/
-├── hello-world/          # 示例插件
-│   ├── manifest.json     # 插件元数据
-│   └── index.tsx         # 入口文件
-└── your-plugin/          # 你的插件
+plugins/                              # 仓库里的示例源码
+├── hello-world/                      # 示例插件
+│   ├── manifest.json                 # 插件元数据
+│   └── index.tsx                     # 入口文件
+└── .plugin-template/                 # 新插件模板
+
+%APPDATA%\com.infoboard.tauri\plugins\  # 运行时实际扫描的位置
+└── your-plugin/
     ├── manifest.json
     └── index.tsx
 ```

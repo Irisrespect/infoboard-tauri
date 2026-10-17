@@ -202,17 +202,17 @@ npx tsc --noEmit                # 无输出即通过
 
 ### P2 外部插件的限制（有意为之，非 bug，但要知道）
 
-- 插件必须**单文件**；只能 import `react`、`react/jsx-runtime`、`react-dom`、`@tauri-apps/api/core`、`@tauri-apps/api/event`（白名单见 `pluginRuntime.ts` 的 `SHARED_MODULES`）。
-- 插件代码跑在主窗口里，**权限等同于应用本身**。`manifest.permissions` / `tauriCommands` **没有任何消费方**（全仓 grep 无引用），权限模型形同虚设。
-- 没有热重载入口：`reloadPluginSystem` 存在但无 UI 调用。
-- `_template`、`plugins/.plugin-template` 的 import 写法（`'../../src/core/types'`）和真实插件（`'@/core/types'`）不一致，但两种现在都能用（类型 import 被擦除）。
+- 插件必须**单文件**；只能 import `react`、`react/jsx-runtime`、`react-dom`、`@tauri-apps/api/core`（白名单见 `pluginRuntime.ts` 的 `SHARED_MODULES`）。`@tauri-apps/api/event` **已移除**（插件不应监听宿主事件，如 `screenshot:data`）。
+- 插件代码跑在主窗口里，**权限等同于应用本身**。`manifest.tauriCommands` 已落地为**护栏**（声明之外一律拒绝，有 `pluginRuntime.test.ts` 的 fail-closed 用例）；但 `manifest.permissions` **仍无任何消费方**（保留字段），且这层护栏**不是安全边界** —— 插件仍可直接用 `window.__TAURI_INTERNALS__.invoke` 绕过。
+- 热重载入口**已有**：设置面板「插件管理 → 重新加载插件」调用 `reloadPluginSystem()`（提交 `d5cd79b` 落地）。
+- 插件导入/卸载**已有**：`.ibplugin` 插件包拖进设置面板即可安装，列表里可卸载（`plugins/pack.rs` 的 `install_plugin_package` / `uninstall_plugin` / `list_installed_plugins`，界面在 `SettingsPanel` 的插件管理区）。
+- `_template`、`plugins/.plugin-template` 的 import 写法已统一成 `'@/core/types'`，并有 `?raw` 加载用例覆盖。
 - 要更严的隔离需要 iframe/Worker 沙箱，工作量大，未做。
 
-**解决办法**
+**遗留**
 
-- 落地 `manifest.permissions` / `tauriCommands`（低成本版本）：`evaluatePluginSource(source, filename, modules)` 已经支持注入模块表。为每个插件构造一份 `modules`，把 `@tauri-apps/api/core` 换成带白名单的包装（`invoke(cmd, args)` 先检查 `cmd` 是否在该插件的 `tauriCommands` 里，不在就抛错）。这只是**护栏，不是安全边界**：插件代码仍能直接用 `window.__TAURI_INTERNALS__.invoke` 绕过，而且 `build.rs` 没限制自有命令。要真隔离只能走沙箱（`<iframe sandbox>` + `postMessage`，或 Worker，由宿主代理命令调用），工作量大，需单独立项。
-- 热重载入口：在设置面板加一个"重新加载插件"按钮，调用 `reloadPluginSystem()`。注意它会先 `pluginRegistry.clear()`（触发每个插件的 `onDestroy`）再重新扫描；加完用示例插件验证：改源码后点击即生效。
-- 模板不一致：把 `plugins/.plugin-template/index.tsx`、`plugins/system-info/index.tsx` 的 import 统一成 `'@/core/types'`，并让 `src/__tests__/pluginRuntime.test.ts` 的"示例插件可加载"用例同时覆盖模板（用 `?raw` 导入）。
+- `manifest.permissions` 要么删字段、要么实现校验，需要产品决策。
+- 真隔离（沙箱）需单独立项：`<iframe sandbox>` + `postMessage`，或 Worker，由宿主代理命令调用。
 
 ### P2 其余审计条目（未逐条处理，细节见 `CODE_REVIEW.md` 第三节）
 
