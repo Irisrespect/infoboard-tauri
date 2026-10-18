@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { isEmoji } from '../components/ToolSection'
+import * as React from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
+import { isEmoji, ToolIcon, SVG_ICONS } from '../components/ToolSection'
+import type { PluginManifest } from '../core/types'
 
 describe('isEmoji（原先按 length<=2 判断，组合 emoji 判错）', () => {
   it('普通单码元 emoji 仍是 emoji', () => {
@@ -48,5 +51,50 @@ describe('isEmoji（原先按 length<=2 判断，组合 emoji 判错）', () => 
   it('数字 / 单个字母不是 emoji', () => {
     expect(isEmoji('1')).toBe(false)
     expect(isEmoji('a')).toBe(false)
+  })
+})
+
+describe('具名 SVG 图标真的会画出来（而不是变成看不见的空 svg）', () => {
+  const manifest = (icon: string, color?: string): PluginManifest => ({
+    id: 'test',
+    name: '测试',
+    section: 'tool',
+    icon,
+    color,
+  })
+
+  function render(icon: string, isActive: boolean, color?: string) {
+    return renderToStaticMarkup(
+      React.createElement(ToolIcon, {
+        manifest: manifest(icon, color),
+        isActive,
+        onClick: () => {},
+      })
+    )
+  }
+
+  /** 网盘下载用的是这个图标 */
+  it('cloud-download 已注册且能渲染出路径', () => {
+    expect(SVG_ICONS['cloud-download']).toBeTruthy()
+    const html = render('cloud-download', false, 'var(--accent)')
+    // Lucide cloud-download 的三段路径
+    expect(html).toContain('M12 13v8l-4-4')
+    expect(html).toContain('m12 21 4-4')
+    expect(html).toContain('M4.393 15.269')
+  })
+
+  /**
+   * 回归：svg 是 `fill="none"` 的线性图标，**没有 stroke 就等于看不见**。
+   * 未选中时用 manifest.color；外部插件的 color 一度会因为宿主不透传而丢失。
+   */
+  it('未选中时也有 stroke（没有 color 就退回 currentColor）', () => {
+    expect(render('cloud-download', false, 'var(--accent)')).toContain('stroke:var(--accent)')
+    expect(render('cloud-download', false)).toContain('stroke:currentColor')
+  })
+
+  it('选中时用主题强调色而不是不存在的变量', () => {
+    const html = render('cloud-download', true)
+    expect(html).toContain('stroke:var(--accent)')
+    expect(html).not.toContain('--color-primary')
   })
 })

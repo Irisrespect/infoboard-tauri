@@ -33,8 +33,18 @@ pub struct PluginManifest {
     /// 所属区域: "info" 或 "tool"
     pub section: String,
 
-    /// 图标 (emoji 或路径)
+    /// 图标 (emoji 或内置 SVG 图标名)
     pub icon: String,
+
+    /// 主题色（可选）
+    ///
+    /// 内置插件的 manifest 是前端 TS 对象，`color` 一直在用；但外部插件这份 Rust
+    /// 结构体原来**没有这个字段**，manifest.json 里写了也被 serde 丢掉。
+    /// 后果很隐蔽：具名 SVG 图标在**未选中**时用 `manifest.color` 当 stroke，
+    /// 拿不到就成了 `stroke: undefined` → svg 是 `fill="none"` 又没描边 →
+    /// **图标整个看不见**（点一下选中后才显示）。所以必须透传。
+    #[serde(default)]
+    pub color: Option<String>,
 
     /// 入口文件名 (相对插件目录)
     pub entry: String,

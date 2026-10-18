@@ -109,7 +109,10 @@ const NetdiskPlugin: InfoBoardPlugin = {
     name: '网盘下载',
     version: '1.2.0',
     section: 'tool',
-    icon: '☁️',
+    // 用具名 SVG 图标（宿主 SVG_ICONS 注册表里的 Lucide 图标），跟截图/设置/翻译一致。
+    // 用 emoji 会在工具区里显得格格不入：它是彩色字形，跟线性图标的风格不统一。
+    icon: 'cloud-download',
+    color: 'var(--accent)',
     description: '打开网盘下载器（夸克网盘多连接高速下载）',
   },
   Component: LauncherPanel,

@@ -5,7 +5,8 @@
   "author": "InfoBoard",
   "description": "打开独立的网盘下载器（夸克网盘多连接高速下载）",
   "section": "tool",
-  "icon": "☁️",
+  "icon": "cloud-download",
+  "color": "var(--accent)",
   "entry": "index.tsx",
   "tauriCommands": ["netdisk_app_status", "netdisk_app_launch"]
 }

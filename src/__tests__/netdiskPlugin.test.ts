@@ -77,6 +77,65 @@ describe('netdisk 插件', () => {
     expect(manifest.icon.length).toBeGreaterThan(0)
   })
 
+  /**
+   * 图标必须是宿主 `SVG_ICONS` 里注册过的具名图标。
+   *
+   * 名字写错不会报错 —— 工具区会默默降级成一行灰色小字（连图标都没有），
+   * 这种"看起来像样式问题"的毛病最难查，所以在 CI 里挡住。
+   */
+  it('图标是宿主注册过的具名 SVG（写错了会静默降级成灰字）', () => {
+    const icon = readManifest().icon
+    const tool = readFileSync(join(APP_ROOT, 'src', 'components', 'ToolSection.tsx'), 'utf8')
+
+    // 注册表里的键写法有两种：'cloud-download': ( 或 camera: (
+    const registered = tool.includes(`'${icon}': (`) || new RegExp(`\\n\\s+${icon}: \\(`).test(tool)
+    expect(registered, `SVG_ICONS 里没有注册 "${icon}"，工具区会显示成灰字`).toBe(true)
+
+    // 具名图标（线性图标），不是 emoji —— 工具区其它插件都走这条
+    expect(/^[a-z][a-z0-9-]*$/.test(icon), `"${icon}" 不是具名图标`).toBe(true)
+  })
+
+  /**
+   * 激活态的颜色必须指向真实存在的 CSS 变量。
+   *
+   * 回归：这里原来写的是 `--color-primary` / `--color-text-secondary`，
+   * 而工程里从来没定义过它们（CSS 里只有 --accent / --text-secondary）。
+   * `color` 写错只是不变色，但 `stroke` 会因 var() 求值失败回落到初始值 `none`
+   * —— 点中的插件图标会**整个消失**。
+   */
+  it('工具图标的激活色指向真实存在的 CSS 变量', () => {
+    const tool = readFileSync(join(APP_ROOT, 'src', 'components', 'ToolSection.tsx'), 'utf8')
+    // 只看代码里引用的（注释里会提到这些名字，所以带上引号匹配）
+    const referenced = tool.match(/'var\(--[a-z-]+\)'/g) ?? []
+    expect(referenced.length).toBeGreaterThan(0)
+
+    const globals = readFileSync(join(APP_ROOT, 'src', 'styles', 'globals.css'), 'utf8')
+    for (const quoted of referenced) {
+      const name = quoted.slice(1, -1) // var(--xxx)
+      expect(globals, `globals.css 里没有定义 ${name}`).toContain(`${name.slice(4, -1)}:`)
+    }
+  })
+
+  /**
+   * 外部插件的 `color` 必须能从 manifest.json 一路传到前端。
+   *
+   * 回归：宿主那份 Rust `PluginManifest` 结构体原来没有 color 字段，
+   * manifest.json 里写了会被 serde 静默丢掉。具名 SVG 图标在**未选中**时
+   * 用 color 当 stroke，拿不到就是 `stroke: undefined` → 图标整个看不见。
+   */
+  it('宿主透传 manifest 的 color，前端也有兜底', () => {
+    const loader = readFileSync(join(APP_ROOT, 'src-tauri', 'src', 'plugins', 'loader.rs'), 'utf8')
+    const i = loader.indexOf('pub struct PluginManifest')
+    const structBody = loader.slice(i, loader.indexOf('}', i))
+    expect(structBody, 'loader 的 PluginManifest 没有 color 字段，会被 serde 丢掉').toContain(
+      'pub color'
+    )
+
+    // 前端：没给 color 时不能留空 stroke
+    const tool = readFileSync(join(APP_ROOT, 'src', 'components', 'ToolSection.tsx'), 'utf8')
+    expect(tool).toContain("manifest.color || 'currentColor'")
+  })
+
   it('每个 invoke 的命令都在 tauriCommands 里声明（否则运行时被拒）', () => {
     const declared = new Set(readManifest().tauriCommands ?? [])
     const used = invokedCommands(readSource())

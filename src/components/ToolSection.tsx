@@ -37,6 +37,14 @@ export const SVG_ICONS: Record<string, React.ReactNode> = {
       <path d="M14 18h6" />
     </>
   ),
+  // 网盘下载：云 + 向下箭头
+  'cloud-download': (
+    <>
+      <path d="M12 13v8l-4-4" />
+      <path d="m12 21 4-4" />
+      <path d="M4.393 15.269A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.436 8.284" />
+    </>
+  ),
 }
 
 /**
@@ -176,7 +184,24 @@ interface ToolIconProps {
  *
  * 显示单个工具的图标和名称
  */
-function ToolIcon({ manifest, isActive, onClick }: ToolIconProps) {
+export function ToolIcon({ manifest, isActive, onClick }: ToolIconProps) {
+  /**
+   * 激活态颜色必须指向**真实存在**的 CSS 变量。
+   *
+   * 这里原来写的是 `--color-primary`，而工程里从来没定义过它（CSS 里只有 `--accent`，
+   * 运行时也没人 setProperty）。`color` 是继承属性，写错了顶多不变色；
+   * 但 `stroke` 不是 —— var() 引用未定义变量会让声明在"计算值阶段"失效，
+   * `stroke` 回落到初始值 `none`：**点中的插件图标会整个消失**
+   * （截图 / 设置 / 翻译三个具名图标插件都在这个分支里）。
+   *
+   * 直接用 `var(--accent)` 而不是 useThemeColors()：主题切换时由浏览器重算，
+   * 不需要 React 重渲染，也不给这个组件引入对 DOM 的模块级依赖。
+   */
+  const activeColor = 'var(--accent)'
+  // 没给 color 时退回 currentColor：和 emoji 图标"继承文字颜色"的行为一致。
+  // 不这样兜底的话，具名图标会因为 stroke 缺失而整个不可见。
+  const iconColor = isActive ? activeColor : manifest.color || 'currentColor'
+
   const iconClassName = [
     'h-[68px] rounded-card glass-card',
     'flex flex-col items-center justify-center gap-1.5',
@@ -197,10 +222,7 @@ function ToolIcon({ manifest, isActive, onClick }: ToolIconProps) {
     >
       {/* 图标 */}
       {isEmoji(manifest.icon) ? (
-        <span
-          className="text-xl"
-          style={{ color: isActive ? 'var(--color-primary)' : manifest.color }}
-        >
+        <span className="text-xl" style={{ color: iconColor }}>
           {manifest.icon}
         </span>
       ) : SVG_ICONS[manifest.icon] ? (
@@ -209,7 +231,7 @@ function ToolIcon({ manifest, isActive, onClick }: ToolIconProps) {
           height="20"
           viewBox="0 0 24 24"
           fill="none"
-          style={{ stroke: isActive ? 'var(--color-primary)' : manifest.color }}
+          style={{ stroke: iconColor }}
           strokeWidth="2"
           strokeLinecap="round"
           strokeLinejoin="round"
@@ -224,7 +246,7 @@ function ToolIcon({ manifest, isActive, onClick }: ToolIconProps) {
       <span
         className="text-xs font-medium"
         style={{
-          color: isActive ? 'var(--color-primary)' : 'var(--color-text-secondary)',
+          color: isActive ? activeColor : 'var(--text-secondary)',
         }}
       >
         {manifest.name}
