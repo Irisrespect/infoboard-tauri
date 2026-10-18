@@ -19,3 +19,7 @@ plugins/*
 !plugins/netdisk/
 !plugins/.plugin-template/
 !plugins/.gitkeep
+
+# Python 构建产物（netdisk-app）
+__pycache__/
+*.pyc

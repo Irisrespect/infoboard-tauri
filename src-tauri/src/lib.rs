@@ -126,7 +126,11 @@ pub fn run() {
             plugins::ocr::ocr_is_ready,
             plugins::ocr::ocr_engine_status,
             // Issue 16: IMAP 邮件
-            // 网盘解析 / 高速下载插件后端
+            // 网盘解析 / 高速下载
+            // 独立软件（推荐路径）：找到并拉起 netdisk-app
+            plugins::netdisk::app::netdisk_app_status,
+            plugins::netdisk::app::netdisk_app_launch,
+            // 应用内下载（可选路径，不装 Python 时用）
             plugins::netdisk::http::netdisk_http_request,
             plugins::netdisk::http::netdisk_cookie_import,
             plugins::netdisk::http::netdisk_cookie_list,

@@ -143,6 +143,14 @@ interface Settings {
   connections: number
 }
 
+/** 独立下载器的可用状态（宿主去固定位置找 netdisk-app/main.py） */
+interface AppStatus {
+  available: boolean
+  script?: string | null
+  python?: string | null
+  message: string
+}
+
 // ═══════════════════════════ 常量 / 工具 ═══════════════════════════
 
 const SETTINGS_KEY = 'netdisk:settings'
@@ -1004,6 +1012,12 @@ const btn = (primary?: boolean): CSSProperties => ({
 const muted: CSSProperties = { color: 'var(--text-muted)', fontSize: 11 }
 
 function NetdiskPanel() {
+  // ── 独立下载器（主路径）
+  const [appStatus, setAppStatus] = useState<AppStatus | null>(null)
+  const [launching, setLaunching] = useState(false)
+  /** 应用内下载是次要路径，默认收起 */
+  const [showInApp, setShowInApp] = useState(false)
+
   const [url, setUrl] = useState('')
   const [pwd, setPwd] = useState('')
   const [busy, setBusy] = useState(false)
@@ -1036,6 +1050,30 @@ function NetdiskPanel() {
   useEffect(() => {
     ctxRef.current = ctx
   }, [ctx])
+
+  // ── 独立下载器：打开面板时问一次宿主要不要得起来
+  useEffect(() => {
+    invoke<AppStatus>('netdisk_app_status')
+      .then(setAppStatus)
+      .catch(() =>
+        setAppStatus({
+          available: false,
+          message: '当前应用版本还没有 netdisk_app_status 命令（需要重新构建应用）',
+        })
+      )
+  }, [])
+
+  const launchApp = useCallback(async () => {
+    setLaunching(true)
+    setError(null)
+    try {
+      setNotice(await invoke<string>('netdisk_app_launch'))
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setLaunching(false)
+    }
+  }, [])
 
   // ── 默认下载目录（首次打开时问一次后端）
   useEffect(() => {
@@ -1335,6 +1373,85 @@ function NetdiskPanel() {
 
   return (
     <div style={panelStyle}>
+      {/* ═══ 主路径：打开独立下载器 ═══
+          下载交给独立进程做，不只是"少写点代码"：插件只在面板打开时运行，
+          关掉面板后网盘直链过期（5~10 分钟）就没人换链，大文件下不完。 */}
+      <div
+        style={{
+          padding: '10px 12px',
+          borderRadius: 8,
+          border: '1px solid var(--border-subtle)',
+          background: 'var(--bg-surface)',
+          marginBottom: 10,
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <button
+            style={{
+              ...btn(true),
+              padding: '8px 16px',
+              fontSize: 13,
+              fontWeight: 600,
+              opacity: appStatus && !appStatus.available ? 0.5 : 1,
+            }}
+            disabled={launching || (appStatus !== null && !appStatus.available)}
+            onClick={() => void launchApp()}
+          >
+            {launching ? '正在启动…' : '☁️ 打开网盘下载器'}
+          </button>
+          <span style={{ flex: 1, ...muted }}>
+            独立窗口 · 支持夸克网盘分享链接 · 多连接高速下载 · 后台自己换链，关掉本面板也不影响
+          </span>
+        </div>
+        {appStatus && (
+          <div
+            style={{
+              ...muted,
+              marginTop: 6,
+              color: appStatus.available ? 'var(--text-muted)' : '#d9534f',
+              whiteSpace: 'pre-wrap',
+            }}
+          >
+            {appStatus.available
+              ? `已就绪（${appStatus.python || 'python'}）`
+              : `⚠️ ${appStatus.message}`}
+          </div>
+        )}
+      </div>
+
+      {/* ═══ 次要路径：在应用内下载 ═══ */}
+      <button
+        style={{ ...btn(), width: '100%', textAlign: 'left', marginBottom: showInApp ? 8 : 0 }}
+        onClick={() => setShowInApp((v) => !v)}
+      >
+        {showInApp ? '▾' : '▸'} 在应用内下载（不需要装 Python）
+        <span style={{ ...muted, marginLeft: 8 }}>
+          ⚠️ 只在面板打开时运行：关掉面板后直链过期无法自动换链
+        </span>
+      </button>
+
+      {error && (
+        <div
+          style={{
+            marginTop: 8,
+            padding: '8px 10px',
+            borderRadius: 6,
+            background: 'rgba(220,60,60,0.10)',
+            border: '1px solid rgba(220,60,60,0.35)',
+            color: '#d9534f',
+            whiteSpace: 'pre-wrap',
+            lineHeight: 1.6,
+          }}
+        >
+          {error}
+        </div>
+      )}
+      {notice && !error && (
+        <div style={{ ...muted, marginTop: 8, color: 'var(--accent)' }}>{notice}</div>
+      )}
+
+      {!showInApp ? null : (
+        <>
       {/* 输入区 */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
         <div style={{ display: 'flex', gap: 6 }}>
@@ -1383,26 +1500,6 @@ function NetdiskPanel() {
           </button>
         </div>
       </div>
-
-      {error && (
-        <div
-          style={{
-            marginTop: 8,
-            padding: '8px 10px',
-            borderRadius: 6,
-            background: 'rgba(220,60,60,0.10)',
-            border: '1px solid rgba(220,60,60,0.35)',
-            color: '#d9534f',
-            whiteSpace: 'pre-wrap',
-            lineHeight: 1.6,
-          }}
-        >
-          {error}
-        </div>
-      )}
-      {notice && !error && (
-        <div style={{ ...muted, marginTop: 8, color: 'var(--accent)' }}>{notice}</div>
-      )}
 
       {/* 设置 */}
       {showSettings && (
@@ -1604,6 +1701,8 @@ function NetdiskPanel() {
           )
         })}
       </div>
+        </>
+      )}
     </div>
   )
 }
@@ -1806,10 +1905,10 @@ const NetdiskPlugin: InfoBoardPlugin = {
   manifest: {
     id: 'netdisk',
     name: '网盘下载',
-    version: '1.0.0',
+    version: '1.1.0',
     section: 'tool',
     icon: '☁️',
-    description: '分享链接 → 解析目录 → 多连接高速下载',
+    description: '一键打开独立的网盘下载器（夸克网盘多连接高速下载）',
   },
   Component: NetdiskPanel,
   onInit: () => console.log('[网盘下载] 插件已加载'),
