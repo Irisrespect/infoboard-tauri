@@ -9,7 +9,7 @@
 //! 所以进度由插件轮询 `netdisk_download_status` 获取。
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -87,6 +87,8 @@ pub struct DownloadStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum State {
     Running,
+    /// 直链过期，已暂停，等插件送来新直链（见 `netdisk_download_relink`）
+    Expired,
     Done,
     Failed,
     Cancelled,
@@ -96,6 +98,7 @@ impl State {
     fn as_str(self) -> &'static str {
         match self {
             State::Running => "running",
+            State::Expired => "expired",
             State::Done => "done",
             State::Failed => "failed",
             State::Cancelled => "cancelled",
@@ -103,13 +106,57 @@ impl State {
     }
 }
 
+/// 一个待下载的分片
+#[derive(Debug, Clone, Copy)]
+struct Chunk {
+    start: u64,
+    end: u64,
+    /// 被"慢分片抢占"重新排队的次数
+    tries: u32,
+}
+
+/// 分片失败的性质 —— 决定是"换个链接接着下"还是"直接判死"
+#[derive(Debug)]
+enum ChunkError {
+    /// 直链过期/被拒（401/403/404/412）：换新链后**从未完成的分片继续下**
+    LinkExpired(String),
+    /// 触发限流（429/503）：全局退避后重试
+    Throttled(String),
+    /// 慢分片：重新排队，换条连接试试
+    Stalled(String),
+    /// 其它错误
+    Fatal(String),
+}
+
+impl ChunkError {
+    fn message(&self) -> String {
+        match self {
+            ChunkError::LinkExpired(m)
+            | ChunkError::Throttled(m)
+            | ChunkError::Stalled(m)
+            | ChunkError::Fatal(m) => m.clone(),
+        }
+    }
+}
+
 pub struct Job {
     id: String,
-    url: String,
+    /// 当前直链。可被 `netdisk_download_relink` 替换（直链 5~10 分钟就过期）
+    url: Mutex<String>,
+    /// 当前请求头（换链时一并更新）
+    headers: Mutex<Vec<(String, String)>>,
     path: PathBuf,
     file_name: String,
     total: u64,
     connections: usize,
+    /// 还没下完的分片（worker 从这里抢，抢完即空）
+    queue: Mutex<VecDeque<Chunk>>,
+    /// 有分片撞上直链过期，等插件换链
+    relink_needed: AtomicBool,
+    /// 每换一次链 +1，supervisor 靠它判断"新链到了"
+    relink_epoch: AtomicU64,
+    /// 全局退避截止时间（429/503 时所有 worker 一起等）
+    backoff_until: Mutex<Option<Instant>>,
     downloaded: Arc<AtomicU64>,
     cancel: Arc<AtomicBool>,
     state: Mutex<State>,
@@ -468,7 +515,7 @@ async fn fetch_range(
     start: u64,
     end: u64,
     headers: Vec<(String, String)>,
-) -> Result<(), String> {
+) -> Result<(), ChunkError> {
     let mut pos = start;
     let mut attempt: u32 = 0;
     let mut stall: u32 = 0;
@@ -477,9 +524,12 @@ async fn fetch_range(
         if job.cancel.load(Ordering::Relaxed) {
             return Ok(());
         }
+        wait_for_backoff(&job).await;
 
+        // 每次请求都重新读直链 —— 换链后这里拿到的是新地址
+        let current_url = job.url.lock().map(|u| u.clone()).unwrap_or_default();
         let mut rb = client
-            .get(&job.url)
+            .get(&current_url)
             .header(reqwest::header::RANGE, format!("bytes={pos}-{end}"));
         for (k, v) in &headers {
             if k.eq_ignore_ascii_case("range") {
@@ -499,7 +549,7 @@ async fn fetch_range(
             Err(e) => {
                 attempt += 1;
                 if attempt >= MAX_ATTEMPTS {
-                    return Err(format!("连接失败: {}", e.without_url()));
+                    return Err(ChunkError::Fatal(format!("连接失败: {}", e.without_url())));
                 }
                 tokio::time::sleep(Duration::from_millis(400 * attempt as u64)).await;
                 continue;
@@ -509,12 +559,18 @@ async fn fetch_range(
         let status = resp.status();
         if !status.is_success() {
             let code = status.as_u16();
+            // 直链过期/被拒：不再自己傻等重试，而是交给 supervisor 换链后接着下。
+            // 注意这里**不是**失败 —— 未完成的分片会被放回队列，换链后继续。
+            if matches!(code, 401 | 403 | 404 | 412) {
+                return Err(ChunkError::LinkExpired(explain_download_status(code)));
+            }
+            if matches!(code, 429 | 503) {
+                begin_backoff(&job, attempt);
+                return Err(ChunkError::Throttled(explain_download_status(code)));
+            }
             attempt += 1;
-            // 直链过期/被拒（401/403/412）与 404 重试没有意义：链接已经死了，
-            // 早点带着可操作的信息失败，好过让用户看着进度条卡在那里
-            let fatal = matches!(code, 401 | 403 | 404 | 412);
-            if fatal || attempt >= MAX_ATTEMPTS {
-                return Err(explain_download_status(code));
+            if attempt >= MAX_ATTEMPTS {
+                return Err(ChunkError::Fatal(explain_download_status(code)));
             }
             tokio::time::sleep(Duration::from_millis(400 * attempt as u64)).await;
             continue;
@@ -522,19 +578,32 @@ async fn fetch_range(
         // 服务端忽略 Range（回 200 全量）时，只有"整个文件、从头开始"才安全，
         // 否则会把全量数据写到分片偏移上，直接把文件写坏
         if status.as_u16() == 200 && !(start == 0 && pos == 0) {
-            return Err("服务端忽略了 Range 请求，无法分片下载".into());
+            return Err(ChunkError::Fatal(
+                "服务端忽略了 Range 请求，无法分片下载".into(),
+            ));
         }
 
         let before = pos;
         let mut cursor = pos;
-        let mut failure: Option<String> = None;
+        let mut failure: Option<ChunkError> = None;
+        /// 慢分片判定：这么久没动静就重新排队（换条连接往往立刻就好了）
+        const SLOW_CHUNK_GRACE: Duration = Duration::from_secs(15);
 
         loop {
             if job.cancel.load(Ordering::Relaxed) {
                 return Ok(());
             }
-            match resp.chunk().await {
-                Ok(Some(chunk)) => {
+            match tokio::time::timeout(SLOW_CHUNK_GRACE, resp.chunk()).await {
+                // 超时：这条连接卡住了，把这个分片交回队列（已写下的字节仍然有效，
+                // 重新排队后会从 pos 续传，不会重下）
+                Err(_) => {
+                    failure = Some(ChunkError::Stalled(format!(
+                        "分片 {pos}-{end} 超过 {} 秒没有数据，已重新排队",
+                        SLOW_CHUNK_GRACE.as_secs()
+                    )));
+                    break;
+                }
+                Ok(Ok(Some(chunk))) => {
                     if chunk.is_empty() {
                         continue;
                     }
@@ -544,7 +613,7 @@ async fn fetch_range(
                     }
                     let take = std::cmp::min(remaining, chunk.len() as u64) as usize;
                     write_all_at(&file, &chunk[..take], cursor)
-                        .map_err(|e| format!("写文件失败: {e}"))?;
+                        .map_err(|e| ChunkError::Fatal(format!("写文件失败: {e}")))?;
                     cursor += take as u64;
                     job.downloaded.fetch_add(take as u64, Ordering::Relaxed);
                     attempt = 0;
@@ -552,15 +621,19 @@ async fn fetch_range(
                         break;
                     }
                 }
-                Ok(None) => break,
-                Err(e) => {
-                    failure = Some(format!("读取中断: {}", e.without_url()));
+                Ok(Ok(None)) => break,
+                Ok(Err(e)) => {
+                    failure = Some(ChunkError::Fatal(format!("读取中断: {}", e.without_url())));
                     break;
                 }
             }
         }
 
         if let Some(err) = failure {
+            // 慢分片 / 限流：交回队列让别的连接试试，不算这个分片失败
+            if !matches!(err, ChunkError::Fatal(_)) {
+                return Err(err);
+            }
             attempt += 1;
             if attempt >= MAX_ATTEMPTS {
                 return Err(err);
@@ -575,7 +648,9 @@ async fn fetch_range(
             if pos == before {
                 stall += 1;
                 if stall >= 3 {
-                    return Err("下载停滞：服务端未继续返回数据".into());
+                    return Err(ChunkError::Stalled(format!(
+                        "分片 {start}-{end} 连续 3 轮没有进展，已重新排队"
+                    )));
                 }
             } else {
                 stall = 0;
@@ -584,6 +659,45 @@ async fn fetch_range(
         }
     }
     Ok(())
+}
+
+// ─── 全局退避（429/503）───
+
+/// 触发限流后，让**所有** worker 一起静默一段时间再继续
+///
+/// 只退避当前这一个分片是没用的：限流是服务端对这个账号/这条链路的，
+/// 其它连接继续猛冲只会让惩罚更重。
+fn begin_backoff(job: &Job, attempt: u32) {
+    // 首次 30 秒，之后随重试次数翻倍，最多 5 分钟
+    let secs = std::cmp::min(30u64 << attempt.min(4), 300);
+    if let Ok(mut until) = job.backoff_until.lock() {
+        let target = Instant::now() + Duration::from_secs(secs);
+        // 只延长、不缩短（多个 worker 同时撞限流时取最保守的那个）
+        if until.map(|u| u < target).unwrap_or(true) {
+            *until = Some(target);
+        }
+    }
+}
+
+async fn wait_for_backoff(job: &Job) {
+    loop {
+        let wait = {
+            let Ok(guard) = job.backoff_until.lock() else {
+                return;
+            };
+            match *guard {
+                Some(until) => until.checked_duration_since(Instant::now()),
+                None => None,
+            }
+        };
+        match wait {
+            Some(d) if !d.is_zero() => {
+                // 退避期间也要能被取消
+                tokio::time::sleep(std::cmp::min(d, Duration::from_millis(500))).await;
+            }
+            _ => return,
+        }
+    }
 }
 
 // ─── 命令 ───
@@ -746,13 +860,39 @@ pub async fn start_download(
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or(file_name);
+    // 分片队列：每个分片带着"被抢占过几次"，避免慢分片无限重排队
+    let planned: VecDeque<Chunk> = if connections <= 1 || total == 0 {
+        VecDeque::from([Chunk {
+            start: 0,
+            end: if total == 0 { u64::MAX - 1 } else { total - 1 },
+            tries: 0,
+        }])
+    } else {
+        let (chunk_size, chunk_count) = plan_chunks(total, connections);
+        (0..chunk_count)
+            .map(|i| {
+                let start = i * chunk_size;
+                Chunk {
+                    start,
+                    end: std::cmp::min(start + chunk_size, total) - 1,
+                    tries: 0,
+                }
+            })
+            .collect()
+    };
+
     let job = Arc::new(Job {
         id: id.clone(),
-        url: probe.final_url.clone(),
+        url: Mutex::new(probe.final_url.clone()),
+        headers: Mutex::new(headers.clone()),
         path: path.clone(),
         file_name: final_name.clone(),
         total,
         connections,
+        queue: Mutex::new(planned),
+        relink_needed: AtomicBool::new(false),
+        relink_epoch: AtomicU64::new(0),
+        backoff_until: Mutex::new(None),
         downloaded: Arc::new(AtomicU64::new(0)),
         cancel: Arc::new(AtomicBool::new(false)),
         state: Mutex::new(State::Running),
@@ -766,27 +906,21 @@ pub async fn start_download(
         map.insert(id.clone(), job.clone());
     }
 
-    // 分片任务：动态队列 + 抢占式取片
+    // 分片任务：动态队列 + 抢占式取片 + 直链过期自愈
     let job_for_task = job.clone();
     let client_for_task = client.clone();
     let headers_for_task = headers.clone();
     tokio::spawn(async move {
-        let mut tasks = Vec::new();
-        if connections <= 1 || total == 0 {
-            // 单连接：服务端不支持 Range，或长度未知（一路读到 EOF）
-            let j = job_for_task.clone();
-            let c = client_for_task.clone();
-            let h = headers_for_task.clone();
-            let f = file.clone();
-            let end = if total == 0 { u64::MAX - 1 } else { total - 1 };
-            tasks.push(tokio::spawn(async move {
-                fetch_range(c, j, f, 0, end, h).await
-            }));
-        } else {
-            let (chunk_size, chunk_count) = plan_chunks(total, connections);
-            let next = Arc::new(AtomicU64::new(0));
-            for _ in 0..connections {
-                let next = next.clone();
+        /// 换链最多等这么久，超时就判失败（插件那边可能已经关掉面板了）
+        const RELINK_WAIT: Duration = Duration::from_secs(180);
+        /// 一个分片最多被"慢分片抢占"重新排队几次
+        const MAX_STALL_REQUEUE: u32 = 3;
+
+        let mut relink_round = 0u32;
+        loop {
+            // ── 起一轮 worker，把队列里剩下的分片抢完 ──
+            let mut tasks = Vec::new();
+            for _ in 0..connections.max(1) {
                 let j = job_for_task.clone();
                 let c = client_for_task.clone();
                 let h = headers_for_task.clone();
@@ -796,57 +930,172 @@ pub async fn start_download(
                         if j.cancel.load(Ordering::Relaxed) {
                             return Ok(());
                         }
-                        let i = next.fetch_add(1, Ordering::Relaxed);
-                        if i >= chunk_count {
-                            return Ok(());
+                        let chunk = {
+                            let Ok(mut q) = j.queue.lock() else {
+                                return Err(ChunkError::Fatal("分片队列锁失效".into()));
+                            };
+                            q.pop_front()
+                        };
+                        let Some(chunk) = chunk else {
+                            return Ok(()); // 队列空了，这一轮干完了
+                        };
+
+                        match fetch_range(
+                            c.clone(),
+                            j.clone(),
+                            f.clone(),
+                            chunk.start,
+                            chunk.end,
+                            h.clone(),
+                        )
+                        .await
+                        {
+                            Ok(()) => {}
+                            Err(ChunkError::LinkExpired(msg)) => {
+                                // 把这片放回**队首**，换链后优先接着下
+                                if let Ok(mut q) = j.queue.lock() {
+                                    q.push_front(chunk);
+                                }
+                                j.relink_needed.store(true, Ordering::Relaxed);
+                                return Err(ChunkError::LinkExpired(msg));
+                            }
+                            Err(ChunkError::Throttled(msg)) => {
+                                // 限流：放回队尾，等全局退避结束再试
+                                if let Ok(mut q) = j.queue.lock() {
+                                    q.push_back(chunk);
+                                }
+                                return Err(ChunkError::Throttled(msg));
+                            }
+                            Err(ChunkError::Stalled(msg)) => {
+                                if chunk.tries + 1 >= MAX_STALL_REQUEUE {
+                                    return Err(ChunkError::Fatal(format!(
+                                        "{msg}（已重排 {MAX_STALL_REQUEUE} 次仍无进展）"
+                                    )));
+                                }
+                                if let Ok(mut q) = j.queue.lock() {
+                                    q.push_back(Chunk {
+                                        tries: chunk.tries + 1,
+                                        ..chunk
+                                    });
+                                }
+                                // 换下一个分片继续，不占着这条连接
+                            }
+                            Err(e) => return Err(e),
                         }
-                        let start = i * chunk_size;
-                        let end = std::cmp::min(start + chunk_size, total) - 1;
-                        fetch_range(c.clone(), j.clone(), f.clone(), start, end, h.clone()).await?;
                     }
                 }));
             }
-        }
 
-        let mut first_err: Option<String> = None;
-        for t in tasks {
-            match t.await {
-                Ok(Ok(())) => {}
-                Ok(Err(e)) => {
-                    if first_err.is_none() {
-                        first_err = Some(e);
+            // ── 收拢这一轮的结果 ──
+            let mut fatal: Option<String> = None;
+            let mut expired: Option<String> = None;
+            let mut throttled = false;
+            for t in tasks {
+                match t.await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(ChunkError::LinkExpired(m))) => expired = Some(m),
+                    Ok(Err(ChunkError::Throttled(_))) => throttled = true,
+                    Ok(Err(e)) => {
+                        if fatal.is_none() {
+                            fatal = Some(e.message());
+                        }
                     }
-                }
-                Err(e) => {
-                    if first_err.is_none() {
-                        first_err = Some(format!("下载任务异常: {e}"));
+                    Err(e) => {
+                        if fatal.is_none() {
+                            fatal = Some(format!("下载任务异常: {e}"));
+                        }
                     }
                 }
             }
-        }
 
-        if job_for_task.cancel.load(Ordering::Relaxed) {
-            job_for_task.finish(State::Cancelled, None);
+            if job_for_task.cancel.load(Ordering::Relaxed) {
+                job_for_task.finish(State::Cancelled, None);
+                return;
+            }
+            if let Some(e) = fatal {
+                job_for_task.cancel.store(true, Ordering::Relaxed);
+                job_for_task.finish(State::Failed, Some(e));
+                return;
+            }
+
+            // 限流：退避结束后再开一轮（不计换链次数）
+            if throttled && !job_for_task.relink_needed.load(Ordering::Relaxed) {
+                // 有一轮 worker 全被限流挡回来时，等退避窗口过去再继续
+                wait_for_backoff(&job_for_task).await;
+                continue;
+            }
+
+            // 直链过期：挂起等插件送新链，然后从未完成的分片继续
+            if let Some(msg) = expired {
+                if job_for_task.relink_needed.load(Ordering::Relaxed) {
+                    relink_round += 1;
+                    if relink_round > 5 {
+                        job_for_task.finish(
+                            State::Failed,
+                            Some(format!("{msg}（已自动换链 5 次仍未下完，请稍后重试）")),
+                        );
+                        return;
+                    }
+                    job_for_task.finish(State::Expired, Some(msg));
+                    let epoch = job_for_task.relink_epoch.load(Ordering::Relaxed);
+                    if !wait_for_relink(&job_for_task, epoch, RELINK_WAIT).await {
+                        if job_for_task.cancel.load(Ordering::Relaxed) {
+                            job_for_task.finish(State::Cancelled, None);
+                        } else {
+                            job_for_task.finish(
+                                State::Failed,
+                                Some("直链已过期，但 3 分钟内没等到新的直链".to_string()),
+                            );
+                        }
+                        return;
+                    }
+                    // 新链到手：清掉标记，状态回到 running，继续抢剩下的分片
+                    job_for_task.relink_needed.store(false, Ordering::Relaxed);
+                    if let Ok(mut s) = job_for_task.state.lock() {
+                        *s = State::Running;
+                    }
+                    if let Ok(mut e) = job_for_task.error.lock() {
+                        *e = None;
+                    }
+                    continue;
+                }
+            }
+
+            let left = job_for_task.queue.lock().map(|q| q.len()).unwrap_or(0);
+            if left > 0 {
+                // 队列还有货但这一轮没人拿到（例如全被限流挡回），再来一轮
+                continue;
+            }
+
+            let got = job_for_task.downloaded.load(Ordering::Relaxed);
+            if total > 0 && got < total {
+                job_for_task.finish(
+                    State::Failed,
+                    Some(format!("下载不完整：{got}/{total} 字节")),
+                );
+                return;
+            }
+            job_for_task.finish(State::Done, None);
             return;
         }
-        if let Some(e) = first_err {
-            // 出错就取消其余分片，避免继续空转
-            job_for_task.cancel.store(true, Ordering::Relaxed);
-            job_for_task.finish(State::Failed, Some(e));
-            return;
-        }
-        let got = job_for_task.downloaded.load(Ordering::Relaxed);
-        if total > 0 && got < total {
-            job_for_task.finish(
-                State::Failed,
-                Some(format!("下载不完整：{got}/{total} 字节")),
-            );
-            return;
-        }
-        job_for_task.finish(State::Done, None);
     });
 
     Ok(job)
+}
+
+/// 等插件送来新直链（`relink_epoch` 变化即视为"新链到了"）
+async fn wait_for_relink(job: &Job, epoch_before: u64, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if job.cancel.load(Ordering::Relaxed) {
+            return false;
+        }
+        if job.relink_epoch.load(Ordering::Relaxed) != epoch_before {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    false
 }
 
 #[tauri::command]
@@ -873,6 +1122,53 @@ pub fn netdisk_download_cancel(id: String) -> Result<(), String> {
     let job = map.get(&id).ok_or_else(|| format!("任务不存在: {id}"))?;
     job.cancel.store(true, Ordering::Relaxed);
     job.finish(State::Cancelled, None);
+    Ok(())
+}
+
+/// 给一个"直链已过期"的任务换上新的直链，然后**从未完成的分片继续下载**
+///
+/// 为什么需要它：网盘直链只有 5~10 分钟有效期，大文件必然中途过期。
+/// 插件轮询到 `state == "expired"` 时重新解析一次分享，把新直链送到这里即可；
+/// 已经下完的分片不会重下，只是把剩下的分片抢完。
+#[tauri::command]
+pub fn netdisk_download_relink(
+    id: String,
+    url: String,
+    headers: Option<HashMap<String, String>>,
+    allow_http: Option<bool>,
+) -> Result<DownloadStatus, String> {
+    // 新直链同样是不可信输入：仍然要过白名单
+    url_allowed(&url, allow_http.unwrap_or(false))?;
+
+    let map = jobs().lock().map_err(|_| "任务表锁失效".to_string())?;
+    let job = map.get(&id).ok_or_else(|| format!("任务不存在: {id}"))?;
+    apply_relink(job, url, headers)?;
+    Ok(job.snapshot())
+}
+
+/// 换链的核心（与命令解耦，便于集成测试）
+///
+/// 只把新直链 / 新请求头写进任务并唤醒 supervisor；
+/// 白名单校验留在命令层（与 `start_download` 的职责划分一致）。
+pub fn apply_relink(
+    job: &Arc<Job>,
+    url: String,
+    headers: Option<HashMap<String, String>>,
+) -> Result<(), String> {
+    {
+        let mut guard = job.url.lock().map_err(|_| "直链锁失效".to_string())?;
+        *guard = url;
+    }
+    if let Some(h) = headers {
+        let mut guard = job.headers.lock().map_err(|_| "请求头锁失效".to_string())?;
+        // 显式传的头覆盖同名旧头，其余保留（例如 Cookie）
+        for (k, v) in h {
+            guard.retain(|(ek, _)| !ek.eq_ignore_ascii_case(&k));
+            guard.push((k, v));
+        }
+    }
+    // 唤醒 supervisor：epoch 变化 = "新链到了"
+    job.relink_epoch.fetch_add(1, Ordering::Relaxed);
     Ok(())
 }
 
@@ -1135,12 +1431,206 @@ mod integration_tests {
     async fn wait_done(job: &Arc<Job>) -> DownloadStatus {
         for _ in 0..1200 {
             let s = job.snapshot();
-            if s.state != "running" {
+            if s.state != "running" && s.state != "expired" {
                 return s;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         panic!("下载超时未结束");
+    }
+
+    /// 等任务进入某个状态（用于"直链过期"这类中间态）
+    async fn wait_state(job: &Arc<Job>, want: &str, timeout: Duration) -> DownloadStatus {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let s = job.snapshot();
+            if s.state == want {
+                return s;
+            }
+            if Instant::now() > deadline {
+                panic!("等待状态 {want} 超时，当前 {} ({:?})", s.state, s.error);
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    /// 带"配额"的服务端：累计发出 `quota` 字节后开始一律 403，
+    /// 模拟网盘直链到点过期。调用方把 `expired` 置回 false 即等于"换了条新链"。
+    async fn spawn_quota_server(
+        data: Arc<Vec<u8>>,
+        quota: u64,
+    ) -> (std::net::SocketAddr, Arc<AtomicU64>, Arc<AtomicBool>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let served = Arc::new(AtomicU64::new(0));
+        let expired = Arc::new(AtomicBool::new(false));
+
+        let served_task = served.clone();
+        let expired_task = expired.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
+                let data = data.clone();
+                let served = served_task.clone();
+                let expired = expired_task.clone();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 4096];
+                    let Ok(n) = sock.read(&mut buf).await else {
+                        return;
+                    };
+                    if n == 0 {
+                        return;
+                    }
+                    let head = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let total = data.len();
+
+                    // 直链已过期：一律 403（真实网盘就是 401/403/412）
+                    if expired.load(Ordering::Relaxed) {
+                        let _ = sock
+                            .write_all(
+                                b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                            )
+                            .await;
+                        let _ = sock.shutdown().await;
+                        return;
+                    }
+
+                    let mut has_range = false;
+                    let (mut start, mut end) = (0usize, total.saturating_sub(1));
+                    for line in head.lines() {
+                        if let Some(v) = line.to_ascii_lowercase().strip_prefix("range:") {
+                            has_range = true;
+                            let v = v.trim().trim_start_matches("bytes=").to_string();
+                            let mut it = v.split('-');
+                            start = it
+                                .next()
+                                .and_then(|s| s.trim().parse::<usize>().ok())
+                                .unwrap_or(0);
+                            end = it
+                                .next()
+                                .and_then(|s| {
+                                    let t = s.trim();
+                                    if t.is_empty() {
+                                        None
+                                    } else {
+                                        t.parse::<usize>().ok()
+                                    }
+                                })
+                                .unwrap_or(total.saturating_sub(1));
+                        }
+                    }
+                    let end = end.min(total.saturating_sub(1));
+                    let body: &[u8] = if has_range {
+                        &data[start..=end]
+                    } else {
+                        &data[..]
+                    };
+                    let resp = if has_range {
+                        format!(
+                            "HTTP/1.1 206 Partial Content\r\nAccept-Ranges: bytes\r\nContent-Range: bytes {start}-{end}/{total}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        )
+                    } else {
+                        format!(
+                            "HTTP/1.1 200 OK\r\nAccept-Ranges: bytes\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        )
+                    };
+                    let _ = sock.write_all(resp.as_bytes()).await;
+                    let _ = sock.write_all(body).await;
+                    let _ = sock.shutdown().await;
+
+                    // 配额用尽 → 从下一个请求开始过期
+                    let done =
+                        served.fetch_add(body.len() as u64, Ordering::Relaxed) + body.len() as u64;
+                    if done >= quota {
+                        expired.store(true, Ordering::Relaxed);
+                    }
+                });
+            }
+        });
+        (addr, served, expired)
+    }
+
+    /// 直链自愈：下载中途直链过期 → 任务挂起为 expired → 换链 → 从未完成的分片继续
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn 直链过期后换链能从断点继续下完() {
+        let data = Arc::new(pattern(8 * 1024 * 1024 + 555));
+        // 只放行 2MB 就"过期"，保证中途必然撞上
+        let (old_addr, _served, _expired) = spawn_quota_server(data.clone(), 2 * 1024 * 1024).await;
+        // 第二个服务端代表"重新解析后拿到的新直链"—— 现实中它就是个新 URL
+        // （往往还换了 CDN 域名），配额充足
+        let (new_addr, _s2, _e2) = spawn_quota_server(data.clone(), u64::MAX).await;
+        let dir = temp_dir("relink");
+
+        let job = start_download(
+            client(),
+            format!("http://{old_addr}/movie.bin"),
+            vec![],
+            dir.clone(),
+            Some("movie.bin".into()),
+            4,
+            true,
+        )
+        .await
+        .expect("启动下载失败");
+        assert_eq!(job.connections, 4);
+
+        // 撞上过期后，任务应该进入 expired 而不是直接 failed
+        let mid = wait_state(&job, "expired", Duration::from_secs(30)).await;
+        assert!(mid.error.is_some(), "应带上说明，供 UI 提示");
+        assert!(
+            mid.downloaded > 0 && mid.downloaded < data.len() as u64,
+            "中断时应已下了一部分（实得 {}）",
+            mid.downloaded
+        );
+
+        // 模拟插件重新解析分享后送来的新直链
+        apply_relink(&job, format!("http://{new_addr}/movie.bin"), None).expect("换链失败");
+
+        let done = wait_done(&job).await;
+        assert_eq!(done.state, "done", "换链后应能下完: {:?}", done.error);
+        // 已完成的分片不重下 → 计数必须正好等于文件大小
+        assert_eq!(done.downloaded, data.len() as u64, "换链后计数不该重复累加");
+        assert_eq!(std::fs::read(&job.path).unwrap(), *data);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 直链一开始就不可用（探测就 403）时要立刻报错，而不是挂在那里等换链
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn 探测阶段直链不可用就立刻报错() {
+        let data = Arc::new(pattern(1024 * 1024));
+        let (addr, _served, expired) = spawn_quota_server(data, 0).await;
+        expired.store(true, Ordering::Relaxed);
+        let dir = temp_dir("probe-403");
+
+        let err = match start_download(
+            client(),
+            format!("http://{addr}/x.bin"),
+            vec![],
+            dir.clone(),
+            Some("x.bin".into()),
+            4,
+            true,
+        )
+        .await
+        {
+            Ok(_) => panic!("直链不可用时不该启动成功"),
+            Err(e) => e,
+        };
+        assert!(
+            err.contains("下载地址不可用"),
+            "应报出直链不可用并提示重新解析: {err}"
+        );
+        assert!(
+            err.contains("过期") || err.contains("HTTP 403"),
+            "错误里要说明原因: {err}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn client() -> reqwest::Client {

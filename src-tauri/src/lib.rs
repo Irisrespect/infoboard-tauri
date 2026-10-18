@@ -135,6 +135,7 @@ pub fn run() {
             plugins::netdisk::download::netdisk_download_status,
             plugins::netdisk::download::netdisk_download_list,
             plugins::netdisk::download::netdisk_download_cancel,
+            plugins::netdisk::download::netdisk_download_relink,
             plugins::netdisk::download::netdisk_default_download_dir,
             plugins::netdisk::download::netdisk_reveal_in_explorer,
             // 外部插件加载器

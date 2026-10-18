@@ -105,7 +105,8 @@ interface Adapter {
 
 interface JobStatus {
   id: string
-  state: 'running' | 'done' | 'failed' | 'cancelled'
+  /** expired = 直链过期、挂起等换链（见 netdisk_download_relink） */
+  state: 'running' | 'expired' | 'done' | 'failed' | 'cancelled'
   fileName: string
   path: string
   downloaded: number
@@ -114,6 +115,20 @@ interface JobStatus {
   connections: number
   error?: string | null
   elapsedMs: number
+}
+
+/**
+ * 任务来源：直链过期后要靠它重新解析出新的直链。
+ *
+ * 必须能跨面板开关存活 —— 用户关掉面板再打开时任务还在后台跑，
+ * 中途过期也得能自愈，所以落在 localStorage 里。
+ */
+interface JobSource {
+  adapterId: string
+  file: FileEntry
+  relDir: string
+  shareUrl: string
+  pwd: string
 }
 
 interface Settings {
@@ -125,6 +140,26 @@ interface Settings {
 
 const SETTINGS_KEY = 'netdisk:settings'
 const HIDDEN_KEY = 'netdisk:hidden-jobs'
+const SOURCES_KEY = 'netdisk:job-sources'
+
+/** 任务来源表：任务 id → 怎么重新解析出直链（直链过期自愈要用） */
+function loadJobSources(): Record<string, JobSource> {
+  try {
+    const raw = localStorage.getItem(SOURCES_KEY)
+    const obj = raw ? (JSON.parse(raw) as unknown) : null
+    return obj && typeof obj === 'object' ? (obj as Record<string, JobSource>) : {}
+  } catch {
+    return {}
+  }
+}
+
+function saveJobSources(map: Record<string, JobSource>) {
+  try {
+    localStorage.setItem(SOURCES_KEY, JSON.stringify(map))
+  } catch {
+    /* 存储写满时忽略 */
+  }
+}
 
 const BROWSER_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
@@ -943,6 +978,16 @@ function NetdiskPanel() {
 
   const detected = detectAdapter(url)
   const lastJobsKey = useRef('')
+  /** 任务来源表（跨面板开关存活）*/
+  const jobSourcesRef = useRef<Record<string, JobSource>>(loadJobSources())
+  /** 当前分享上下文：轮询回调里要用到最新值，但不能进轮询的依赖 */
+  const ctxRef = useRef<ShareCtx | null>(null)
+  /** 正在换链的任务，避免每 800ms 重复发起 */
+  const relinkingRef = useRef<Set<string>>(new Set())
+
+  useEffect(() => {
+    ctxRef.current = ctx
+  }, [ctx])
 
   // ── 默认下载目录（首次打开时问一次后端）
   useEffect(() => {
@@ -959,6 +1004,47 @@ function NetdiskPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  /**
+   * 直链过期自愈：重新解析分享 → 把新直链交给后端续传。
+   *
+   * 网盘直链只有 5~10 分钟有效期，大文件必然中途过期。后端的做法是：
+   * 撞上 401/403/412 就把未完成的分片放回队列、状态置为 `expired` 并等在这里；
+   * 我们重新解析一次拿到新直链，`netdisk_download_relink` 一调用，
+   * 它就从未完成的分片继续下 —— 已下完的部分不会重下。
+   */
+  const relinkOne = useCallback(async (jobId: string, src: JobSource) => {
+    const ad = adapterById(src.adapterId)
+    if (!ad) return
+    let shareCtx = ctxRef.current
+    try {
+      if (!shareCtx) throw new Error('分享上下文已丢失，需要重新解析')
+      let resolved: Resolved
+      try {
+        resolved = await ad.resolve(shareCtx, src.file)
+      } catch (e) {
+        // stoken 自己也会过期（实测 ≥10 分钟），先重新解析一次再试
+        console.warn('[网盘下载] 直接换链失败，重新解析分享后重试:', e)
+        const fresh = await ad.parse(src.shareUrl, src.pwd)
+        shareCtx = fresh.ctx
+        ctxRef.current = fresh.ctx
+        setCtx(fresh.ctx)
+        resolved = await ad.resolve(fresh.ctx, src.file)
+      }
+      await invoke('netdisk_download_relink', {
+        id: jobId,
+        url: resolved.url,
+        headers: resolved.headers,
+        allowHttp: !!ad.allowHttp,
+      })
+      setNotice('直链已过期，已自动换链并从断点继续')
+    } catch (e) {
+      setError(
+        `自动换链失败：${e instanceof Error ? e.message : String(e)}\n` +
+          '（后端会在等待超时后结束该任务，可重新解析后再下）'
+      )
+    }
+  }, [])
+
   // ── 轮询下载进度：插件 import 不到 event 模块，只能轮询
   useEffect(() => {
     let alive = true
@@ -972,6 +1058,15 @@ function NetdiskPanel() {
           lastJobsKey.current = key
           setJobs(list)
         }
+        // 有任务在等新直链 → 立刻去换（这就是"自愈"的触发点）
+        for (const job of list) {
+          if (job.state !== 'expired') continue
+          if (relinkingRef.current.has(job.id)) continue
+          const src = jobSourcesRef.current[job.id]
+          if (!src) continue
+          relinkingRef.current.add(job.id)
+          void relinkOne(job.id, src).finally(() => relinkingRef.current.delete(job.id))
+        }
       } catch {
         /* 后端未就绪时忽略 */
       }
@@ -982,7 +1077,7 @@ function NetdiskPanel() {
       alive = false
       clearInterval(timer)
     }
-  }, [])
+  }, [relinkOne])
 
   const applySettings = useCallback((next: Settings) => {
     setSettings(next)
@@ -1109,7 +1204,7 @@ function NetdiskPanel() {
             const destDir = item.relDir
               ? `${settings.destDir}/${item.relDir.replace(/\//g, '\\')}`
               : settings.destDir
-            await invoke<JobStatus>('netdisk_download_start', {
+            const started2 = await invoke<JobStatus>('netdisk_download_start', {
               req: {
                 url: resolved.url,
                 fileName: resolved.fileName || item.entry.name,
@@ -1123,6 +1218,15 @@ function NetdiskPanel() {
                 overwrite: false,
               },
             })
+            // 记下"这个任务是怎么来的"：直链过期时要靠它重新解析
+            jobSourcesRef.current[started2.id] = {
+              adapterId: adapter.id,
+              file: item.entry,
+              relDir: item.relDir,
+              shareUrl: url.trim(),
+              pwd: pwd.trim(),
+            }
+            saveJobSources(jobSourcesRef.current)
             started++
           } catch (e) {
             failures.push(`${item.entry.name}: ${e instanceof Error ? e.message : String(e)}`)
@@ -1360,6 +1464,14 @@ function NetdiskPanel() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
           <span style={{ fontWeight: 600 }}>下载队列</span>
           {runningCount > 0 && <span style={{ ...muted, color: 'var(--accent)' }}>{runningCount} 个进行中</span>}
+          {runningCount > 0 && (
+            <span
+              style={muted}
+              title="插件只在面板打开时轮询任务状态：关掉面板后如果直链过期，就没有人来重新解析了"
+            >
+              长任务请保持本面板打开
+            </span>
+          )}
           <button
             style={{ ...btn(), marginLeft: 'auto', padding: '3px 8px' }}
             onClick={() => persistHidden([...hidden, ...jobs.filter((j) => j.state !== 'running').map((j) => j.id)])}
@@ -1374,11 +1486,13 @@ function NetdiskPanel() {
           const stateText =
             j.state === 'done'
               ? '已完成'
-              : j.state === 'failed'
-              ? '失败'
-              : j.state === 'cancelled'
-              ? '已取消'
-              : `${pct.toFixed(1)}%`
+              : j.state === 'expired'
+                ? '直链过期，换链中…'
+                : j.state === 'failed'
+                  ? '失败'
+                  : j.state === 'cancelled'
+                    ? '已取消'
+                    : `${pct.toFixed(1)}%`
           return (
             <div
               key={j.id}
