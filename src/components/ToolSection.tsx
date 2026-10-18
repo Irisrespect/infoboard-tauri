@@ -77,11 +77,32 @@ export function ToolSection() {
 
   /**
    * 切换插件展开/折叠
-   * 特殊处理：screenshot 插件点击直接触发截图，不展开面板
+   *
+   * 有两个插件点图标是"直接动作"而不是"展开面板"：
+   * - screenshot：直接开始截图
+   * - netdisk：直接拉起独立的「网盘下载器」软件
+   *
+   * 网盘下载不给中间面板：它本来就是个独立软件，多一步"先开面板再点按钮"没有意义，
+   * 而且会让人误以为下载跑在面板里 —— 面板一关就断了。
    */
   const togglePlugin = useCallback((pluginId: string) => {
     if (pluginId === 'screenshot') {
       invoke('screenshot_start').catch((e) => console.error('[截图] 启动失败:', e))
+      return
+    }
+    if (pluginId === 'netdisk') {
+      invoke<string>('netdisk_app_launch').catch((e) => {
+        console.error('[网盘下载] 启动失败:', e)
+        // 失败必须让用户看见：最常见的原因是本机没装 Python，
+        // 只在控制台打印等于什么都没说。
+        // 注意 `plugin:dialog|message` 的参数是**平铺**的（message/title/kind），
+        // 不是 open 那样的 { options } —— 传错了会静默失败。
+        invoke('plugin:dialog|message', {
+          message: String(e),
+          title: '没能打开网盘下载器',
+          kind: 'error',
+        }).catch((err) => console.error('[网盘下载] 连错误提示都没弹出来:', err))
+      })
       return
     }
     setExpandedPluginId((prev) => (prev === pluginId ? null : pluginId))

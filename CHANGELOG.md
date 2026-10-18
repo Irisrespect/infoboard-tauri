@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **网盘下载插件改成纯启动器：点工具区图标直接把独立软件拉起来，不再有中间面板**
+  - 和截图插件同一套做法（`ToolSection` 里按 id 直接动作，不展开面板）
+  - 之前的"按钮 + 折叠的应用内下载"两级结构去掉了：本来就是个独立软件，
+    多一步"先开面板再点按钮"没有意义，而且会让人误以为下载跑在面板里
+  - 启动失败会弹原生错误框（最常见原因是本机没装 Python），不再只写控制台。
+    为此开放了 `dialog:allow-message` 能力
+  - 插件因此瘦成 100 多行，**权限也大幅收紧**：`tauriCommands` 从 13 个降到 2 个
+    （只剩 `netdisk_app_status` / `netdisk_app_launch`）—— 这个插件再也拿不到
+    HTTP 转发、Cookie 读写、写文件这些能力了
+  - 插件版本 1.1.0 → 1.2.0
+
 ### Added
 
 - **独立软件：网盘下载器**（`netdisk-app/`，Python + Tkinter，只用标准库、不需要 pip）

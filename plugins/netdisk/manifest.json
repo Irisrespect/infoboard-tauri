@@ -1,25 +1,11 @@
 {
   "id": "netdisk",
   "name": "网盘下载",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "author": "InfoBoard",
-  "description": "一键打开独立的网盘下载器（夸克网盘多连接高速下载）；也可选择在应用内直接下载",
+  "description": "打开独立的网盘下载器（夸克网盘多连接高速下载）",
   "section": "tool",
   "icon": "☁️",
   "entry": "index.tsx",
-  "tauriCommands": [
-    "netdisk_app_status",
-    "netdisk_app_launch",
-    "netdisk_http_request",
-    "netdisk_cookie_import",
-    "netdisk_cookie_list",
-    "netdisk_cookie_clear",
-    "netdisk_download_start",
-    "netdisk_download_relink",
-    "netdisk_download_list",
-    "netdisk_download_cancel",
-    "netdisk_default_download_dir",
-    "netdisk_reveal_in_explorer",
-    "plugin:dialog|open"
-  ]
+  "tauriCommands": ["netdisk_app_status", "netdisk_app_launch"]
 }
