@@ -5,6 +5,77 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **网盘下载插件**（`plugins/netdisk/`）：输入分享链接 + 提取码 → 解析目录 → 多连接下载
+  - 支持夸克网盘（免登录列目录 + 登录后转存取直链）、蓝奏云（免登录、不限速）、
+    百度网盘（分享页解析 + 转存 + PCS 下载）、任意 http(s) 直链
+  - 未接入的网盘（阿里云盘 / 123 / 天翼 / UC / 115 / 移动 / 迅雷 / 城通）会被明确拦下
+    并说明原因，而不是回落到直链兜底去"下载"一个 HTML 页面
+  - 设计与调研结论见 [docs/NETDISK_PLUGIN.md](docs/NETDISK_PLUGIN.md)
+- **宿主的网盘后端**（`src-tauri/src/plugins/netdisk/`）——纯插件做不到这些：
+  插件在 WebView 里受应用 CSP 限制（`connect-src` 只有天气/B站等域名），既不能
+  `fetch` 网盘接口，也没有任何写文件能力
+  - `netdisk_http_request`：带 Cookie 罐的 HTTP 转发；域名白名单 + **重定向每一跳
+    重新校验**；Cookie 按可注册域分桶，`pan.baidu.com` 的 Cookie 不会发到夸克
+  - `netdisk_download_start/status/list/cancel`：Range 探测 → **动态分片队列 + 抢占式
+    取片**，并发写同一文件（Windows `seek_write` / Unix `write_at`，不需要"下完再合并"），
+    分片内断点续传，连续无进展判定停滞
+  - `netdisk_cookie_import/list/clear`、`netdisk_default_download_dir`、
+    `netdisk_reveal_in_explorer`
+- **测试**：Rust 侧 23 项（含**起本地 HTTP 服务真跑一遍 8MB 分片下载并逐字节比对**、
+  **片数远多于连接数时的抢占式取片**、不支持 Range 时退回单连接、取消、域名白名单
+  伪造后缀回归、分片计划边界、直链过期提示文案）；
+  前端 9 项（用应用真实转译链路加载插件、校验每个 `invoke` 都在 `tauriCommands` 里
+  声明且无多余声明、网盘识别路由、acw_sc__v2 解挑战）
+
+### Fixed
+
+- **夸克改走"免转存"直链（默认路线）**：`file/download` 直接吃分享的
+  `fids` + `fids_token` + `pwd_id` + `stoken`，**不再往用户网盘写任何东西** ——
+  不占空间（网盘满了也能下）、不用事后清理、少两次远端状态变更。
+  原来的"转存 → 轮询 task → 取直链"降级为兜底路线。
+  由此**小文件还能免登录下载**（匿名通道上限约 50MB，超过报 `code 23018`）。
+- **并发策略改为按网盘区分**：不再用一个"线程数"滑块通吃所有网盘。
+  百度**硬性锁 1 路** —— 它不是"多开没用"，而是"多开会主动招来惩罚"
+  （BaiduPCS-Go 作者：调大线程极易触发限速，导致几小时至几天内账号接近 0 速）；
+  夸克 64 / 蓝奏云 32。一次排多个文件时按文件大小分配 512 的连接预算
+  （夸克按账号限总连接数），不再是每个文件都开满。
+- **分片粒度 1MB → 256KB、片数 8× → 32× 连接数**：实测同样 512 并发下
+  256KB/片 23.65MB/s、512KB/片 12.94、1MB/片 6.58；且"分片数必须 ≥ 并发数"，
+  否则连接空转（626MB 用 2MB 分片只有 313 片，开 384 并发只跑出 4.9MB/s）。
+- **Cookie 头加长度上限**：浏览器全部 Cookie（约 7.2KB）一起发会被服务端直接掐断
+  连接（IncompleteRead / ChunkedEncodingError），现在会给出"只复制该网盘域 Cookie"
+  的可照做报错。
+- **夸克"多线程无效"的结论是错的，已纠正**：夸克是**按连接**给配额（单连接常态
+  40–80 KB/s），多连接可叠加。此前把它当成账号级限速，是误信了 OpenList 文档
+  "夸克下载慢是因为需要会员"——而 OpenList 的夸克驱动本身只做单路串流代理
+  （`Concurrency: 3`），慢是它的架构问题。插件与文档均已改正。
+- **分片从"静态等分"改为"动态队列 + 抢占式取片"**：快的连接下完一片就抢下一片。
+  静态等分会让整体速度卡在**最慢的那条连接**上（尾部掉速/停滞）。
+- **夸克 UA 前后一致**：取直链与下载统一用客户端 UA
+  （`quark-cloud-drive/3.14.2 … Channel/pckk_other_ch`）。夸克会校验两处身份是否一致，
+  混用浏览器 UA 会被判盗链而降速甚至 412。
+- **并发上限 32 → 64**（默认仍 16，社区建议单文件 ≤64 路）。
+- **直链过期不再傻等重试**：401/403/404/412 立即失败并提示"直链已过期，请重新解析"
+  （夸克直链实测只有 5–10 分钟有效期）；429/503 提示调低并发。
+- **新增 `cookieHost`**：网盘 API 域与 CDN 直链域常常不是同一个可注册域，
+  按直链域名去 Cookie 罐里找会一无所获；现在由插件显式指定从哪个域取 Cookie。
+- **`tsconfig` 补上 `@/*` 路径映射**：插件文档让作者写
+  `import type { InfoBoardPlugin } from '@/core/types'`，而 tsconfig 里没有这个映射 ——
+  只要有任何测试从 `src` 里 import 了插件，`npm run build` 就会 TS2307 失败。
+  补上后插件也一并被类型检查。
+
+### Notes
+
+- 关于"免费高速"：**要区分"按连接限速"和"账号级聚合限速"**。
+  夸克/蓝奏云/未限速直链属于前者，**多连接能叠加**（实测夸克 512 连接 22.33MB/s，
+  1024 连接仅 23.20MB/s ⇒ 加连接有收益但有账号级总量天花板）；
+  百度免费号属于后者（20–80KB/s，实测 4/8/16 并发总量不变），客户端无解，只有 SVIP 能提速。
+  伪 SVIP User-Agent 一类"破解"手法已被官方封堵，本插件不做也不建议做。
+
 ## [0.5.0] - 2026-10-17
 
 本次发布的两条主线：**插件包一键导入 / 卸载**，以及 **API Key 改存 Windows 凭据管理器**。

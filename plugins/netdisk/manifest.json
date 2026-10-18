@@ -1,0 +1,22 @@
+{
+  "id": "netdisk",
+  "name": "网盘下载",
+  "version": "1.0.0",
+  "author": "InfoBoard",
+  "description": "输入网盘分享链接与提取码，自动解析目录内容并多连接高速下载（夸克网盘 / 蓝奏云 / 百度网盘 / 任意直链）",
+  "section": "tool",
+  "icon": "☁️",
+  "entry": "index.tsx",
+  "tauriCommands": [
+    "netdisk_http_request",
+    "netdisk_cookie_import",
+    "netdisk_cookie_list",
+    "netdisk_cookie_clear",
+    "netdisk_download_start",
+    "netdisk_download_list",
+    "netdisk_download_cancel",
+    "netdisk_default_download_dir",
+    "netdisk_reveal_in_explorer",
+    "plugin:dialog|open"
+  ]
+}

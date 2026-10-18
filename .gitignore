@@ -16,5 +16,6 @@ CONTEXT.md
 plugins/*
 !plugins/hello-world/
 !plugins/system-info/
+!plugins/netdisk/
 !plugins/.plugin-template/
 !plugins/.gitkeep

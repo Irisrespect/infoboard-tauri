@@ -16,6 +16,7 @@ mod core {
 mod plugins {
     pub mod bilibili_info;
     pub mod media_control;
+    pub mod netdisk;
     pub mod niutrans;
     pub mod screenshot;
     pub mod ocr;
@@ -125,6 +126,17 @@ pub fn run() {
             plugins::ocr::ocr_is_ready,
             plugins::ocr::ocr_engine_status,
             // Issue 16: IMAP 邮件
+            // 网盘解析 / 高速下载插件后端
+            plugins::netdisk::http::netdisk_http_request,
+            plugins::netdisk::http::netdisk_cookie_import,
+            plugins::netdisk::http::netdisk_cookie_list,
+            plugins::netdisk::http::netdisk_cookie_clear,
+            plugins::netdisk::download::netdisk_download_start,
+            plugins::netdisk::download::netdisk_download_status,
+            plugins::netdisk::download::netdisk_download_list,
+            plugins::netdisk::download::netdisk_download_cancel,
+            plugins::netdisk::download::netdisk_default_download_dir,
+            plugins::netdisk::download::netdisk_reveal_in_explorer,
             // 外部插件加载器
             plugins::loader::scan_external_plugins,
             plugins::loader::read_external_plugin_source,
