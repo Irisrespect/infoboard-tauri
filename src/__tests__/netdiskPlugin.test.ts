@@ -24,6 +24,8 @@ import {
   safeName,
   acwScV2,
   allocateConnections,
+  pickRelinkTargets,
+  cookieDiagnosis,
 } from '../../plugins/netdisk/index'
 
 const PLUGIN_DIR = join(process.cwd(), 'plugins', 'netdisk')
@@ -212,6 +214,82 @@ describe('netdisk 插件的纯逻辑', () => {
     it('空输入与非法上限不会炸', () => {
       expect(allocateConnections([], 64)).toEqual([])
       expect(allocateConnections([100, 100], 0)).toEqual([1, 1])
+    })
+  })
+
+  /**
+   * 直链自愈的触发条件。轮询 800ms 一次，这里选错会导致：
+   * 漏掉 → 任务白等到超时失败；重复 → 对同一个任务猛发换链请求
+   */
+  describe('pickRelinkTargets', () => {
+    const sources: Record<string, unknown> = { 'dl-1': { adapterId: 'quark' } }
+
+    it('挑出停在 expired 且有来源的任务', () => {
+      const jobs = [
+        { id: 'dl-1', state: 'expired' },
+        { id: 'dl-2', state: 'running' },
+        { id: 'dl-3', state: 'done' },
+      ]
+      const known = { ...sources, 'dl-2': {} }
+      expect(pickRelinkTargets(jobs, known, new Set())).toEqual(['dl-1'])
+    })
+
+    it('不知道来源的任务不发起换链（换不了，交给后端超时）', () => {
+      expect(pickRelinkTargets([{ id: 'dl-9', state: 'expired' }], sources, new Set())).toEqual([])
+    })
+
+    it('正在换链的任务不重复发起', () => {
+      expect(
+        pickRelinkTargets([{ id: 'dl-1', state: 'expired' }], sources, new Set(['dl-1']))
+      ).toEqual([])
+    })
+
+    it('只有 expired 才触发：失败/取消/完成都不重试', () => {
+      const jobs = [
+        { id: 'dl-1', state: 'failed' },
+        { id: 'dl-2', state: 'cancelled' },
+        { id: 'dl-3', state: 'done' },
+      ]
+      expect(pickRelinkTargets(jobs, sources, new Set())).toEqual([])
+    })
+
+    it('多个任务同时过期时都要处理', () => {
+      const jobs = [
+        { id: 'dl-1', state: 'expired' },
+        { id: 'dl-2', state: 'expired' },
+      ]
+      const many = { 'dl-1': {}, 'dl-2': {} }
+      expect(pickRelinkTargets(jobs, many, new Set())).toEqual(['dl-1', 'dl-2'])
+    })
+  })
+
+  /** 登录态体检：只报数量没用，要指出缺了哪个关键 Cookie */
+  describe('cookieDiagnosis', () => {
+    it('关键项齐全时通过', () => {
+      const stored = ['quark.cn:__uid', 'quark.cn:__puus', 'quark.cn:__pus']
+      expect(cookieDiagnosis(['__puus'], stored)).toEqual({ ok: true, missing: [] })
+    })
+
+    it('缺关键项时点名', () => {
+      const stored = ['quark.cn:__uid']
+      const diag = cookieDiagnosis(['__puus', '__uid'], stored)
+      expect(diag.ok).toBe(false)
+      expect(diag.missing).toEqual(['__puus'])
+    })
+
+    it('只粘了一半的百度 Cookie 会被抓出来', () => {
+      const diag = cookieDiagnosis(['BDUSS', 'STOKEN'], ['baidu.com:BDUSS'])
+      expect(diag.missing).toEqual(['STOKEN'])
+    })
+
+    it('没有关键项要求的网盘一律通过', () => {
+      expect(cookieDiagnosis(undefined, [])).toEqual({ ok: true, missing: [] })
+      expect(cookieDiagnosis([], ['x:y'])).toEqual({ ok: true, missing: [] })
+    })
+
+    it('名字匹配忽略域前缀', () => {
+      // 不同子域下的同名 Cookie 都算数
+      expect(cookieDiagnosis(['BDUSS'], ['pan.baidu.com:BDUSS']).ok).toBe(true)
     })
   })
 })

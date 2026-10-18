@@ -80,6 +80,13 @@ interface Adapter {
   speedNote: string
   /** 需要登录时给用户的提示 */
   loginHint?: string
+  /**
+   * 登录态必须包含的 Cookie 名。
+   *
+   * 用来在"粘贴完立刻体检"：缺了关键项就直接说缺哪个，
+   * 而不是等下载失败再回头猜（实测最常见的失败就是只粘了一半）。
+   */
+  requiredCookies?: string[]
   /** 是否允许明文 http（蓝奏云等） */
   allowHttp?: boolean
   /** 该适配器的 Cookie 应存到哪个域下 */
@@ -200,6 +207,22 @@ export function fmtEta(done: number, total: number, speed: number): string {
   return `${(left / 3600).toFixed(1)} 小时`
 }
 
+/**
+ * Cookie 体检：登录态里缺了关键项就明确指出来。
+ *
+ * `stored` 是 `netdisk_cookie_list` 的返回，形如 `["quark.cn:__puus", "quark.cn:__uid"]`
+ * （只回名字、不回值）。
+ */
+export function cookieDiagnosis(
+  required: string[] | undefined,
+  stored: string[]
+): { ok: boolean; missing: string[] } {
+  if (!required || required.length === 0) return { ok: true, missing: [] }
+  const have = new Set(stored.map((s) => s.split(':').pop() || ''))
+  const missing = required.filter((n) => !have.has(n))
+  return { ok: missing.length === 0, missing }
+}
+
 /** 文件名清洗（与 Rust 侧保持一致，避免落盘时被截断成另一个名字） */
 export function safeName(name: string): string {
   return name.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').trim() || 'unnamed'
@@ -207,6 +230,29 @@ export function safeName(name: string): string {
 
 /** 单个网盘账号的总连接预算。夸克是按账号限总连接数的，社区实测 512 为最优总量 */
 export const CONNECTION_BUDGET = 512
+
+/**
+ * 挑出这一轮需要换链的任务（纯函数，便于测试）。
+ *
+ * 三个条件缺一不可：
+ * - 任务确实停在 `expired`（后端在等新直链）
+ * - 我们还记得它的来源（不记得就没法重新解析，只能让后端超时）
+ * - 没有正在进行的换链（轮询 800ms 一次，不挡就会重复发起）
+ */
+export function pickRelinkTargets(
+  jobs: { id: string; state: string }[],
+  sources: Record<string, unknown>,
+  inFlight: Set<string>
+): string[] {
+  const out: string[] = []
+  for (const job of jobs) {
+    if (job.state !== 'expired') continue
+    if (inFlight.has(job.id)) continue
+    if (!sources[job.id]) continue
+    out.push(job.id)
+  }
+  return out
+}
 
 /**
  * 把「账号总连接预算」按文件大小比例分给这一批任务。
@@ -442,6 +488,7 @@ const quarkAdapter: Adapter = {
     '服务端按「连接」限速 —— 多开连接能叠加（建议 16–32 连接，默认 16）。单连接通常只有几百 KB/s；实际速度随账号/时段波动很大',
   maxConnections: 64,
   loginHint: '列目录免登录；转存与取下载直链必须登录夸克（粘贴 Cookie：__uid / __puus）',
+  requiredCookies: ['__puus'],
   match: (url) => /(^|\.)quark\.cn$/i.test(hostOf(url)),
   parse: async (url, pwd) => {
     const pwdId = quarkPwdId(url)
@@ -739,6 +786,7 @@ const baiduAdapter: Adapter = {
   // 而且惩罚是账号级的、可能持续几小时到几天。所以这里硬性锁 1 路。
   maxConnections: 1,
   loginHint: '必须登录：在浏览器打开 pan.baidu.com，复制 Cookie 里的 BDUSS 与 STOKEN',
+  requiredCookies: ['BDUSS', 'STOKEN'],
   match: (url) => /(^|\.)baidu\.com$/i.test(hostOf(url)) && /\/s\/|\/share\//.test(url),
   parse: async (url, pwd) => {
     const surl = baiduSurl(url)
@@ -1059,13 +1107,10 @@ function NetdiskPanel() {
           setJobs(list)
         }
         // 有任务在等新直链 → 立刻去换（这就是"自愈"的触发点）
-        for (const job of list) {
-          if (job.state !== 'expired') continue
-          if (relinkingRef.current.has(job.id)) continue
-          const src = jobSourcesRef.current[job.id]
-          if (!src) continue
-          relinkingRef.current.add(job.id)
-          void relinkOne(job.id, src).finally(() => relinkingRef.current.delete(job.id))
+        for (const id of pickRelinkTargets(list, jobSourcesRef.current, relinkingRef.current)) {
+          const src = jobSourcesRef.current[id]
+          relinkingRef.current.add(id)
+          void relinkOne(id, src).finally(() => relinkingRef.current.delete(id))
         }
       } catch {
         /* 后端未就绪时忽略 */
@@ -1607,7 +1652,17 @@ function SettingsPanel(props: SettingsProps) {
     try {
       const names = await invoke<string[]>('netdisk_cookie_list', { session: a.session })
       props.setCookieSaved((s) => ({ ...s, [a.id]: names }))
-      props.onNotice(names.length ? `${a.name}：已保存 ${names.length} 个 Cookie 字段` : `${a.name}：还没有保存任何 Cookie`)
+      if (names.length === 0) {
+        props.onNotice(`${a.name}：还没有保存任何 Cookie`)
+        return
+      }
+      // 只报数量没用：实测最常见的失败是"只粘了一半"，缺哪个就直接说哪个
+      const diag = cookieDiagnosis(a.requiredCookies, names)
+      props.onNotice(
+        diag.ok
+          ? `${a.name}：已保存 ${names.length} 项，关键项齐全`
+          : `${a.name}：已保存 ${names.length} 项，但缺少 ${diag.missing.join('、')} —— 缺了它取不到下载直链`
+      )
     } catch (e) {
       props.onError(e instanceof Error ? e.message : String(e))
     }
