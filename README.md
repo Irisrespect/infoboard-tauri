@@ -15,8 +15,17 @@
 | **待办**        | 本地待办列表（localStorage）                                        |
 | **翻译**        | 小牛翻译 API                                                        |
 | **截图**        | 全屏捕获、区域框选、剪贴板；集成 RapidOCR 文字识别                  |
+| **网盘下载**    | 拉起独立的「网盘下载器」：夸克分享解析 + 多连接高速下载             |
+| **API 测活**    | 拉起独立的「API 中转站测活工具」：站点/多 Key、模型探测、一键接入   |
 | **设置**        | 主题色、开机自启、API Key、插件开关                                 |
 | **🔌 外部插件** | 热插拔插件系统，无需修改核心代码即可添加新功能                      |
+
+> **「网盘下载」和「API 测活」是"启动器"插件**：点工具区的图标会拉起对应的**独立程序**
+> （都是 Python + tkinter、零第三方依赖），功能不在插件里跑。原因是插件运行在 WebView 中，
+> 受应用 CSP 约束（发不出对任意域名的请求、也没有写文件能力），而且只在面板打开时活着 ——
+> 而这两个工具的核心恰好就是"发网络请求 + 写文件 + 长时间运行"。
+>
+> 详见 [netdisk-app/](netdisk-app/README.md) 与 [plugins/api-probe/](plugins/api-probe/README.md)。
 
 ## 插件系统
 
@@ -154,14 +163,21 @@ src-tauri/target/release/infoboard-tauri.exe
 │   ├── stores/               # 全局 Zustand
 │   └── tauri-shim.ts         # 兼容层（invoke 封装）
 ├── src-tauri/                # Rust 后端
-│   ├── src/core/             # 窗口、托盘、自启、定位、Toast
+│   ├── src/core/             # 窗口、托盘、自启、定位、Toast、companion（拉起伴随程序）
 │   ├── src/plugins/          # 各插件 command 实现 + loader（插件扫描器）
 │   ├── binaries/rapidocr/    # OCR 引擎与模型（随仓库提供）
 │   └── capabilities/         # Tauri 权限
+├── netdisk-app/              # 伴随程序：网盘下载器（Python + tkinter，随安装包分发）
+│   ├── main.py               #   Tkinter 界面
+│   ├── netdisk/              #   HTTP 客户端 / 夸克适配器 / 多连接下载引擎
+│   └── tools/                #   自测工具（不需账号）
 ├── plugins/                  # 外部插件目录（用户可添加自定义插件）
-│   └── hello-world/          # 示例插件
+│   ├── hello-world/          # 示例插件
+│   ├── netdisk/              # 启动器插件：拉起网盘下载器
+│   └── api-probe/            # 启动器插件：拉起 API 测活工具
 ├── docs/                     # 文档
-│   └── PLUGIN_TUTORIAL.md    # 插件开发教程
+│   ├── PLUGIN_TUTORIAL.md    # 插件开发教程
+│   └── NETDISK.md            # 网盘下载：设计、协议序列与调研结论
 ├── package.json
 └── vite.config.ts
 ```
