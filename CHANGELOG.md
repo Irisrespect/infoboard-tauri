@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.0] - 2026-10-18
 
 本次新增一条完整的下载链路：**独立软件「网盘下载器」+ InfoBoard 里的一键启动入口**。
 
@@ -111,7 +111,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `tauriCommands` 必须声明否则 invoke 被拒、重新加载而非重启
 - 新增 `docs/release-notes-v0.5.0.md`、`REMAINING_ISSUES_STATUS.md`
 
-## [Unreleased]
+## [0.6.0] - 2026-10-18
 
 ### Added
 
