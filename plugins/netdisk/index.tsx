@@ -106,8 +106,8 @@ function LauncherPanel() {
 const NetdiskPlugin: InfoBoardPlugin = {
   manifest: {
     id: 'netdisk',
-    name: '网盘下载',
-    version: '1.2.0',
+    name: '夸克网盘',
+    version: '1.2.1',
     section: 'tool',
     // 用具名 SVG 图标（宿主 SVG_ICONS 注册表里的 Lucide 图标），跟截图/设置/翻译一致。
     // 用 emoji 会在工具区里显得格格不入：它是彩色字形，跟线性图标的风格不统一。

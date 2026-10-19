@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **工具区显示名改短**：`plugins/netdisk` → 「夸克网盘」（原「网盘下载」）、
+  `plugins/api-probe` → 「API」（原「API 测活」）
+  - 只动**显示名**（`manifest.json` 与插件源码里的 `name`）。插件 id 与目录仍是
+    `netdisk` / `api-probe`，所以 `%APPDATA%` 下的插件目录不用重建，
+    `ToolSection` 里按 id 硬连的那两处（`netdisk_app_launch` / `apiprobe_app_launch`）也不受影响
+  - 网盘下载插件 1.2.0 → **1.2.1**、API 插件 1.0.0 → **1.0.1**；
+    `src/__tests__/` 里加了钉住这两个显示名的用例，防止"两边只改一处"
+
 ## [0.7.0] - 2026-10-19
 
 ### Added

@@ -34,7 +34,7 @@ python main.py
 pythonw main.py
 ```
 
-InfoBoard 里点 **☁️ 网盘下载 → 打开网盘下载器** 也能启动它。
+InfoBoard 里点 **☁️ 夸克网盘 → 打开网盘下载器** 也能启动它。
 
 ## 用法
 

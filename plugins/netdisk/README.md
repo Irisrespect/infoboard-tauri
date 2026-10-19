@@ -5,7 +5,7 @@
 
 ```bash
 node scripts/pack-plugin.mjs plugins/netdisk
-# → dist-plugins/netdisk-1.2.0.ibplugin
+# → dist-plugins/netdisk-1.2.1.ibplugin
 ```
 
 ## 为什么是"启动器"，而不是把功能搬进插件
@@ -23,7 +23,7 @@ node scripts/pack-plugin.mjs plugins/netdisk
 
 ## 安装
 
-1. 把 `dist-plugins/netdisk-1.2.0.ibplugin` 拖进 **设置 → 插件管理**
+1. 把 `dist-plugins/netdisk-1.2.1.ibplugin` 拖进 **设置 → 插件管理**
    （或把 `plugins/netdisk/` 拷到 `%APPDATA%\com.infoboard.tauri\plugins\netdisk\`，
    再点「重新加载插件」）
 
@@ -31,7 +31,7 @@ node scripts/pack-plugin.mjs plugins/netdisk
 
 ## 用法
 
-点工具区的 **☁️ 网盘下载** 图标 → 直接弹出下载器窗口（**不展开面板**，与截图插件同一套做法）。
+点工具区的 **☁️ 夸克网盘** 图标 → 直接弹出下载器窗口（**不展开面板**，与截图插件同一套做法）。
 启动失败（比如本机没装 Python）会弹一个原生错误框说明原因。
 
 下载器本体怎么用、支持哪些网盘、免费速度的真相，见 [netdisk-app/README.md](../netdisk-app/README.md)
@@ -48,7 +48,7 @@ node scripts/pack-plugin.mjs plugins/netdisk
 ## 它是怎么接的
 
 ```
-工具区点「☁️ 网盘下载」
+工具区点「☁️ 夸克网盘」
       │  ToolSection 按 id 直接动作（与截图插件同一套做法）
       ▼
 netdisk_app_launch  ──►  core::companion  ──►  pythonw netdisk-app/main.py
@@ -66,4 +66,4 @@ netdisk_app_launch  ──►  core::companion  ──►  pythonw netdisk-app/m
 在插件改成纯启动器之后就删掉了。
 
 图标用宿主 `SVG_ICONS` 注册表里的 Lucide `cloud-download`，与截图 / 设置 / 翻译 /
-API 测活一致，都是具名线性图标。
+API 一致，都是具名线性图标。

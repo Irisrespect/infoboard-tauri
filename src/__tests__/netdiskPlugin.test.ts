@@ -78,6 +78,14 @@ describe('netdisk 插件', () => {
   })
 
   /**
+   * 工具区图标下那行字来自 `manifest.json` 的 `name`（`ToolIcon` 直接渲染它）。
+   * 钉住它是为了防止"改名改一半"—— `manifest.json` 和 `index.tsx` 里各有一份 `name`。
+   */
+  it('工具区显示名是「夸克网盘」', () => {
+    expect(readManifest().name).toBe('夸克网盘')
+  })
+
+  /**
    * 图标必须是宿主 `SVG_ICONS` 里注册过的具名图标。
    *
    * 名字写错不会报错 —— 工具区会默默降级成一行灰色小字（连图标都没有），

@@ -5,7 +5,7 @@
 
 ```bash
 node scripts/pack-plugin.mjs plugins/api-probe
-# → dist-plugins/api-probe-1.0.0.ibplugin
+# → dist-plugins/api-probe-1.0.1.ibplugin
 ```
 
 ## 为什么是"启动器"，而不是把功能搬进插件
@@ -23,7 +23,7 @@ node scripts/pack-plugin.mjs plugins/api-probe
 
 ## 安装
 
-1. 把 `dist-plugins/api-probe-1.0.0.ibplugin` 拖进 **设置 → 插件管理**
+1. 把 `dist-plugins/api-probe-1.0.1.ibplugin` 拖进 **设置 → 插件管理**
    （或把 `plugins/api-probe/` 拷到 `%APPDATA%\com.infoboard.tauri\plugins\api-probe\`，
    再点「重新加载插件」）
 
@@ -36,7 +36,7 @@ node scripts/pack-plugin.mjs plugins/api-probe
 所以第一次点图标会**展开面板**让你指定入口：
 
 ```
-点「📈 API 测活」
+点「📈 API」
    ├─ 已配置 → 直接启动
    └─ 没配置 → 展开面板 → 点「选择 api_probe.py…」→ 指到那个文件
                 （之后会记住，再点图标就是直接开）
@@ -58,7 +58,7 @@ node scripts/pack-plugin.mjs plugins/api-probe
 ## 它是怎么接的
 
 ```
-工具区点「📈 API 测活」
+工具区点「📈 API」
       │  ToolSection 按 id 直接动作（不展开面板；失败才展开去配置）
       ▼
 apiprobe_app_launch  ──►  core::companion  ──►  pythonw api_probe.py
@@ -82,7 +82,7 @@ apiprobe_app_launch  ──►  core::companion  ──►  pythonw api_probe.py
 `netdisk_app_*`），插件只能启动自己那一个，借不了道去启动别的。
 
 图标用宿主 `SVG_ICONS` 注册表里的 Lucide `activity`（脉冲折线），与截图 / 设置 /
-翻译 / 网盘下载一致，都是具名线性图标。
+翻译 / 夸克网盘一致，都是具名线性图标。
 
 ## 相关
 

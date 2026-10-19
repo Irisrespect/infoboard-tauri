@@ -72,6 +72,16 @@ describe('api-probe 插件', () => {
   })
 
   /**
+   * 工具区图标下那行字来自 `manifest.json` 的 `name`（`ToolIcon` 直接渲染它）。
+   *
+   * 这里刻意钉一个**短名**：工具区是 4 列网格、字号 `text-xs`，
+   * 完整说明放在 `description` 和展开面板里，不挤在图标下面。
+   */
+  it('工具区显示名是 "API"', () => {
+    expect(readManifest().name).toBe('API')
+  })
+
+  /**
    * 图标必须是宿主 `SVG_ICONS` 里注册过的具名图标。
    * 名字写错不会报错 —— 工具区会默默降级成一行灰色小字，最难查。
    */

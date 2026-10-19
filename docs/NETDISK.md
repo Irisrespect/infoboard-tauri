@@ -5,7 +5,7 @@
 > **交付形态（2026-10 起）**：下载跑在**独立软件**里，插件只是个入口。
 >
 > ```
-> InfoBoard 工具区点「☁️ 网盘下载」
+> InfoBoard 工具区点「☁️ 夸克网盘」
 >         │  （宿主按 id 直接动作，不展开中间面板 —— 与截图插件同一套做法）
 >         ▼
 > netdisk_app_launch  →  pythonw netdisk-app/main.py  →  独立窗口
@@ -105,7 +105,7 @@
 于是把整个下载能力搬进独立进程 `netdisk-app/`：
 
 ```
-InfoBoard 工具区点「☁️ 网盘下载」
+InfoBoard 工具区点「☁️ 夸克网盘」
         │  宿主按 id 直接动作，不展开面板（与截图插件同一套做法）
         ▼
 netdisk_app_launch → pythonw netdisk-app/main.py → 独立窗口
@@ -284,7 +284,7 @@ netdisk_app_launch → pythonw netdisk-app/main.py → 独立窗口
    ```bash
    python netdisk-app/main.py       # 或 pythonw netdisk-app/main.py（不弹控制台）
    ```
-3. 从 InfoBoard 启动：工具区点 **☁️ 网盘下载** —— 宿主会自己找到并拉起它，**不展开面板**。
+3. 从 InfoBoard 启动：工具区点 **☁️ 夸克网盘** —— 宿主会自己找到并拉起它，**不展开面板**。
    安装包里已把 `netdisk-app/` 作为资源带上，不需要单独分发。
 4. 粘贴夸克分享链接（`https://pan.quark.cn/s/xxxx`）+ 提取码 → 解析 → 选中 → 下载。
 5. 想快就登录：浏览器打开 `pan.quark.cn` → F12 → Application → Cookies →

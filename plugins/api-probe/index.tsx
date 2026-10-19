@@ -178,8 +178,8 @@ function ApiProbePanel() {
 const ApiProbePlugin: InfoBoardPlugin = {
   manifest: {
     id: 'api-probe',
-    name: 'API 测活',
-    version: '1.0.0',
+    name: 'API',
+    version: '1.0.1',
     section: 'tool',
     // 与其它工具插件一致的具名线性图标（宿主 SVG_ICONS 注册表里的 Lucide 图标）
     icon: 'activity',
