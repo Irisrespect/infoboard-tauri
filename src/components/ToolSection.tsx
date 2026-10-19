@@ -45,6 +45,10 @@ export const SVG_ICONS: Record<string, React.ReactNode> = {
       <path d="M4.393 15.269A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.436 8.284" />
     </>
   ),
+  // API 测活：一条脉冲折线 —— "测活 / 测速"最直观的意象
+  activity: (
+    <path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2" />
+  ),
 }
 
 /**
@@ -111,6 +115,12 @@ export function ToolSection() {
           kind: 'error',
         }).catch((err) => console.error('[网盘下载] 连错误提示都没弹出来:', err))
       })
+      return
+    }
+    if (pluginId === 'api-probe') {
+      // 测活工具不随包分发，第一次要先指定一次 api_probe.py 的位置。
+      // 已经配好 → 直接开；没配好 → 展开面板去配（面板里会说明原因）。
+      invoke<string>('apiprobe_app_launch').catch(() => setExpandedPluginId('api-probe'))
       return
     }
     setExpandedPluginId((prev) => (prev === pluginId ? null : pluginId))

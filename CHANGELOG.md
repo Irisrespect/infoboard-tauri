@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **API 测活插件**（`plugins/api-probe/`）：工具区一个图标，拉起独立的
+  「API 中转站测活工具」（`api_probe.py`，tkinter GUI、零第三方依赖；
+  站点与多 Key 管理 / 模型列表探测 / 批量测速与流畅度 / 一键接入 Claude Code 与 Codex）
+  - 它**不随应用打包**（有自己的仓库、自己在迭代），所以第一次点会展开面板让你指定
+    一次 `api_probe.py` 的位置，之后记住；配好之后再点图标就是直接开
+  - 图标用宿主注册表里的 Lucide `activity`（脉冲折线），与截图/设置/翻译/网盘下载
+    一样是具名线性图标，不用 emoji
+- **宿主新增"伴随程序"设施**（`src-tauri/src/core/companion.rs`）：把"找一个外部
+  Python 程序并把它拉起来"的逻辑抽出来给多个插件共用（找解释器、找入口脚本、
+  记住用户指定的路径），网盘下载器也改用它
+  - **刻意不做"通用启动命令"**：每个程序一组命令（`netdisk_app_launch` /
+    `apiprobe_app_launch`），插件只能启动自己那一个，借不了道去启动别的
+  - 手动指定路径时校验**入口文件名**（必须是 `api_probe.py`），
+    免得这个能力被当成"启动任意程序"的口子
+
+### Changed
+
+- `plugins/netdisk/app.rs` 瘦成两个薄封装，逻辑走 `core::companion`
+
 ## [0.6.0] - 2026-10-18
 
 本次新增一条完整的下载链路：**独立软件「网盘下载器」+ InfoBoard 里的一键启动入口**。

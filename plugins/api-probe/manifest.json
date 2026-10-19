@@ -1,0 +1,18 @@
+{
+  "id": "api-probe",
+  "name": "API 测活",
+  "version": "1.0.0",
+  "author": "InfoBoard",
+  "description": "打开「API 中转站测活工具」：站点/多 Key 管理、模型列表探测、批量测速、一键接入 Claude Code 与 Codex",
+  "section": "tool",
+  "icon": "activity",
+  "color": "var(--accent)",
+  "entry": "index.tsx",
+  "tauriCommands": [
+    "apiprobe_app_status",
+    "apiprobe_app_launch",
+    "apiprobe_app_set_path",
+    "apiprobe_app_clear_path",
+    "plugin:dialog|open"
+  ]
+}

@@ -3,6 +3,7 @@ use tauri_plugin_window_state::{WindowExt, StateFlags};
 
 mod core {
     pub mod app_log;
+    pub mod companion;
     pub mod http_proxy;
     pub mod autostart;
     pub mod geolocate;
@@ -14,6 +15,7 @@ mod core {
 }
 
 mod plugins {
+    pub mod apiprobe;
     pub mod bilibili_info;
     pub mod media_control;
     pub mod netdisk;
@@ -129,6 +131,11 @@ pub fn run() {
             // 网盘下载：只负责把独立软件（netdisk-app）拉起来
             plugins::netdisk::app::netdisk_app_status,
             plugins::netdisk::app::netdisk_app_launch,
+            // API 中转站测活工具（api-probe）：拉起 + 记住入口位置
+            plugins::apiprobe::apiprobe_app_status,
+            plugins::apiprobe::apiprobe_app_launch,
+            plugins::apiprobe::apiprobe_app_set_path,
+            plugins::apiprobe::apiprobe_app_clear_path,
             // 外部插件加载器
             plugins::loader::scan_external_plugins,
             plugins::loader::read_external_plugin_source,

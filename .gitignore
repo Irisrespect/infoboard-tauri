@@ -17,9 +17,10 @@ plugins/*
 !plugins/hello-world/
 !plugins/system-info/
 !plugins/netdisk/
+!plugins/api-probe/
 !plugins/.plugin-template/
 !plugins/.gitkeep
 
-# Python 构建产物（netdisk-app）
+# Python 构建产物（netdisk-app 等伴随程序）
 __pycache__/
 *.pyc
