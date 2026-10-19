@@ -1,11 +1,15 @@
-"""协议探测：用无效的分享 ID 打一次真实接口。
+"""协议探测：打真实接口，验证路径 / 请求体字段 / 错误码层次。
 
-不能证明"能下载"，但能证明三件事（这几件恰好是最容易写错的）：
+默认用**无效**的分享 ID 探测（不碰任何人的分享），证明三件事：
   1. 主机 / 路径对不对（错误的路径会返回 HTML 404 而不是结构化 JSON）
   2. 请求体字段名对不对（字段名错通常会被参数校验挡下来）
   3. 响应结构与业务码在哪一层（网盘的业务错误码在 HTTP 200 的 body 里）
 
-用法：python tools/probe_quark.py
+也可以带一个真实分享链接，把 parse → list_dir 跑一遍（**只读**：不发
+download / save 请求，不下载、不往任何人网盘里写东西）：
+
+    用法：python tools/probe_quark.py
+          python tools/probe_quark.py "https://pan.quark.cn/s/xxxxxxxx"
 """
 
 import json
@@ -13,9 +17,11 @@ import sys
 import urllib.parse
 from pathlib import Path
 
+# 别在源码树里留 __pycache__（main.py 里同理）：自测工具不该污染仓库
+sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from netdisk.adapters import API, QuarkAdapter, _headers  # noqa: E402
+from netdisk.adapters import API, QuarkAdapter, _headers, quark_pwd_id  # noqa: E402
 from netdisk.core import Client  # noqa: E402
 
 
@@ -26,6 +32,22 @@ def probe(label: str, fn) -> None:
         print(json.dumps(result, ensure_ascii=False, indent=2)[:900])
     except Exception as e:
         print(f"异常：{type(e).__name__}: {e}")
+
+
+def real_share(url: str) -> dict:
+    """用真链接跑 parse → list_dir。**只读**：不发 download / save 请求"""
+    adapter = QuarkAdapter()
+    ctx, entries, title = adapter.parse(url, "")
+    return {
+        "title": title,
+        "pwd_id": ctx["pwd_id"],
+        "stoken": (ctx["stoken"][:8] + "…") if ctx["stoken"] else "",
+        "logged_in": adapter.logged_in,
+        "count": len(entries),
+        "entries": [
+            {"name": e.name, "size": e.size_text, "dir": e.is_dir} for e in entries[:20]
+        ],
+    }
 
 
 def main() -> int:
@@ -75,22 +97,22 @@ def main() -> int:
 
     # 3) 链接识别（纯本地逻辑，必测）
     print("\n--- 本地：分享 ID 提取 ---")
-    for url in [
+    for sample in [
         "https://pan.quark.cn/s/abcdef123456",
         "https://pan.quark.cn/s/abcdef123456?pwd=1234",
         "https://pan.quark.cn/s/abcdef123456#/list/share",
-        "https://example.com/s/xyz",
+        "https://example.com/s/xyz",  # 只管形状，域名校验在 QuarkAdapter.match()
     ]:
-        print(f"  {url:<52} -> {QuarkAdapter.quark_pwd_id(url) if hasattr(QuarkAdapter, 'quark_pwd_id') else ''}"
-              f"{quark_id(url)}")
+        print(f"  {sample:<52} -> {quark_pwd_id(sample)}")
+
+    # 4) 给了真实链接就跑一遍解析 + 列目录（可选，只读）
+    url = sys.argv[1] if len(sys.argv) > 1 else ""
+    if url:
+        probe("真实链接：parse → list_dir（只读，不下载 / 不转存）", lambda: real_share(url))
+    else:
+        print("\n（想验证一个真实分享链接，加上参数再跑一次：python tools/probe_quark.py <链接>）")
 
     return 0
-
-
-def quark_id(url: str) -> str:
-    from netdisk.adapters import quark_pwd_id
-
-    return quark_pwd_id(url)
 
 
 if __name__ == "__main__":

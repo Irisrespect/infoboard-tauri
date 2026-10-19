@@ -87,8 +87,21 @@ class ShareCtx:
     def get(self, key: str, default: Any = None) -> Any:
         return self.data.get(key, default)
 
+    # 回归：这里原来**只有 `__setitem__`、没有 `__getitem__`**。
+    # 于是 `ctx["pwd_id"] = x`（写）一切正常，`ctx["stoken"]`（读）直接抛
+    # `TypeError: 'ShareCtx' object is not subscriptable` —— 适配器里两种写法都用，
+    # 结果是**解析分享的第一步就炸**，用户看到的是
+    # `解析失败: TypeError: 'ShareCtx' object is not subscriptable`。
+    # 之所以一直没被发现：下载引擎的冒烟测试（tools/smoke_download.py）不经过任何
+    # 适配器代码，而现在 tools/smoke_adapter.py 把这一整条链盖住了。
+    def __getitem__(self, key: str) -> Any:
+        return self.data[key]
+
     def __setitem__(self, key: str, value: Any) -> None:
         self.data[key] = value
+
+    def __contains__(self, key: object) -> bool:
+        return key in self.data
 
 
 def human_size(n: int) -> str:

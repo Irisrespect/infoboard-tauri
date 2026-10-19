@@ -17,6 +17,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 网盘下载插件 1.2.0 → **1.2.1**、API 插件 1.0.0 → **1.0.1**；
     `src/__tests__/` 里加了钉住这两个显示名的用例，防止"两边只改一处"
 
+### Fixed
+
+- **网盘下载器点「解析」必崩，任何分享链接都解析不了**
+  （`解析失败: TypeError: 'ShareCtx' object is not subscriptable`）：
+  `ShareCtx` 只有 `__setitem__`、没有 `__getitem__`，于是适配器里
+  `ctx["pwd_id"] = ...`（写）正常，`ctx["stoken"]`（读）直接抛 TypeError ——
+  而且是**解析的第一步**就读，所以链接好坏都一样崩
+  - 修法：给 `ShareCtx` 补上对称的 `__getitem__` / `__contains__`
+  - **为什么之前测不出来**：`tools/smoke_download.py` 只测下载引擎，
+    `parse` / `list_dir` / `resolve` 一个都不经过；协议部分一直只在真链接上手工验过
+  - 新增 `netdisk-app/tools/smoke_adapter.py`：离线喂**真实形状**的假响应
+    （不发任何请求、不需要账号），把 `parse → list_dir → resolve` 整条链盖住，
+    含 41006 / 41008 / 23018 / 401 / 坏链接等提示的断言
+  - 顺带修 `smoke_download.py` 的收尾打印：GBK 控制台下 `print("全部通过 ✅")` 每次都抛
+    `UnicodeEncodeError`，**把"全部通过"变成了退出码 1** —— 自测脚本自己把结论弄反了
+  - `tools/*.py` 与 `main.py` 一样设 `sys.dont_write_bytecode = True`，
+    跑自测不再往源码树里留 `__pycache__`
+
 ## [0.7.0] - 2026-10-19
 
 ### Added

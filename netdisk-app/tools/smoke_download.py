@@ -20,10 +20,25 @@ import threading
 import time
 from pathlib import Path
 
+# 别在源码树里留 __pycache__（main.py 里同理）：自测工具不该污染仓库
+sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from netdisk.core import Client  # noqa: E402
 from netdisk.downloader import DownloadTask, Downloader, plan_chunks  # noqa: E402
+
+
+def safe_stdout() -> None:
+    """Windows 控制台默认是 GBK，非 GBK 字符会让 print 抛 UnicodeEncodeError。
+
+    回归：最后那行 `print("全部通过 ✅")` 在 GBK 控制台上**每次都抛**，
+    于是"全部通过"反而变成退出码 1 —— 自测脚本自己把结论弄反了。
+    所以这里既不使用 emoji，也把编码错误降级掉。
+    """
+    try:
+        sys.stdout.reconfigure(errors="replace")  # type: ignore[union-attr]
+    except Exception:
+        pass
 
 
 def pattern(n: int) -> bytes:
@@ -99,6 +114,7 @@ def run_task(url: str, dest: Path, name: str, conns: int, relink=None, timeout: 
 
 
 def main() -> int:
+    safe_stdout()
     failures = 0
 
     # ── 1) 多连接分片 ──
@@ -149,7 +165,7 @@ def main() -> int:
         failures += 0 if ok else 1
     httpd4.shutdown()
 
-    print("\n全部通过 ✅" if failures == 0 else f"\n{failures} 项失败 ❌")
+    print("\n全部通过" if failures == 0 else f"\n{failures} 项失败")
     return 1 if failures else 0
 
 

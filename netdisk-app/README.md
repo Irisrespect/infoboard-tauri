@@ -14,6 +14,7 @@ netdisk-app/
 │   └── downloader.py       多连接分片引擎（动态队列 / 直链自愈 / 限流退避 / 慢分片抢占）
 └── tools/
     ├── smoke_download.py   引擎冒烟测试（不需要账号，起本地 HTTP 服务真跑一遍）
+    ├── smoke_adapter.py    适配器冒烟测试（不需要账号、不联网，用假响应跑 parse→列目录→取链）
     └── probe_quark.py      协议探测（打真实接口，验证路径/请求体/错误码层次）
 ```
 
@@ -81,11 +82,21 @@ InfoBoard 里点 **☁️ 夸克网盘 → 打开网盘下载器** 也能启动�
 ## 自测
 
 ```bash
+# 适配器：parse → 列目录 → 取链整条链（离线，用假响应，不碰真实网络）
+python tools/smoke_adapter.py
+
 # 引擎：多连接拼装是否逐字节正确 / 过期换链续传 / 不支持 Range 时退回单连接
 python tools/smoke_download.py
 
 # 协议：打真实接口验证路径与错误码层次（用无效 ID，不需要账号）
 python tools/probe_quark.py
+
+# 想验证一个真实分享链接能不能解析（只读：不下载、不转存）
+python tools/probe_quark.py "https://pan.quark.cn/s/xxxxxxxx"
 ```
 
-`smoke_download.py` 全程用本地 HTTP 服务，不碰任何真实网盘，可以离线跑。
+`smoke_adapter.py` 和 `smoke_download.py` 都不碰真实网盘，可以离线跑、反复跑。
+
+> 两个脚本分工不同，缺一不可：`smoke_download.py` 只测**下载引擎**，它一个协议函数
+> 都不经过 —— 所以"适配器代码根本跑不起来"的错只有 `smoke_adapter.py` 能抓到
+> （`'ShareCtx' object is not subscriptable` 就是这么漏出去的）。
