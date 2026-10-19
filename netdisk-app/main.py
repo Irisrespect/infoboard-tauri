@@ -19,11 +19,18 @@ import os
 import queue
 import subprocess
 import sys
-import threading
-import tkinter as tk
-from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
-from typing import Any
+
+# 不要在程序目录里写 __pycache__：
+# 1) 它会跟着 Tauri 的 resources 一起被打进安装包（白占体积、看着也不干净）；
+# 2) 装到 Program Files 这类只读位置时，写字节码还会失败。
+# 必须在 import 本项目的包**之前**设置，所以放在所有本地 import 之前。
+sys.dont_write_bytecode = True
+
+import threading  # noqa: E402
+import tkinter as tk  # noqa: E402
+from pathlib import Path  # noqa: E402
+from tkinter import filedialog, messagebox, ttk  # noqa: E402
+from typing import Any  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
