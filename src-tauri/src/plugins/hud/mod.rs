@@ -37,6 +37,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
+use tauri::utils::config::Color;
 use tauri::webview::WebviewWindowBuilder;
 use tauri::{AppHandle, Manager, WebviewUrl};
 
@@ -90,6 +91,111 @@ pub fn place_beside(anchor: Anchor, width: f64, height: f64) -> Option<(f64, f64
     Some((x, y))
 }
 
+/// 注入到远端页面的"玻璃化"脚本。
+///
+/// **为什么非得进页面改样式**：透明窗口只能露出「页面没画」的地方，而 DeepSeek 是
+/// 标准 SPA —— `body`、`#root`、侧栏、气泡各自都有不透明背景。窗口再怎么透明，
+/// 页面上那层白/黑底都会盖住桌面。
+///
+/// 三条策略，从稳到激进：
+/// 1. 根元素铺**半透明玻璃色** + `backdrop-filter`（磨砂），一行就能透出桌面
+/// 2. 清掉 `body` / `#root` 的底色，让第 1 条透出来
+/// 3. 兜底：扫"铺满视口且不透明"的容器逐个标掉 —— 它换皮肤或改结构时前两条
+///    可能失效，第 3 条是泛化的保险（只扫 `body > *` 与 `#root` 前两层，
+///    不遍历整棵树，否则流式输出时每次 DOM 变更都要全量算样式，会卡）
+///
+/// 全部 `!important` + 独立 `<style>`，并用 MutationObserver 在 SPA 路由切换后补挂。
+const HUD_GLASS_SCRIPT: &str = r#"
+(() => {
+  const STYLE_ID = 'infoboard-hud-glass'
+  const LAYER_ATTR = 'data-ib-hud-layer'
+
+  const isDark = () => {
+    try {
+      const de = document.documentElement
+      return (
+        de.hasAttribute('data-ds-dark-theme') ||
+        (document.body && document.body.hasAttribute('data-ds-dark-theme')) ||
+        de.getAttribute('data-theme') === 'dark' ||
+        window.matchMedia('(prefers-color-scheme: dark)').matches
+      )
+    } catch (e) {
+      return true
+    }
+  }
+
+  const css = (dark) => `
+    html {
+      background: ${dark ? 'rgba(18, 18, 20, 0.55)' : 'rgba(250, 250, 252, 0.62)'} !important;
+      -webkit-backdrop-filter: blur(18px) saturate(1.15);
+      backdrop-filter: blur(18px) saturate(1.15);
+    }
+    body, #root { background: transparent !important; }
+    [${LAYER_ATTR}="1"] { background-color: transparent !important; }
+    :root, [data-ds-dark-theme] {
+      --dsw-alias-bg-base: transparent !important;
+      --dsw-alias-bg-layer-1: ${dark ? 'rgba(28, 28, 32, 0.35)' : 'rgba(255, 255, 255, 0.45)'} !important;
+      --dsw-alias-bg-layer-2: ${dark ? 'rgba(36, 36, 42, 0.45)' : 'rgba(255, 255, 255, 0.55)'} !important;
+    }
+  `
+
+  const mount = () => {
+    const head = document.head || document.documentElement
+    if (!head) return
+    let el = document.getElementById(STYLE_ID)
+    if (!el) {
+      el = document.createElement('style')
+      el.id = STYLE_ID
+      head.appendChild(el)
+    }
+    const next = css(isDark())
+    if (el.textContent !== next) el.textContent = next
+  }
+
+  const markBigLayers = () => {
+    try {
+      const viewport = window.innerWidth * window.innerHeight
+      if (!viewport) return
+      const sels = ['body > *', '#root > *', '#root > * > *']
+      for (const sel of sels) {
+        document.querySelectorAll(sel).forEach((el) => {
+          if (el.hasAttribute(LAYER_ATTR)) return
+          const bg = window.getComputedStyle(el).backgroundColor
+          if (!bg || bg === 'transparent' || bg === 'rgba(0, 0, 0, 0)') return
+          const r = el.getBoundingClientRect()
+          if (r.width * r.height >= viewport * 0.6) el.setAttribute(LAYER_ATTR, '1')
+        })
+      }
+    } catch (e) {}
+  }
+
+  const apply = () => {
+    mount()
+    markBigLayers()
+  }
+
+  apply()
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', apply, { once: true })
+  }
+
+  // SPA 换页 / 换主题后补挂；带防抖，避免流式输出时反复触发
+  let timer = 0
+  const schedule = () => {
+    clearTimeout(timer)
+    timer = setTimeout(apply, 400)
+  }
+  try {
+    new MutationObserver(schedule).observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['data-ds-dark-theme', 'data-theme', 'class'],
+    })
+  } catch (e) {}
+})()
+"#;
+
 fn open_hud(app: &AppHandle, spec: &HudSpec, anchor: Option<Anchor>) -> Result<(), String> {
     // 已经开着就唤到前面（不重建：重建会丢当前页面状态，也没必要）
     if let Some(win) = app.get_webview_window(spec.label) {
@@ -112,7 +218,15 @@ fn open_hud(app: &AppHandle, spec: &HudSpec, anchor: Option<Anchor>) -> Result<(
         // 先隐藏建好再 show：WebView2 冷启动要几百毫秒到几秒（dev 档更久），
         // 直接可见会先闪一个白框
         .visible(false)
-        .focused(false);
+        .focused(false)
+        // 磨砂玻璃 HUD：窗口与 webview 两层都要透明（builder 的 transparent
+        // 会同时设到 window 和 webview 上），否则页面底下永远是一块不透明画布。
+        // 注意 Windows 上 alpha 必须为 0 —— 非 0 的 alpha 会被直接忽略。
+        .transparent(true)
+        .background_color(Color(0, 0, 0, 0))
+        // 远端页面自己会画不透明的底，这里在 document-created 阶段就挂上样式，
+        // 把它的底色换成半透明玻璃 + 吃掉铺满视口的不透明层
+        .initialization_script(HUD_GLASS_SCRIPT);
 
     builder = match anchor.and_then(|a| place_beside(a, spec.width, spec.height)) {
         Some((x, y)) => builder.position(x, y),

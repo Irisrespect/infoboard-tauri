@@ -46,8 +46,8 @@ pub fn run(app: AppHandle) {
             eprintln!("[selftest] 失败原因: {e}");
         }
 
-        // 给它两秒把远端页面拉起来，再看窗口状态
-        std::thread::sleep(Duration::from_secs(2));
+        // 留够时间让远端页面把"玻璃化"样式挂上，也给截图留窗口
+        std::thread::sleep(Duration::from_secs(8));
         match app.get_webview_window("deepseek-hud") {
             Some(w) => eprintln!(
                 "[selftest] 窗口存在 · visible={:?} · url={:?}",

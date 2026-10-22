@@ -36,14 +36,25 @@ mod selftest;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let app = tauri::Builder::default()
+    // 调试用逃生口：`INFOBOARD_ALLOW_MULTI_INSTANCE=1` 时不注册单实例插件，
+    // 于是可以在"你正在用的那一份"还开着的时候，另起一个实例跑自检/截图，
+    // 不用先把正在用的关掉（关掉 vite dev server 会跟着没，主窗口就白了）。
+    // 只在 debug 构建里生效，发布包里恒为 false。
+    let allow_parallel = cfg!(debug_assertions)
+        && std::env::var("INFOBOARD_ALLOW_MULTI_INSTANCE").ok().as_deref() == Some("1");
+
+    let mut builder = tauri::Builder::default();
+    if !allow_parallel {
         // 必须最先注册：二次启动（如开机自启后又双击）只唤起已有窗口，不再双开
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             println!("[单实例] 检测到重复启动，唤起已有窗口");
             if let Some(window) = app.get_webview_window("main") {
                 core::window::show_and_focus(&window);
             }
-        }))
+        }));
+    }
+
+    let app = builder
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_window_state::Builder::new().build())
         .plugin(tauri_plugin_clipboard_manager::init())

@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **DeepSeek HUD 改成磨砂玻璃透明窗**
+  - `transparent(true)` + `background_color(Color(0,0,0,0))`：Windows 上 alpha 非 0 会被忽略
+  - 关键：透明窗口只能露出「页面没画」的地方，而 DeepSeek 是 SPA（`body` / `#root` /
+    侧栏 / 气泡各画各的底），所以建窗时挂 `initialization_script`（`HUD_GLASS_SCRIPT`）
+    在 document-created 阶段注入三层样式：根元素铺半透明玻璃 + `backdrop-filter`
+    → 清 `body`/`#root` 底色 → 扫铺满视口的不透明层兜底；`MutationObserver`
+    跟着 SPA 换页/换主题重挂
+  - 实测（真机截图）：壁纸透出、欢迎页/输入框/按钮清晰可读、可正常交互
+  - 已知限制：系统标题栏无法透明（远端页面调不到 `invoke`，做不了自绘拖拽区）；
+    文字配色仍是站点自己的，深色主题透到浅色桌面时对比度会降 —— 透明度在
+    `HUD_GLASS_SCRIPT` 里改一行即可
+- 新增 debug-only 逃生口 `INFOBOARD_ALLOW_MULTI_INSTANCE=1`：不注册单实例插件，
+  于是可以在「正在用的那一份」还开着时另起一个实例跑自检/截图，不用先关掉
+  （关掉会连带杀掉 vite dev server，主窗口就变成 localhost 拒绝连接）
+
 ## [0.8.0] - 2026-10-22
 
 ### Added
