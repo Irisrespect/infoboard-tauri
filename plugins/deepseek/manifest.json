@@ -1,0 +1,12 @@
+{
+  "id": "deepseek",
+  "name": "DeepSeek",
+  "version": "1.2.0",
+  "author": "InfoBoard",
+  "description": "点一下弹出 DeepSeek 网页小窗，直接在应用里聊天",
+  "section": "tool",
+  "icon": "whale",
+  "color": "var(--accent)",
+  "entry": "index.tsx",
+  "tauriCommands": ["hud_open_deepseek"]
+}

@@ -1,0 +1,18 @@
+{
+  "id": "bili-dl",
+  "name": "B站下载",
+  "version": "1.1.2",
+  "author": "InfoBoard",
+  "description": "打开独立的 B 站下载器（tkinter 界面，yt-dlp 驱动）：多画质/编码、浏览器登录态、分P、下载队列",
+  "section": "tool",
+  "icon": "download",
+  "color": "var(--accent)",
+  "entry": "index.tsx",
+  "tauriCommands": [
+    "companion_status",
+    "companion_launch",
+    "companion_set_path",
+    "companion_clear_path",
+    "plugin:dialog|open"
+  ]
+}

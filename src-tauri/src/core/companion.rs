@@ -9,9 +9,16 @@
 //! - 找入口脚本：先看随包资源，再看用户手动指定的路径
 //! - 记住用户指定的路径（`companion-apps.json`）
 //!
-//! **刻意不做一个"N 个插件共用的通用启动命令"**：那样任何插件都能启动任何伴随程序。
-//! 每个程序一组命令（`netdisk_app_launch` / `apiprobe_app_launch`），
-//! 插件只能启动自己那一个 —— 权限面最小。
+//! 启动入口分两层：
+//!
+//! - **注册表**（[`ALL`]）：每个伴随程序一个 [`AppSpec`]。新增程序 = 加一个常量 +
+//!   在 [`ALL`] 里登记一行。
+//! - **通用命令**（`companion_status` / `companion_launch` / ...，见
+//!   `plugins::companion`）：按 `id` 去注册表里查，查不到就报错。因此它虽然"通用"，
+//!   仍然只是**白名单**的一种写法 —— 装进来的第三方插件没法借它启动任意程序。
+//!
+//! 旧的两组专用命令（`netdisk_app_launch` / `apiprobe_app_launch`）保留不动：
+//! 它们直接引用具体常量，等价于 `companion_launch("netdisk")`，删了会打断已有插件。
 //!
 //! 手动指定路径时会校验**文件名**必须是该程序约定的入口名（如 `api_probe.py`），
 //! 免得这个能力被当成"启动任意程序"的入口用。
@@ -22,6 +29,11 @@ use std::process::Command;
 use tauri::{AppHandle, Manager};
 
 /// 一个伴随程序的约定
+///
+/// `Debug` 不是装饰：`by_id` 返回 `Option<&AppSpec>`，测试里对 `Result<_, String>`
+/// 调 `unwrap_err()` 需要 `T: Debug`（`T = &AppSpec`）。字段全是 `&'static str`，
+/// 派生 `Clone`/`Copy` 也顺手 —— 这个结构本来就是编译期常量。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AppSpec {
     /// 标识，用于配置文件分组
     pub id: &'static str,
@@ -44,6 +56,24 @@ pub const APIPROBE: AppSpec = AppSpec {
     entry: "api_probe.py",
     bundled_dir: "api-probe",
 };
+
+/// B 站下载器（tkinter 独立程序，仓库内 `bili-dl-app/`）
+pub const BILIDL: AppSpec = AppSpec {
+    id: "bilidl",
+    entry: "bili_dl.py",
+    bundled_dir: "bili-dl-app",
+};
+
+/// 所有可被通用命令启动的伴随程序。
+///
+/// 这是**白名单**：`companion_launch` 只接受这里出现过的 `id`，
+/// 因此"通用"不等于"能启动任意程序"。
+pub const ALL: &[&AppSpec] = &[&NETDISK, &APIPROBE, &BILIDL];
+
+/// 按 `id` 查注册表
+pub fn by_id(id: &str) -> Option<&'static AppSpec> {
+    ALL.iter().copied().find(|spec| spec.id == id)
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -187,7 +217,11 @@ pub fn clear_custom_path(app: &AppHandle, spec: &AppSpec) {
 
 // ─── 找入口脚本 ───
 
-/// 依次找：用户指定的 → 随包资源 → 可执行文件上级目录 → 当前工作目录
+/// 依次找：用户指定的 → 随包资源 / 仓库副本 / 当前目录
+///
+/// 同名副本可能同时存在好几份：随包资源里一份、`target/<profile>/` 一份（打包时复制的）、
+/// 仓库里一份（开发时改的那份）。这里取**修改时间最新**的一份 —— 否则改完 `bili_dl.py`
+/// 直接点「打开下载器」，跑的还是上次构建复制过去的旧副本，看起来就像"改了没用"。
 fn find_script(app: &AppHandle, spec: &AppSpec) -> Option<(PathBuf, String)> {
     if let Some(p) = custom_path(app, spec) {
         return Some((p, "custom".to_string()));
@@ -212,7 +246,8 @@ fn find_script(app: &AppHandle, spec: &AppSpec) -> Option<(PathBuf, String)> {
 
     candidates
         .into_iter()
-        .find(|p| p.is_file())
+        .filter(|p| p.is_file())
+        .max_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
         .map(|p| (p, "bundled".to_string()))
 }
 

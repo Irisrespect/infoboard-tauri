@@ -17,9 +17,18 @@ pub const SERVICE: &str = "com.infoboard.tauri";
 pub const NAME_QWEATHER: &str = "qweather";
 /// 小牛翻译 API Key
 pub const NAME_NIUTRANS: &str = "niutrans";
+/// OpenAI 兼容翻译引擎的 Key（翻译插件用）
+pub const NAME_TRANSLATE_OPENAI: &str = "translate-openai";
+/// DeepL 翻译 Key（翻译插件用）
+pub const NAME_TRANSLATE_DEEPL: &str = "translate-deepl";
 
 /// 允许访问的凭据名（前端只能操作这些）
-pub const ALLOWED_NAMES: &[&str] = &[NAME_QWEATHER, NAME_NIUTRANS];
+pub const ALLOWED_NAMES: &[&str] = &[
+    NAME_QWEATHER,
+    NAME_NIUTRANS,
+    NAME_TRANSLATE_OPENAI,
+    NAME_TRANSLATE_DEEPL,
+];
 
 fn entry(name: &str) -> Result<Entry, String> {
     if !ALLOWED_NAMES.contains(&name) {

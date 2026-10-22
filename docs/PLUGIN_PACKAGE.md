@@ -74,8 +74,11 @@ my-plugin-1.0.0.ibplugin   （zip）
 **不要与内置插件重名**，否则注册时会被当作重复 id 跳过：
 
 ```
-weather   todo   settings   dynamic-island   screenshot   translate
+weather   todo   settings   dynamic-island   screenshot
 ```
+
+`translate` 以前也是内置的，现在重建成了外部插件包（`plugins/translate/`），
+所以这个 id 技术上可用了 —— 但别拿它做别的东西，否则和官方翻译插件互相顶掉。
 
 ---
 

@@ -17,6 +17,7 @@ mod core {
 mod plugins {
     pub mod apiprobe;
     pub mod bilibili_info;
+    pub mod companion;
     pub mod media_control;
     pub mod netdisk;
     pub mod niutrans;
@@ -24,7 +25,14 @@ mod plugins {
     pub mod ocr;
     pub mod loader;
     pub mod pack;
+    pub mod webtranslate;
+    pub mod hud;
 }
+
+/// 调试自检（`INFOBOARD_SELFTEST=1`）：把有卡死风险的窗口路径真跑一遍再退出。
+/// 只在 debug 构建里编译，不进发布包。
+#[cfg(debug_assertions)]
+mod selftest;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -89,6 +97,11 @@ pub fn run() {
             }
             // P1-a：把历史明文 API Key 迁到 Windows 凭据管理器
             plugins::niutrans::migrate_legacy_api_key(app.handle());
+            // 自检：`INFOBOARD_SELFTEST=1` 时把"点一下会卡死"的路径真的跑一遍再退出
+            #[cfg(debug_assertions)]
+            if std::env::var("INFOBOARD_SELFTEST").ok().as_deref() == Some("1") {
+                selftest::run(app.handle().clone());
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -116,6 +129,10 @@ pub fn run() {
             plugins::niutrans::niutrans_has_api_key,
             plugins::niutrans::niutrans_get_config,
             plugins::niutrans::niutrans_get_char_count,
+            // 通用在线翻译（外部插件 translate 用）：openai / deepl / google / mymemory
+            plugins::webtranslate::translate_web,
+            // 网页 HUD（插件 deepseek 用）：独立窗口直接装站点首页
+            plugins::hud::hud_open_deepseek,
             // Issue 14: 截图
             plugins::screenshot::screenshot_start,
             plugins::screenshot::screenshot_capture_only,
@@ -131,6 +148,12 @@ pub fn run() {
             // 网盘下载：只负责把独立软件（netdisk-app）拉起来
             plugins::netdisk::app::netdisk_app_status,
             plugins::netdisk::app::netdisk_app_launch,
+            // 通用伴随程序启动器（按注册表 id 查，白名单；旧的两组专用命令保留）
+            plugins::companion::companion_list,
+            plugins::companion::companion_status,
+            plugins::companion::companion_launch,
+            plugins::companion::companion_set_path,
+            plugins::companion::companion_clear_path,
             // API 中转站测活工具（api-probe）：拉起 + 记住入口位置
             plugins::apiprobe::apiprobe_app_status,
             plugins::apiprobe::apiprobe_app_launch,

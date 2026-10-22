@@ -20,6 +20,11 @@ plugins/*
 !plugins/api-probe/
 !plugins/.plugin-template/
 !plugins/.gitkeep
+# 官方随仓库维护的插件：源码要进仓库。否则只有 dist-plugins 里的 .ibplugin 二进制，
+# 想改一行都得先解压（translate 从内置转成外部插件后也归到这里）
+!plugins/bili-dl/
+!plugins/deepseek/
+!plugins/translate/
 
 # Python 构建产物（netdisk-app 等伴随程序）
 __pycache__/

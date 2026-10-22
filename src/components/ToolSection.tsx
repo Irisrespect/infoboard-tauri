@@ -49,6 +49,28 @@ export const SVG_ICONS: Record<string, React.ReactNode> = {
   activity: (
     <path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2" />
   ),
+  // B 站下载：下载托盘 + 向下箭头（Lucide "download"）—— 与其它线性图标同源
+  download: (
+    <>
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+      <polyline points="7 10 12 15 17 10" />
+      <line x1="12" y1="15" x2="12" y2="3" />
+    </>
+  ),
+  /**
+   * DeepSeek：鲸鱼（它的吉祥物）
+   *
+   * 没用 emoji 🐋 —— 工具区里其它图标都是 24 网格 / 2px 描边 / 圆头圆角的
+   * 单色线性图标，emoji 是彩色字形、粗细和尺寸都不受控，放一起会很扎眼。
+   * 这里同样只用描边：一条闭合轮廓（身体 + 分叉尾鳍）+ 一个眼睛点，
+   * 没有填充，`ToolIcon` 传下来的 stroke 颜色和 active 态都能直接生效。
+   */
+  whale: (
+    <>
+      <path d="M2.2 13.75 C2.2 9 6.2 5.6 11 5.6 C14.3 5.6 16.9 7.6 18.4 10.7 L22.2 6.9 L20.1 13 L22.4 19.2 L18 16.5 C16.6 19.2 14 20.6 10.9 20.6 C6.1 20.6 2.2 17.5 2.2 13.75 Z" />
+      <path d="M6.6 13.5 H6.62" />
+    </>
+  ),
 }
 
 /**
@@ -90,16 +112,40 @@ export function ToolSection() {
   /**
    * 切换插件展开/折叠
    *
-   * 有两个插件点图标是"直接动作"而不是"展开面板"：
+   * 有几个插件点图标是"直接动作"而不是"展开面板"：
    * - screenshot：直接开始截图
    * - netdisk：直接拉起独立的「网盘下载器」软件
+   * - api-probe：先尝试直接拉起测活工具，没配好才退化成展开面板
+   * - bili-dl：直接拉起独立的「B 站下载器」
+   * - deepseek：直接弹出网页 HUD 小窗（就是 chat.deepseek.com）
    *
-   * 网盘下载不给中间面板：它本来就是个独立软件，多一步"先开面板再点按钮"没有意义，
-   * 而且会让人误以为下载跑在面板里 —— 面板一关就断了。
+   * 这几个都是"独立进程/独立窗口/独立动作"，多一步"先开面板再点按钮"没有意义，
+   * 而且会让人误以为任务跑在面板里 —— 面板一关就断了。
    */
   const togglePlugin = useCallback((pluginId: string) => {
     if (pluginId === 'screenshot') {
       invoke('screenshot_start').catch((e) => console.error('[截图] 启动失败:', e))
+      return
+    }
+    if (pluginId === 'deepseek') {
+      // 网页 HUD：开一个独立窗口装站点本身，面板在这里纯属多余。
+      // 窗口位置由这里算好传过去（Rust 侧不去查主窗口几何 —— 那要走跨线程往返，
+      // 上一版就是在这里把主线程卡死的）。
+      invoke('hud_open_deepseek', {
+        anchor: {
+          x: window.screenX,
+          y: window.screenY,
+          width: window.outerWidth,
+          height: window.outerHeight,
+        },
+      }).catch((e) => {
+        console.error('[DeepSeek] 打开失败:', e)
+        invoke('plugin:dialog|message', {
+          message: String(e),
+          title: '没能打开 DeepSeek',
+          kind: 'error',
+        }).catch((err) => console.error('[DeepSeek] 连错误提示都没弹出来:', err))
+      })
       return
     }
     if (pluginId === 'netdisk') {
@@ -121,6 +167,19 @@ export function ToolSection() {
       // 测活工具不随包分发，第一次要先指定一次 api_probe.py 的位置。
       // 已经配好 → 直接开；没配好 → 展开面板去配（面板里会说明原因）。
       invoke<string>('apiprobe_app_launch').catch(() => setExpandedPluginId('api-probe'))
+      return
+    }
+    if (pluginId === 'bili-dl') {
+      // B 站下载器也是独立进程：点图标直接拉起，不展开面板。
+      // 下载要跑几分钟，面板一关就没人管进度了，中间面板在这里只是多余的一步。
+      invoke<string>('companion_launch', { id: 'bilidl' }).catch((e) => {
+        console.error('[B站下载] 启动失败:', e)
+        invoke('plugin:dialog|message', {
+          message: String(e),
+          title: '没能打开 B 站下载器',
+          kind: 'error',
+        }).catch((err) => console.error('[B站下载] 连错误提示都没弹出来:', err))
+      })
       return
     }
     setExpandedPluginId((prev) => (prev === pluginId ? null : pluginId))

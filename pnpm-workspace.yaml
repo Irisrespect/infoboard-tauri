@@ -1,2 +1,11 @@
+# pnpm 11：这里必须写布尔值。
+#
+# esbuild 的 postinstall 会去取当前平台的二进制（@esbuild/win32-x64/esbuild.exe）。
+# 不批准构建脚本时，pnpm 会以 ERR_PNPM_IGNORED_BUILDS 退出（退出码 1），
+# 于是 `pnpm tauri dev` 前置的依赖检查直接失败；即便强行绕过，vite 启动时也会
+# 报 "You installed esbuild for another platform than the one you're currently using"。
+#
+# 原来这里写的是占位文本 `esbuild: set this to true or false`（字符串），
+# 所以构建脚本从来没被批准过。
 allowBuilds:
-  esbuild: set this to true or false
+  esbuild: true

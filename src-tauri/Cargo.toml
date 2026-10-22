@@ -1,6 +1,6 @@
 [package]
 name = "infoboard-tauri"
-version = "0.7.0"
+version = "0.8.0"
 description = "InfoBoard - 桌面信息面板"
 authors = ["InfoBoard"]
 license = "MIT"
@@ -60,3 +60,15 @@ tauri-plugin-single-instance = "2"
 keyring = { version = "=3.6.3", features = ["windows-native"] }
 zip = { version = "4.2.0", default-features = false, features = ["deflate"] }
 tauri-plugin-dialog = "2.7.3"
+
+# ─── 构建档位 ───
+#
+# `pnpm tauri dev` 跑的是 dev 档，而 dev 默认把**依赖也按 O0 编译**。
+# 做像素/压缩的库（image、flate2、xcap）在未优化下慢 10~30 倍：
+# 实测 2560×1440 截屏 + PNG 编码 —— dev 1.5s，release 80ms。
+# 截图/取字"慢"的观感几乎全部来自这里，跟业务代码无关。
+#
+# 只优化依赖、应用自身仍保持 O0：改业务代码时的增量编译速度不变，
+# 代价是首次构建多几分钟（依赖变更时会重编依赖）。
+[profile.dev.package."*"]
+opt-level = 3

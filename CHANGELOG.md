@@ -7,7 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-22
+
+### Added
+
+- **DeepSeek 网页 HUD**（外部插件 `plugins/deepseek/` + 命令 `hud_open_deepseek`，
+  `src-tauri/src/plugins/hud/`）
+  - 点工具区图标直接弹出一个常驻小窗，里面是 chat.deepseek.com **本身**
+    （独立 webview，不是 iframe）
+  - 为什么不用 iframe：站点用 `X-Frame-Options` / `frame-ancestors` 拒绝被嵌；
+    而且主窗口实测只有 399px 宽，聊天区会被挤成一条缝
+  - 贴主窗口左侧打开（左边放不下就换右侧），有标题栏、可缩放、置顶、不占任务栏；
+    尺寸位置由 `tauri-plugin-window-state` 记住；已开着的直接唤到前面
+  - 日志残留在 WebView2 自己的数据目录里，关掉应用再开不用重登
+  - 安全：URL 是编译期常量 + 只认 https + 远端页面**不授予任何 Tauri 权限**
+    （未配 `dangerousRemoteDomainIpcAccess`，页面调不了 invoke）
+  - `ToolSection` 按 id 特判成"直接动作"，不展开面板（与网盘 / B 站下载器同一套做法）
+  - **图标换成自绘的 `whale`**（Lucide 风格鲸鱼：24 网格 / 2px 描边 / 圆头圆角 /
+    无填充，一条闭合轮廓 + 一个眼睛点），替代原来的 emoji 🐋 —— emoji 是彩色字形，
+    粗细尺寸都不受控，和工具区其它线性图标不是一套。体量按真机截图调过：
+    内容撑满 x 2.2–22.4 / y 5.6–20.6，与 `languages`、`camera` 对齐
+  - 附带 `scripts/icon-preview.ps1`：把 SVG path 渲染成 PNG 的预览工具
+    （GDI+ 直译 M/L/C/H/V/Z），画新图标时先看效果再落地
+- **翻译插件重建为外部插件包**（`plugins/translate/`，v2.0.0 → **v2.2.0**）
+  - 多引擎：小牛 / OpenAI 兼容（中转站、本地模型）/ DeepL / Google / MyMemory，
+    失败按可用性自动换下一个，结果卡标明"这一条是谁翻的"
+  - 历史（40 条）+ 收藏（100 条），点一条回填到翻译区；源语言按脚本自动识别；
+    一键互换；长文按段落分片后再拼回
+  - Key 仍只进 Windows 凭据管理器：新增凭据名 `translate-openai` / `translate-deepl`
+    （`core/secrets.rs` 白名单同步扩了），前端与 `localStorage` 不留明文
+  - v2.1 曾加过"截屏取字（全屏框选 → OCR）"，**v2.2 已整条移除**（见 Removed）
+- 新增 `translate_web` 命令（`src-tauri/src/plugins/webtranslate/`）：**多引擎必须走
+  Rust**，因为 WebView 的 CSP `connect-src` 是白名单，插件发不出对 DeepL / OpenAI /
+  Google 的请求，插件侧也没有通用 HTTP 命令
+- 新增 `npm run typecheck:plugins`（`tsconfig.plugins.json`）：`plugins/` 下的入口
+  之前**完全没被类型检查过**（根 `tsconfig.json` 只 include `src`）
+
+### Removed
+
+- **翻译插件的截屏取字（OCR）整条移除**（插件 v2.1.0 → **v2.2.0**）
+  - 插件侧：删掉「截屏取字」按钮、`grabScreen`、OCR 结果重排（`ocrToText` /
+    `joinLineParts` / `box*` / `recognize`，约 120 行）、以及 manifest 里
+    `translate_grab` / `ocr_recognize` / `ocr_is_ready` 三条命令声明
+  - 宿主侧：删掉 `src-tauri/src/plugins/translate_grab/`（`translate_grab` /
+    `translate_grab_image` / `translate_grab_submit` 三条命令）、
+    `src/components/TranslateCaptureWindow.tsx`、`main.tsx` 里的
+    `#/translate-capture` 路由、capabilities 里的 `translate-capture` 窗口
+  - 自检里对应的 `translate_grab` 两段也一起去掉（只留 HUD）
+  - **独立的截图插件不受影响**：`src/plugins/screenshot/`、`ocr_*` 命令、
+    `screenshot_*` 命令、`screenshot-overlay` 窗口全部原样保留 ——
+    它自己的「截图 + 识别文字」照常可用
+
 ### Changed
+
+- **`translate` 不再是内置插件**：`src/plugins/translate/` 已删除，`src/plugins/index.ts`
+  不再注册它 —— 不腾出这个 id，外部插件会因重名被跳过。设置面板里的小牛配置区保留，
+  传输层搬到 `core/niutrans-bridge.ts`（和插件写同一份存储）
 
 - **工具区显示名改短**：`plugins/netdisk` → 「夸克网盘」（原「网盘下载」）、
   `plugins/api-probe` → 「API」（原「API 测活」）
@@ -18,6 +73,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `src/__tests__/` 里加了钉住这两个显示名的用例，防止"两边只改一处"
 
 ### Fixed
+
+- **点 DeepSeek 图标整个应用卡死**（`app.log` 停在 `[HUD] 打开 DeepSeek` 之后，再无输出）：
+  建窗时多做了一步 `restore_state` —— 它会拿 `tauri-plugin-window-state` 的两把锁
+  （`RestoringWindowState` / `WindowStateCache`），并且在持锁期间调
+  `available_monitors()` / `set_size()`，这两个都要回调主线程；同时命令还在
+  worker 线程上查主窗口几何（`outer_position` / `outer_size` / `scale_factor`）。
+  叠在一起把主线程锁死，整个窗口失去响应
+  - 现在收敛成仓库里**已验证可用**的写法（`plugins::translate_grab` 同样是
+    async 命令 + 建窗 + show，实测 3 秒内成功）：
+    不碰 `restore_state`、不做任何跨线程窗口查询（位置改由前端把
+    `screenX/screenY/outerWidth/outerHeight` 传进来，Rust 只做纯数学）、
+    先 `visible(false)` 建好再 `show()`、去掉 `min_inner_size`
+  - 补了排查日志：`[HUD] ①开始建窗 / ②建窗完成 Xms / ③已显示`，
+    外加 6 秒看门狗 —— 万一再卡，日志会直接指明"卡在
+    `WebviewWindowBuilder::build()`"
+  - 新增 debug-only 自检（`src-tauri/src/selftest.rs`，release 构建不编译）：
+    `INFOBOARD_SELFTEST=1 cargo run` 会把 HUD 建窗和取字窗口复用**真跑一遍**再退出。
+    实测：HUD 建窗 **73ms**、窗口 `visible=true`、URL 落在
+    `https://chat.deepseek.com/sign_in`；取字窗口冷启动 3337ms → 复用后 **300ms**
+- **`cargo test` 编译不过**（``AppSpec`` doesn't implement `Debug`）：
+  `plugins/companion` 的测试对 `Result<_, String>` 调 `unwrap_err()`，而
+  `core/companion.rs` 的 `AppSpec` 没派生 `Debug` —— 整个 lib test 目标都起不来，
+  连带 `pack` / `secrets` / `ocr` / `webtranslate` 的用例全部跑不了
+  - 给 `AppSpec` 补 `#[derive(Debug, Clone, Copy, PartialEq, Eq)]`（字段全是
+    `&'static str`，本来就是编译期常量）
+  - 现在 `cargo test --lib` **89 项全绿**
+
 
 - **网盘下载器点「解析」必崩，任何分享链接都解析不了**
   （`解析失败: TypeError: 'ShareCtx' object is not subscriptable`）：

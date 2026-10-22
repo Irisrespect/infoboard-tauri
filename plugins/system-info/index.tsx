@@ -136,7 +136,6 @@ const SystemInfoPlugin: InfoBoardPlugin = {
     description: '显示系统信息和性能指标',
     section: 'info',
     icon: '💻',
-    entry: 'index.tsx',
   },
 
   Component: SystemInfoComponent,

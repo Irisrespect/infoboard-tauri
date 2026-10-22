@@ -20,6 +20,9 @@ initTauriShim()
 void migrateLegacySecrets()
 
 function Root() {
+  // 小贴士：这里的改动会让 vite 整页重载（本文件不是 React 热更新边界），
+  // 而重载会重新扫描 %APPDATA%\com.infoboard.tauri\plugins —— 也就是说
+  // 手动改过插件 manifest 后，保存一次本文件 = 「设置 → 插件管理 → 重新加载插件」。
   const [titleBarVisible, setTitleBarVisible] = useState(true)
   const [logOpen, setLogOpen] = useState(false)
   // 仅用 hash 识别覆盖窗，避免主窗口被误判

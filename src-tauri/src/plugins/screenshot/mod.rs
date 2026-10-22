@@ -20,8 +20,11 @@ fn captured_lock() -> std::sync::MutexGuard<'static, Option<String>> {
 
 const OVERLAY_LABEL: &str = "screenshot-overlay";
 
-/// 优先主显示器，否则第一个
-fn capture_screen_native() -> Result<String, String> {
+/// 截主屏，返回 RGBA 位图（不做编码）
+///
+/// 与编码分开：`capture_screen_native` 走"截屏 + 编码"两步。
+/// （翻译插件的截屏取字在 v2.2 已移除，这里不再有第二个调用方。）
+fn capture_screen_rgba() -> Result<image::RgbaImage, String> {
     let monitors = xcap::Monitor::all().map_err(|e| format!("枚举显示器失败: {}", e))?;
     if monitors.is_empty() {
         return Err("未找到显示器".into());
@@ -33,21 +36,34 @@ fn capture_screen_native() -> Result<String, String> {
         .or_else(|| monitors.first())
         .ok_or_else(|| "未找到显示器".to_string())?;
 
-    let image = monitor
+    monitor
         .capture_image()
-        .map_err(|e| format!("截图失败: {}", e))?;
+        .map_err(|e| format!("截图失败: {}", e))
+}
 
+fn encode_png_data_url(image: &image::RgbaImage) -> Result<String, String> {
     let mut png_bytes = Vec::new();
     {
+        use image::codecs::png::{CompressionType, FilterType, PngEncoder};
+
         let mut cursor = std::io::Cursor::new(&mut png_bytes);
+        // 实测（release）：默认压缩 48ms、Fast 46ms —— 几乎没差，但体积差 600KB。
+        // 所以这里一律用默认档，别为了"看起来快"牺牲体积。
+        let encoder = PngEncoder::new_with_quality(&mut cursor, CompressionType::Default, FilterType::Sub);
         image
-            .write_to(&mut cursor, image::ImageFormat::Png)
+            .write_with_encoder(encoder)
             .map_err(|e| format!("PNG 编码失败: {}", e))?;
     }
     Ok(format!(
         "data:image/png;base64,{}",
         general_purpose::STANDARD.encode(&png_bytes)
     ))
+}
+
+/// 优先主显示器，否则第一个；截屏 + 编码成 PNG data URL
+pub(crate) fn capture_screen_native() -> Result<String, String> {
+    let image = capture_screen_rgba()?;
+    encode_png_data_url(&image)
 }
 
 /// 仅截图，不建窗（供内部/测试；前端勿与 start 混用）

@@ -9,7 +9,6 @@ const HelloWorldPlugin: InfoBoardPlugin = {
     description: '最简单的外部插件示例',
     section: 'info',
     icon: '👋',
-    entry: 'index.tsx',
   },
 
   Component: () => {

@@ -1,6 +1,6 @@
 {
   "name": "infoboard-tauri",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -9,6 +9,8 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "typecheck": "tsc --noEmit",
+    "typecheck:plugins": "tsc --noEmit -p tsconfig.plugins.json",
+    "smoke:plugin": "node scripts/smoke-plugin.mjs",
     "test": "vitest run",
     "format": "prettier --write .",
     "format:check": "prettier --check .",

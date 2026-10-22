@@ -1,0 +1,21 @@
+{
+  "id": "translate",
+  "name": "翻译",
+  "version": "2.2.0",
+  "author": "InfoBoard",
+  "description": "多引擎翻译 + 历史收藏（v2.2 移除了截屏取字）",
+  "section": "tool",
+  "icon": "languages",
+  "color": "var(--accent)",
+  "entry": "index.tsx",
+  "tauriCommands": [
+    "niutrans_translate",
+    "niutrans_has_api_key",
+    "niutrans_set_api_key",
+    "niutrans_set_app_id",
+    "translate_web",
+    "secret_has",
+    "secret_set",
+    "plugin:clipboard-manager|write_text"
+  ]
+}

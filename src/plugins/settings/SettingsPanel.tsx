@@ -16,7 +16,7 @@ import { PluginManager } from './PluginManager'
 import type { ThemeMode } from './types'
 import { THEME_PREVIEWS } from './types'
 import * as autostart from '../../core/autostart-bridge'
-import * as niutrans from '../translate/bridge'
+import * as niutrans from '../../core/niutrans-bridge'
 import {
   SECRET_NAME_QWEATHER,
   notifyWeatherKeyChanged,

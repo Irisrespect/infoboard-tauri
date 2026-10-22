@@ -15,6 +15,8 @@
       } catch (e) {}
     </script>
     <!-- 字体自托管（public/fonts），不再依赖 Google Fonts：CSP 保持 font-src 'self' -->
+    <!-- 改本文件会触发整页重载（Vite 对 HTML 不做热更新）——
+         重载会重新扫描外部插件，等价于「设置 → 插件管理 → 重新加载插件」 -->
   </head>
   <body>
     <div id="root"></div>

@@ -34,7 +34,7 @@ PowerShell 用户：`cd "$env:APPDATA\com.infoboard.tauri\plugins"`。
 
 **重要字段说明:**
 
-- `id`: 必须唯一，推荐全小写加连字符；**不能与内置插件重名**（weather / todo / settings / dynamic-island / screenshot / translate）
+- `id`: 必须唯一，推荐全小写加连字符；**不能与内置插件重名**（weather / todo / settings / dynamic-island / screenshot）
 - `section`: `"info"` 放在信息区，`"tool"` 放在工具区
 - `entry`: 入口文件，相对于插件目录，如 `index.tsx`；不能是绝对路径或含 `..`
 - `tauriCommands`: **要用 `invoke` 就必须在这里声明命令名**，下面会讲

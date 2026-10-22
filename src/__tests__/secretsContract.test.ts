@@ -48,11 +48,19 @@ describe('凭据契约（前端 ↔ Rust）', () => {
     expect(rustStrConst(src, 'NAME_NIUTRANS')).toBe(SECRET_NAME_NIUTRANS)
   })
 
-  it('白名单必须包含前端用到的两个凭据名', () => {
+  it('白名单必须包含前端用到的凭据名', () => {
     const src = rustSource('secrets.rs')
-    const line = src.split('\n').find((l) => l.includes('ALLOWED_NAMES') && l.includes('&['))
-    expect(line, '没找到 ALLOWED_NAMES 定义').toBeTruthy()
-    expect(line).toContain('NAME_QWEATHER')
-    expect(line).toContain('NAME_NIUTRANS')
+    // 白名单现在有 4 个名字，按 rustfmt 的宽度会折成多行 —— 取到 `];` 为止的整段再判断
+    const start = src.indexOf('const ALLOWED_NAMES')
+    expect(start, '没找到 ALLOWED_NAMES 定义').toBeGreaterThanOrEqual(0)
+    const end = src.indexOf('];', start)
+    expect(end, 'ALLOWED_NAMES 没有正常结束').toBeGreaterThan(start)
+    const block = src.slice(start, end)
+
+    expect(block).toContain('NAME_QWEATHER')
+    expect(block).toContain('NAME_NIUTRANS')
+    // 翻译插件（外部插件）用的两个引擎 Key —— 少一个，插件里保存 Key 就会被拒
+    expect(block).toContain('NAME_TRANSLATE_OPENAI')
+    expect(block).toContain('NAME_TRANSLATE_DEEPL')
   })
 })
