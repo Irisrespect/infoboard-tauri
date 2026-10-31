@@ -5,7 +5,108 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.9.0] - 2026-10-31
+
+### Added
+
+- **开放「插件自带程序」：新功能只发一个 `.ibplugin`，宿主不用改**（P3）
+  - 宿主不再只认注册表里那三个 id：任何插件在 manifest 里声明 `companion` 后，
+    `companion_status` / `companion_launch` 就能按**插件 id** 拉起它包里的程序
+    （0.8 及更早的宿主只认 `netdisk` / `apiprobe` / `bilidl`）
+  - 路径**只由宿主拼**（`<plugins>/<id>/<companion.dir>/<entry>`），命令只收 id 不收路径
+    —— 插件启动不了别人的程序，也启动不了自己包外的东西；不再需要"借
+    `companion_set_path` 指向任意 main.py"那种借道写法
+  - `companion.kind` 新增 `"exe"`：自带可执行文件的插件不需要用户装 Python
+  - `companion_list` 会把"注册表 + 插件自带"一起列出来（`source` / `version` / `present`）
+  - 新增模板 [`plugins/.launcher-template/`](plugins/.launcher-template/README.md)：
+    复制改名 → `--companion app` 打包 → 拖进插件管理，附带 4 条守卫测试
+- **插件可以自带伴随程序（`companion`）：启动器类插件终于能热更新了**
+  - 以前的坑：`netdisk` / `api-probe` / `bilidl` 这三个插件的"本体"是独立程序，
+    程序只随**应用安装包**的 resources 发 —— 于是改一行 Python 也要让用户重装整个
+    InfoBoard，`.ibplugin` 这个热更新通道对它们形同虚设（插件版本号只能空转，
+    2.0.1 / 2.0.2 就是这种错位的产物）
+  - manifest 新增 `companion: { dir, entry, version }`：`pack-plugin.mjs --companion <程序目录>`
+    会把程序一起打进包（自动排除 `__pycache__` / `*.pyc` / `tools/`，
+    条目 ≤ 64、解压后 ≤ 8 MB，与宿主上限一致）
+  - 宿主查找顺序：用户指定 → **插件包自带** → 随包 resources / exe 上层 / cwd（取最新）；
+    后三者仍按修改时间竞争，所以开发时仓库里那份依旧生效
+  - 插件的 `source` 多了 `plugin` 取值；`AppStatus` 增加 `version` / `expected` 两个字段
+- **版本契约（防"插件说自己是新版、里面装的是旧程序"）**
+  - `netdisk-app/VERSION` 作为唯一事实源；`main.py --version` 可查
+  - 打包时强校验 `manifest.companion.version == VERSION`，不一致直接拒绝出包
+  - 运行期再比一次：宿主读实际入口旁的 `VERSION`，与 manifest 声明不一致就
+    **弹 toast（warn）+ 写日志**，而不是静默跑旧代码
+  - Rust 侧新增 4 个单测（`companion` 解析/越界拒绝/读 VERSION/漂移判定），
+    前端新增 3 个（自带程序进包、缺 `--companion` 拒绝出包、版本一致性）
+- **「网盘下载」把夸克和迅雷合并成一个插件、一个窗口**
+  - 桌面上的「迅雷下载器」（`XunleiDL/`）按伴随程序那套做法**搬进仓库**：
+    协议实现落到 `netdisk-app/netdisk/xunlei.py`，WebView 执行器落到
+    `netdisk-app/netdisk/bridge_worker.py`
+  - 插件的显示名从「夸克网盘」改回「网盘下载」（id 仍是 `netdisk`），
+    拉起的是同一个 `netdisk-app/main.py` —— 现在它两家都认
+  - 为什么迅雷必须走 WebView：分享接口对每个请求都要 `captcha_token`，而它要
+    `captcha_sign`（设备签名），旧算法已失效（服务端 `invalid captcha_sign`）。
+    网页自己能算，所以加载分享页、在**页面上下文里** fetch 同一批接口 —— 不逆向签名。
+    pywebview 的 `webview.start()` 会抢主线程，跟 tkinter 的 `mainloop()` 必炸，
+    因此单独成**子进程**，结果走 JSON 文件（`pythonw` 下 stdout 不可靠）
+  - 迅雷登录走官方扫码页，token 只留在 WebView 的 profile 里；主程序只落一个
+    `user_id` 标记。**旧「迅雷下载器」的 profile 会被复制过来一次**（仅当新目录为空），
+    升级过来的人不用重扫
+  - 合并后的界面：一个输入框 + 实时「识别为：夸克网盘 / 迅雷云盘」提示，
+    提取码可以留在链接里（两家都会自己拆）；设置改成三个标签页（通用 / 夸克 / 迅雷）
+  - 两家的差别都收在适配器后面（`netdisk/services.py` 注册表）：
+    `main.py` 不认识具体网盘，加第三家只改注册表
+  - 新增可选钩子 `prefetch()` / `invalidate()`：迅雷靠前者把"转存 N 个文件"
+    合成**一次** WebView 请求（逐个转存 = 每个文件开一次浏览器），
+    靠后者在直链过期时丢掉缓存（否则换链回调会把同一条死链再交出去）
+  - 新增 `netdisk-app/tools/smoke_xunlei.py`：离线假 runner，14 个案例盖住
+    "整棵树摊成邻接表 / 翻目录不再开浏览器 / 批量转存与 cleanup 透传 /
+    直链过期丢缓存 / 未登录只下小文件 / 批量失败后快速失败且可重试 /
+    JS 模板占位符全替换 / 登录态提取 / 标记同步 / 旧 profile 迁移 / 接口错误翻人话"
+  - 插件改用**通用伴随程序命令**（`companion_status` / `companion_launch` /
+    `companion_set_path` / `companion_clear_path`），于是自动找不到入口时可以
+    在面板里手动指定一次 `main.py`；旧的 `netdisk_app_*` 保留不动，不打断已装插件
+  - 插件版本 1.2.1 → **2.0.0**；`dist-plugins/netdisk-2.0.0.ibplugin`
+
+- **迅雷登录态自动续期（refresh_token）**，扫码一次可以长期有效
+  - 端点用**实测可用**的 `POST https://xluser-ssl.xunlei.com/v1/auth/token`
+    （`{client_id, grant_type:"refresh_token", refresh_token}`）。
+    旧「迅雷下载器」里写的 `/v1/auth/refresh` 现在返回 `404 {"error":"not_found"}`，
+    照抄旧代码会一直以为"续期这条路走不通"
+  - 两个触发点：**转存前**（已知 10 分钟内过期才续，避免白发请求）与
+    **转存撞上 401/403 后**（续一次 → 写回 localStorage → **重试一次**）。
+    过期时间未知时**不主动续** —— refresh_token 可能是轮换的，用一次少一次
+  - 续期在**同一个 WebView 窗口**里完成：读 token → Python 发请求 → 写回页面 →
+    接着跑转存。不额外开窗口，也就没有第二次 10 秒等待
+  - 写回是破坏性操作，所以**先验形态**：新 token 不是 JWT 且没有未来过期时间就
+    保持原样不写 —— 宁可这次没续上，也不能把还能用的登录态覆盖成垃圾
+  - 续期失败**不阻断下载**（老 token 可能还能用）；真不行会以"登录态已过期"收场
+  - 设置 → 迅雷新增「刷新登录态」按钮 + 状态行显示"还有约 N 小时"；
+    转存时若自动续过期，下载队列上方会提示一句
+  - 顺手修掉一个误判：**"页面没加载出来" ≠ "没登录"**。检查登录态时若一次都没读到
+    页面存储，现在返回错误而**不删**登录标记（以前断网点一下「检查」就会翻成"未登录"）
+  - `smoke_xunlei.py` 增至 **18 个案例**：续期决策边界、三种返回形态、四种结局
+    （有效/续成功/无 refresh_token/被拒）、token 形态校验、端点与错误翻译
+
+- **网盘下载器新增命令行版（`netdisk-app/netdisk_cli.py`）**
+  - 和 GUI 共用同一套适配器/下载引擎，也共用同一份 `config.json`：在界面里登录过，
+    直接在终端 `get` 就是登录态（配置搬进 `netdisk/config.py`，两边不再各存一份默认值）
+  - 子命令：`ls`（列目录，序号喂给 `--index`）/ `tree`（目录树）/ `get`（下载）/
+    `login`（夸克粘 Cookie、迅雷扫码、看状态）/ `config`（保存目录、并发等）
+  - `get` 支持 `--path`（进子目录）、`--index 1,3-5`、`--only/--exclude` glob、
+    `--limit`、`-j`（并行下几个文件）、`--dry-run`、`--json`、`--overwrite`
+  - 进度板：tty 上多行原地重绘（ANSI，行数变少时擦干净），管道/重定向里只留
+    "开始/完成"行；`--json` 时 stdout 只有 JSON（人类可读的摘要全关掉）
+  - 单文件失败不带走整批，最后汇总并按退出码区分：`0` 全成功 / `1` 有失败 /
+    `2` 用法或解析错误 / `130` Ctrl+C
+  - `--only` 匹配的是**展开后的相对路径**（`*.mp4` 能命中任意层），落盘仍自动加
+    `\\?\` 长路径前缀，深层目录不会撞 MAX_PATH
+  - `netdisk.cmd`：进 PATH 后可以直接 `netdisk get "..."`（ASCII + CRLF，避免 cmd 按
+    GBK 解析中文注释时把批处理弄坏）
+  - `tools/smoke_cli.py`：29 项检查，含"假适配器 + 本地 HTTP"跑完整 `get` 流程
+    （不碰网盘）：选择/过滤、进度板重绘序列、过期换链、单文件失败隔离、退出码
+  - 文档：`docs/NETDISK_CLI.md`（子命令与参数、`--only` 匹配规则、JSON 结构、
+    脚本/计划任务示例、排错表、已知限制），`netdisk-app/README.md` 挂上入口
 
 ### Changed
 
@@ -23,6 +124,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 新增 debug-only 逃生口 `INFOBOARD_ALLOW_MULTI_INSTANCE=1`：不注册单实例插件，
   于是可以在「正在用的那一份」还开着时另起一个实例跑自检/截图，不用先关掉
   （关掉会连带杀掉 vite dev server，主窗口就变成 localhost 拒绝连接）
+
+### Fixed
+
+- **迅雷下载报 `ValueError: could not convert string to float: '…Z'`（转存全挂）**
+  - 触发：点下载大文件 → 需要「转存到自己云盘」→ 转存前先判断要不要续期 →
+    `float(页面里的 expires_at)` 撞上 `2026-10-31T19:15:39.367Z` 直接抛，
+    整单转存被判死，界面显示「部分文件没能开始下载」（报错跟时间毫无关系，很难联想）
+  - 根因：迅雷网页版 localStorage 把 `expires_at` 存成 **ISO 8601 字符串**，
+    而代码按数字处理（`read_page_creds` 只在值为空时才补 JWT 的 `exp`，非空就原样透出）
+  - 修法：`netdisk/core.py::epoch_seconds` + `bridge_worker.to_epoch` 统一解析
+    （数字 / 数字字符串 / ISO（带 `Z`、带 `+08:00`、无时区按 UTC）/ 毫秒时间戳），
+    **认不出来返回 0（= 不知道）而不是抛错** —— 语义正是"等真撞上 401 再续"；
+    写回页面时按页面原样式写（ISO 进 ISO 出，别把字符串改成数字）
+  - 顺带修掉报错里文件名重复两层（`a.exe：a.exe：…`）
+  - 回归：`smoke_xunlei.py` 新增「过期时间三种写法都认」「页面存 ISO 也能正常续期」
+  - 插件版本 2.0.1 → **2.0.2**，重新出包 `dist-plugins/netdisk-2.0.2.ibplugin`
+    （插件仍是纯启动器；上面的改动全在 `netdisk-app/`，随应用资源打包）
+- **网盘下载：目录超过 6 层就下不了（夸克尤其明显）**
+  - 根因是 `main.py` 的 `App._walk()` 里写死 `if depth >= 6: raise NetdiskError(...)`：
+    夸克分享的 `课程/第 1 章/第 1 节/素材/配图/原图/…` 随手就 7 层，
+    于是**整批下载在"展开目录"阶段就失败，一个文件都下不到**
+  - 展开逻辑抽到 `netdisk/tree.py`：显式栈（不再受递归深度影响）、深度上限可配
+    （默认 32，设置界面里能改）、到顶只跳过那棵子树并提示，**同级的其它文件照下**；
+    单个子目录列不出来也只记一条提示，不再连坐整批
+  - 同时修掉两个同源的坑：夸克 `list_dir` 只取第 1 页（`_size=200`），
+    装 250 个文件的目录会**静默少下 50 个** → 现在按 `_page` 翻页取全；
+    深层目录 + 中文名超过 `MAX_PATH=260` 时 `mkdir`/`open` 直接报
+    WinError 206/3 → 现在创建目录与打开文件统一走 `core.fs_path()`
+    自动加 `\\?\` 前缀（不改注册表），单项名字过长会截断到 120 字符
+  - 迅雷侧同步放宽：`bridge_worker` 注入的 JS 与 `xunlei._index()` 的层数上限
+    从 6/8 统一到 `MAX_TREE_DEPTH = 24`（用 `__MAX_DEPTH__` 注入，两边有测试盯着）
+  - 新增回归：`smoke_adapter.py` 覆盖 250 项翻页、10 层展开、单目录失败不连坐
+  - **展开改成按层并发**（文件多的分享不用干等了）：夸克一层目录一次请求
+    （200~600ms），500 个目录串行要好几分钟。现在同一层的目录一起列
+    （默认 6 路，设置里 1~16 可调），结果按接口顺序合并 → **顺序不变、耗时÷并发数**
+    （实测 25 个目录：串行 1260ms / 6 路 253ms / 12 路 153ms）。
+    默认只给 6 路是因为这是别人的分享接口，太猛会被临时限流（整层失败并提示）；
+    迅雷侧 `parallel_expand = False` —— 它解析时整棵树已在本地，`list_dir` 只是查字典。
+  - 插件版本 2.0.0 → **2.0.1**，重新出包 `dist-plugins/netdisk-2.0.1.ibplugin`
+    （插件本身仍是纯启动器；`netdisk-app/` 的改动随应用资源打包，
+    安装版要 `npm run tauri build` 才会带上，仓库内直接跑则改完即生效）
 
 ## [0.8.0] - 2026-10-22
 

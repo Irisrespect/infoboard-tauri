@@ -1,0 +1,8429 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+API 中转站测活工具 (API Probe)  v1.10.0
+=====================================================================
+单文件、零第三方依赖的 Windows 桌面小工具（Python 3.9+，自带 tkinter 即可运行）
+
+工作流程（一条线走到底）
+------------------------
+    输入 API 地址 + Key（或从站点下拉选一个已保存的站点）
+        ↓
+    ① 获取模型列表      只读探测：站点指纹、协议族、真实模型清单
+        ↓
+    ② 对选中模型发测试  真发一次最小对话：能不能出字、首字多快（流畅度）
+        ↓
+    ③ 接入 Claude Code  检测 /v1/messages → 映射模型别名 → 写配置 → 端到端验证
+    ④ 接入 Codex        检测 /v1/responses 与 /v1/chat/completions → 写 config.toml → 端到端验证
+                        （CLI 与桌面版共用 config.toml；桌面版的 Key 走用户级环境变量，改完需重启桌面版）
+    ⑤ 接入 Grok Build   测三条通道并挑 api_backend（Chat/Responses/Messages）→
+                        写 ~/.grok/config.toml 的 [model.api_probe] → 端到端验证
+
+    ③④⑤ 是三个独立页面：Claude Code（Anthropic）、Codex（OpenAI）、Grok Build（三种协议都支持），互不干扰。
+    顶部有「▶ 全流程（探测 → 测速 → 接入）」一键跑完；
+    两个「一键接入」各有硬门禁：对应通道探测通过才可点（探测本身就是一次真实生成）。
+
+多站点 + 多 Key
+---------------
+    顶部「站点」下拉里可以放任意多个中转站，每个站点各自记住 地址 / 默认模型，以及
+    **多把 Key**：
+        同一个站可能给你 OpenAI 一把、Anthropic 一把（甚至更多），每把带名称与格式标签
+        主界面用「Key 下拉」切换当前用哪把，「＋存为 Key」把输入框里的 Key 存成具名的一把
+        Claude Code 页默认挑 Anthropic 格式的那把，Codex 页默认挑 OpenAI 格式的那把
+        两边都可以在下拉里手动改成别的（格式标签只影响默认挑选，不限制实际调用）
+    加完站点还能一键导入批量列表做巡检（多 Key 的站点每把 Key 各占一行）。
+
+多站点管理
+----------
+    顶部「站点」下拉里可以放任意多个中转站，每个站点各自记住 地址 / Key / 默认模型：
+      ＋ 添加站点   填名称 + 地址（可用常用预设快速填充）+ Key + 默认模型
+      编辑 / 删除   对当前选中的站点操作
+      ✎ 自定义（临时）  内置的一格，不参与站点列表，但同样记住你敲进去的内容
+    切换站点会自动带出该站的地址与 Key；正在编辑的内容会先存回原来那一格。
+
+Claude Code 接入细节
+--------------------
+      检测通道       依次试 Authorization: Bearer 与 x-api-key，并补流式测试（CLI 全程走流式）
+      模型映射       sonnet/opus/haiku/fable 别名 → 网关真实模型 id（不做映射必 404）
+      一键接入       可多选：写 ~/.claude/settings.json（合并 + 自动备份）/
+                     生成启动脚本（不落盘 Key）/ 生成隔离配置目录（CLAUDE_CONFIG_DIR）
+      端到端验证     在空的隔离配置目录里跑 claude -p PONG，证明整条链路真的通
+    前提：CLI 需 2.x；网关必须实现 Anthropic Messages 协议（只提供 OpenAI 协议的站无法直连）。
+
+配置持久化（~/.api_probe.json，config_version 4）
+------------------------------------------------
+    * 明文保存：站点列表（名称/地址/默认模型）、超时、各开关、窗口大小
+    * 加密保存：各站点的 Key 与批量列表 —— 仅在勾选「记住 Key」时写入，
+      且用 Windows DPAPI 按当前用户加密（同一台机器的同一个用户才能解开）
+    * 旧版（v1/v2）配置会自动迁移：原来那个地址会变成一个名为「默认站点」的站点
+
+功能
+----
+1. 连通性测试：HTTP 状态、各阶段耗时、错误原文
+2. 协议自动识别：OpenAI 兼容 / Anthropic / Gemini，自动选择端点与鉴权头
+3. 模型列表：表格化展示、过滤、只看主流、复制、导出
+4. 真实生成测试：流式最小对话，测「首字延迟」与流畅度
+5. 掺水鉴别：请求模型 vs 返回模型比对、异常低延迟、usage 缺失、模型不在列表等信号
+6. 站点指纹：探测 /api/status 与首页 title，识别是否 New API / one-api / Veloera 系面板
+7. 批量测试多站（可一键从站点列表导入）+ 导出 CSV / JSON
+8. Claude Code 一键接入：通道检测 → 模型映射 → 写配置/启动脚本 → 端到端验证
+
+用法
+----
+    python api_probe.py                          # 启动图形界面
+    python api_probe.py --url URL --key KEY --list-only          # 只做第 ① 步，列出模型
+    python api_probe.py --url URL --key KEY --model M            # 指定模型直接做第 ② 步
+    python api_probe.py --url URL --key KEY --json               # 一次性两步，JSON 输出
+    python api_probe.py --url URL --key KEY --claude-check       # 检测能否接 Claude Code
+    python api_probe.py --url URL --key KEY --codex-check        # 检测 Codex 该用哪个 wire_api
+    python api_probe.py --url URL --key KEY --grok-check         # 为 Grok Build 选 api_backend
+    python api_probe.py --selftest               # 核心逻辑自检（本地 mock，不访问外网）
+    python api_probe.py --uitest                 # 界面 + 站点管理 + 两段式 + 接入页自检
+
+许可证
+------
+    MIT（见仓库根目录 LICENSE）。可自由使用/修改/再发布，保留版权声明与许可证原文即可。
+
+作者说明：本工具只做「客户端主动探测」，不代理、不存储任何请求内容。
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import concurrent.futures
+import gzip
+import json
+import os
+import queue
+import re
+import shutil
+import socket
+import ssl
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import zlib
+from pathlib import Path
+
+APP_NAME = "API 中转站测活工具"
+APP_VERSION = "1.10.0"
+UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) api-probe/1.0"
+DEFAULT_TIMEOUT = 20.0
+CONFIG_PATH = Path.home() / ".api_probe.json"
+
+# 主流模型（用于「站点都提供哪些主流模型」的命中统计，按归一化名匹配）
+MAINSTREAM_MODELS = [
+    "gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-5", "o3", "o4-mini",
+    "claude-opus-4-1", "claude-sonnet-4-5", "claude-3-5-sonnet", "claude-3-7-sonnet",
+    "gemini-2-5-pro", "gemini-2-5-flash", "gemini-2-0-flash",
+    "deepseek-chat", "deepseek-reasoner", "qwen3", "qwen-max", "glm-4-6", "kimi-k2",
+    "grok-4", "llama-3-3-70b",
+]
+
+# 常见端点后缀，用于把用户粘贴的完整 URL 还原成 base
+KNOWN_SUFFIXES = (
+    "/v1/chat/completions", "/chat/completions",
+    "/v1/completions", "/v1/responses", "/responses",
+    "/v1/messages", "/messages",
+    "/v1/embeddings", "/v1/rerank",
+    "/v1/models", "/models",
+    "/v1beta/models", "/v1beta",
+    "/v1",
+)
+# 注意：不要剥离 "/api/v1" 这类自定义前缀，否则 OpenRouter(https://openrouter.ai/api/v1)
+# 会被错误地还原成 https://openrouter.ai，导致请求打到 /v1/models 而 404。
+
+# 中转站/面板特征串（出现在错误信息或响应体里）
+PANEL_SIGNATURES = [
+    ("new_api_error", "New API"), ("one_api_error", "one-api"),
+    ("newapi", "New API"), ("veloera", "Veloera"),
+    ("无可用渠道", "New API/one-api 系（无可用渠道）"),
+    ("当前分组上游负载已饱和", "New API/one-api 系（分组负载饱和）"),
+    ("渠道", "New API/one-api 系"),
+    ("令牌", "New API/one-api 系"),
+]
+
+VENDOR_PREFIXES = {
+    "openai", "anthropic", "google", "meta-llama", "deepseek", "qwen", "x-ai",
+    "mistralai", "moonshotai", "z-ai", "minimax", "cohere", "amazon", "microsoft",
+    "nvidia", "perplexity", "ai21", "thudm", "01-ai",
+}
+
+DATE_SUFFIX_RE = re.compile(r"-(?:20\d{2}-\d{2}-\d{2}|20\d{6}|\d{6})$")
+
+
+# =====================================================================
+# 一、通用小工具
+# =====================================================================
+
+def now_ms(t0: float) -> float:
+    return round((time.perf_counter() - t0) * 1000, 1)
+
+
+def get_header(headers: dict, name: str, default: str = "") -> str:
+    if not headers:
+        return default
+    lname = name.lower()
+    for k, v in headers.items():
+        if k.lower() == lname:
+            return v or default
+    return default
+
+
+def decode_body(raw: bytes, headers: dict | None = None) -> str:
+    if not raw:
+        return ""
+    enc = get_header(headers or {}, "Content-Encoding").lower()
+    try:
+        if "gzip" in enc:
+            raw = gzip.decompress(raw)
+        elif "deflate" in enc:
+            raw = zlib.decompress(raw)
+    except Exception:
+        pass
+    for cs in ("utf-8", "gb18030", "latin-1"):
+        try:
+            return raw.decode(cs)
+        except Exception:
+            continue
+    return raw.decode("utf-8", "replace")
+
+
+def safe_json(text: str):
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+    # 有些站点在 JSON 前后夹了多余内容，尝试截取首个 { 到末个 }
+    s = text.find("{")
+    e = text.rfind("}")
+    if 0 <= s < e:
+        try:
+            return json.loads(text[s:e + 1])
+        except Exception:
+            return None
+    return None
+
+
+def mask_key(key: str) -> str:
+    if not key:
+        return "(空)"
+    if len(key) <= 10:
+        return key[:3] + "***"
+    return f"{key[:6]}...{key[-4:]} (len={len(key)})"
+
+
+def is_secret_env_key(name: str) -> bool:
+    """判断一个环境变量名是不是「值属于凭据」。
+
+    不能简单看名字里有没有 KEY/TOKEN：`CLAUDE_CODE_MAX_CONTEXT_TOKENS` 也含 TOKEN，
+    但它的值是一个数字，打码后反而看不懂。只认真正的凭据后缀/词根。
+    """
+    u = str(name or "").upper()
+    return any(h in u for h in ("API_KEY", "AUTH_TOKEN", "ACCESS_TOKEN", "SECRET", "PASSWORD"))
+
+
+# --------------------------- 安全写盘 / 安全读盘 ---------------------------
+# 这几个落盘目标都属「写坏一半就完蛋」：config.toml 半截 → Codex 读不出配置
+# （桌面版直接弹「无法加载组织设置」）；.env 半截 → Key 变成半条；
+# 启动脚本半截 → cmd 报语法错。所以统一走「临时文件 + 原子替换」。
+
+def _atomic_write_text(p: str | Path, text: str, encoding: str = "utf-8",
+                       newline: str | None = None) -> None:
+    """原子写文本：先写同目录临时文件，fsync 后再 os.replace 覆盖目标。"""
+    target = Path(p)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(target.parent), prefix=f".{target.name}.tmp-")
+    try:
+        with os.fdopen(fd, "w", encoding=encoding, newline=newline) as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, target)          # 同盘 rename，原子生效
+    except BaseException:
+        try:
+            os.unlink(tmp)               # 失败不留残渣
+        except OSError:
+            pass
+        raise
+
+
+def _read_text_sig(p: str | Path) -> str:
+    """读文本并吃掉 UTF-8 BOM。
+
+    Windows 编辑器常给文件加 BOM；带 BOM 的 config.toml 会被 TOML 解析器
+    判成非法文档，于是工具报「现有配置不是合法 TOML」并把用户挡在门外——
+    实际文件是好的，只是开头多了 3 个字节。
+    """
+    return Path(p).read_text(encoding="utf-8-sig")
+
+
+def _backup_path(p: str | Path) -> Path:
+    """备份路径：时间戳只到秒，同秒两次会互相覆盖，这里补序号避免丢上一份。"""
+    target = Path(p)
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    cand = target.with_name(f"{target.name}.bak-apiprobe-{ts}")
+    if not cand.exists():
+        return cand
+    for i in range(2, 1000):
+        cand = target.with_name(f"{target.name}.bak-apiprobe-{ts}-{i}")
+        if not cand.exists():
+            return cand
+    return target.with_name(f"{target.name}.bak-apiprobe-{ts}-{os.getpid()}")
+
+
+# --------------------------- 本机凭据加密（Windows DPAPI） ---------------------------
+# 用当前 Windows 用户的凭据加解密，密钥由系统托管：同一台机器的同一个用户才能解开。
+# 非 Windows 或调用失败时返回 None，调用方回退为明文并在配置里标记「未加密」。
+
+def dpapi_crypt(data: bytes, encrypt: bool) -> bytes | None:
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class DATA_BLOB(ctypes.Structure):
+            _fields_ = [("cbData", wintypes.DWORD),
+                        ("pbData", ctypes.POINTER(ctypes.c_ubyte))]
+
+        crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        buf = (ctypes.c_ubyte * len(data)).from_buffer_copy(data)
+        blob_in = DATA_BLOB(len(data), ctypes.cast(buf, ctypes.POINTER(ctypes.c_ubyte)))
+        blob_out = DATA_BLOB()
+        if encrypt:
+            ok = crypt32.CryptProtectData(ctypes.byref(blob_in), None, None, None, None, 0,
+                                          ctypes.byref(blob_out))
+        else:
+            ok = crypt32.CryptUnprotectData(ctypes.byref(blob_in), None, None, None, None, 0,
+                                            ctypes.byref(blob_out))
+        if not ok:
+            return None
+        try:
+            return ctypes.string_at(blob_out.pbData, blob_out.cbData)
+        finally:
+            kernel32.LocalFree(blob_out.pbData)
+    except Exception:
+        return None
+
+
+def dpapi_available() -> bool:
+    return dpapi_crypt(b"probe", True) is not None
+
+
+def encode_secret(text: str) -> tuple[str, bool]:
+    """把敏感文本变成「可写进配置文件的字符串」。返回 (内容, 是否已加密)。"""
+    if not text:
+        return "", True
+    blob = dpapi_crypt(text.encode("utf-8"), True)
+    if blob is None:
+        return text, False
+    return base64.b64encode(blob).decode("ascii"), True
+
+
+def decode_secret(value: str, encrypted: bool) -> str:
+    if not value:
+        return ""
+    if not encrypted:
+        return value
+    try:
+        raw = base64.b64decode(value.encode("ascii"), validate=False)
+    except Exception:
+        return ""
+    plain = dpapi_crypt(raw, False)
+    return plain.decode("utf-8", "replace") if plain is not None else ""
+
+
+def ssl_context(verify: bool) -> ssl.SSLContext:
+    ctx = ssl.create_default_context()
+    if not verify:
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    return ctx
+
+
+# ---------------------------------------------------------------------
+# 网络出口：跟随系统代理 / 直连 / 自定义代理
+#
+# 为什么要有这一层：urllib 默认会读 Windows「Internet 选项」里的代理（Clash、
+# V2Ray 之类都写在那里）。代理进程在、节点却挂了的时候，请求会卡在 CONNECT /
+# TLS 握手一直等到超时，表现就是「这个站取不到模型」；而 Codex / Claude Code
+# 这类不读系统代理的客户端反而直连正常。所以这里做两件事：
+#   ① 允许手动指定出口（跟随系统 / 直连 / 自定义代理）；
+#   ② 一条出口不通就自动换另一条，并把这个决定记下来，后续同类请求直接走通的。
+# ---------------------------------------------------------------------
+NET = {"proxy_mode": "auto", "proxy_url": ""}
+# proxy_mode：auto = 系统代理 ∥ 直连（界面默认）；custom = 额外代理 ∥ 直连；direct = 仅直连（命令行 --direct）
+PROXY_MODE_LABELS = {"auto": "跟随系统代理", "direct": "直连", "custom": "自定义代理"}
+_TRANSPORT_PREF: dict[str, str] = {}               # host -> 实测能用的出口
+NET_FALLBACKS: dict[str, str] = {}                 # host -> 换出口的说明
+
+
+class TransportError(Exception):
+    """网络层失败（连不上 / 握手超时），区别于 HTTP 状态码错误。"""
+
+    def __init__(self, message: str, via: str = "", timed_out: bool = False):
+        super().__init__(message)
+        self.message = message
+        self.via = via
+        self.timed_out = timed_out
+
+
+def normalize_proxy_url(url: str) -> str:
+    """把 127.0.0.1:7897 这种写法补成 http://127.0.0.1:7897。"""
+    u = (url or "").strip()
+    if not u:
+        return ""
+    if "://" not in u:
+        u = "http://" + u
+    return u
+
+
+def proxy_map(mode: str = "", url: str = "") -> dict | None:
+    """把出口设置翻译成 ProxyHandler 的参数。
+
+    None  → 交给 urllib 默认行为（读系统代理 / 环境变量）
+    {}    → 直连，不走任何代理
+    {...} → 走指定代理
+    """
+    mode = mode or NET.get("proxy_mode") or "auto"
+    if mode == "direct":
+        return {}
+    if mode == "custom":
+        u = normalize_proxy_url(url or NET.get("proxy_url") or "")
+        return {"http": u, "https": u} if u else {}
+    return None
+
+
+def build_opener(verify: bool, proxy=None):
+    handler = urllib.request.ProxyHandler(proxy) if proxy is not None \
+        else urllib.request.ProxyHandler()
+    return urllib.request.build_opener(handler,
+                                       urllib.request.HTTPSHandler(context=ssl_context(verify)))
+
+
+def _transport_chain(host: str) -> list[tuple[str, dict | None]]:
+    """给出这个 host 的候选出口；第一条是「首选」，其余是并行竞速的对手。"""
+    mode = NET.get("proxy_mode") or "auto"
+    if mode == "direct":
+        return [("direct", {})]
+    if mode == "custom":
+        pm = proxy_map("custom")
+        chain = [("custom", pm), ("direct", {})] if pm else [("direct", {})]
+        if len(chain) == 2 and _TRANSPORT_PREF.get(host) == "direct":
+            chain.reverse()                  # 这个站已经证明代理走不通，别再白等一次
+        return chain
+    chain = [("auto", None), ("direct", {})]
+    if _TRANSPORT_PREF.get(host) == "direct":
+        chain.reverse()
+    return chain
+
+
+def _transport_error(e: Exception, via: str, timeout: float) -> TransportError:
+    reason = getattr(e, "reason", e)
+    text = reason if isinstance(reason, str) else f"{type(reason).__name__}: {reason}"
+    timed = (isinstance(e, (socket.timeout, TimeoutError))
+             or isinstance(reason, (socket.timeout, TimeoutError))
+             or "timed out" in text.lower())
+    return TransportError(f"超时（>{timeout:g}s）" if timed else f"网络错误: {text}",
+                          via=via, timed_out=timed)
+
+
+def _open_once(make_request, timeout: float, verify: bool, via: str, pmap):
+    """用指定出口打开一次请求。HTTP 状态码错误照抛，网络层失败包成 TransportError。"""
+    try:
+        return build_opener(verify, pmap).open(make_request(), timeout=timeout)
+    except urllib.error.HTTPError:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise _transport_error(e, via, timeout) from e
+
+
+def _close_quietly(resp) -> None:
+    """竞速里慢一步的那种“也成功了但用不上”的响应，及时关掉别占连接。"""
+    try:
+        resp.close()
+    except Exception:  # noqa: BLE001
+        try:
+            resp.__exit__(None, None, None)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _remember_exit(host: str, via: str, first_via: str) -> None:
+    """记住这个站实际用的出口；顺带留一句“为什么不是首选”。"""
+    if not host:
+        return
+    _TRANSPORT_PREF[host] = via
+    if via != first_via:
+        NET_FALLBACKS[host] = (f"{PROXY_MODE_LABELS.get(first_via, first_via)} 没能先返回，"
+                               f"已改用{PROXY_MODE_LABELS.get(via, via)}（两条出口并行试过）")
+
+
+def open_url(url: str, make_request, timeout: float, verify: bool, race: bool = True):
+    """打开一次请求，返回 (response, 实际用的出口)。
+
+    默认让「首选出口」和「直连」同时开跑，谁先给出响应就用谁：
+    - 赢的那条立刻返回，输的那条到点自己超时，不打印、不等待；
+    - 该 host 用哪条出口会被记住，后续请求直接走它，不再重复竞速；
+    - race=False 时退回顺序尝试（给真实的生成请求用，避免重复计费）。
+    HTTP 状态码错误原样抛出，由调用方按 HTTPError 处理。
+    """
+    host = (urllib.parse.urlsplit(url).hostname or "").lower()
+    chain = _transport_chain(host)
+    primed = _TRANSPORT_PREF.get(host)
+    if primed:
+        chain = [c for c in chain if c[0] == primed] or chain
+    first_via = chain[0][0]
+
+    if len(chain) == 1 or not race:
+        last: TransportError | None = None
+        for via, pmap in chain:
+            try:
+                resp = _open_once(make_request, timeout, verify, via, pmap)
+            except urllib.error.HTTPError:
+                raise
+            except TransportError as e:
+                last = e
+                continue
+            _remember_exit(host, via, first_via)
+            return resp, via
+        raise last or TransportError("网络错误", via=first_via)
+
+    # ---- 并行竞速：两条出口同时发，谁先回来用谁 ----
+    results: queue.Queue = queue.Queue()
+    state = {"done": False}
+    lock = threading.Lock()
+
+    def worker(via: str, pmap) -> None:
+        item = {"via": via, "resp": None, "exc": None}
+        try:
+            item["resp"] = _open_once(make_request, timeout, verify, via, pmap)
+        except urllib.error.HTTPError as e:
+            item["exc"] = e
+        except TransportError as e:
+            item["exc"] = e
+        except Exception as e:  # noqa: BLE001
+            item["exc"] = _transport_error(e, via, timeout)
+        with lock:
+            if state["done"]:
+                if item["resp"] is not None:
+                    _close_quietly(item["resp"])
+                return
+            results.put(item)
+
+    for via, pmap in chain:
+        threading.Thread(target=worker, args=(via, pmap), daemon=True).start()
+
+    deadline = time.perf_counter() + timeout + 1.0
+    errors: list[TransportError] = []
+    http_err = None
+    winner = None
+    finished = 0
+    try:
+        while finished < len(chain):
+            left = deadline - time.perf_counter()
+            if left <= 0:
+                break
+            try:
+                item = results.get(timeout=left)
+            except queue.Empty:
+                break
+            finished += 1
+            if item["resp"] is not None:
+                winner = item
+                break                     # 先跑出来的就是它，另一条不等了
+            if isinstance(item["exc"], urllib.error.HTTPError):
+                http_err = http_err or item["exc"]
+            elif item["exc"] is not None:
+                errors.append(item["exc"])
+    finally:
+        with lock:
+            state["done"] = True
+        while True:                       # 收尾：可能还有到得太晚的响应躺在队列里
+            try:
+                late = results.get_nowait()
+            except queue.Empty:
+                break
+            if late.get("resp") is not None:
+                _close_quietly(late["resp"])
+
+    if winner is not None:
+        _remember_exit(host, winner["via"], first_via)
+        return winner["resp"], winner["via"]
+    if http_err is not None:
+        raise http_err
+    raise errors[0] if errors else TransportError(f"超时（>{timeout:g}s）", via=first_via,
+                                                 timed_out=True)
+
+
+def apply_net_config(mode: str = "", url: str = "") -> None:
+    """界面 / 命令行改出口设置：顺便清掉「这个 host 该走哪条路」的旧记忆。"""
+    NET["proxy_mode"] = mode if mode in PROXY_MODE_LABELS else "auto"
+    NET["proxy_url"] = normalize_proxy_url(url)
+    _TRANSPORT_PREF.clear()
+    NET_FALLBACKS.clear()
+
+
+def normalize_base(url: str) -> str:
+    """把用户输入的各种写法归一化为 base（不含 /v1 等端点后缀）。"""
+    u = (url or "").strip().strip('"').strip("'").strip()
+    if not u:
+        return ""
+    u = u.split("#")[0]
+    if not re.match(r"^[a-zA-Z][a-zA-Z0-9+.\-]*://", u):
+        u = "https://" + u
+    u = u.split("?")[0].rstrip("/")
+    changed = True
+    while changed:
+        changed = False
+        low = u.lower()
+        for suf in KNOWN_SUFFIXES:
+            if low.endswith(suf) and len(u) > len(suf) + 8:
+                u = u[: -len(suf)].rstrip("/")
+                changed = True
+                break
+    return u
+
+
+def norm_model(name: str) -> str:
+    """归一化模型名，用于「请求 vs 返回」比对：去厂商前缀、去日期后缀、统一分隔符。"""
+    s = (name or "").strip().lower()
+    if s.startswith("models/"):
+        s = s[len("models/"):]
+    if "/" in s:
+        head, _, tail = s.partition("/")
+        if head in VENDOR_PREFIXES and tail:
+            s = tail
+    s = s.split(":")[0]
+    s = s.replace(".", "-").replace("_", "-")
+    s = re.sub(r"-+", "-", s)
+    s = DATE_SUFFIX_RE.sub("", s)
+    s = re.sub(r"-latest$", "", s)
+    return s
+
+
+def extract_error_message(text: str, code: int | None = None) -> str:
+    """从错误响应体里挖出人能看懂的一句话。"""
+    t = (text or "").strip()
+    if not t:
+        return f"HTTP {code}（空响应体）" if code else "空响应"
+    obj = safe_json(t)
+    if isinstance(obj, dict):
+        msg = None
+        for key in ("error", "message", "msg", "detail", "error_msg", "reason"):
+            v = obj.get(key)
+            if isinstance(v, str) and v.strip():
+                msg = v.strip()
+                break
+            if isinstance(v, dict):
+                for k2 in ("message", "msg", "detail", "type"):
+                    v2 = v.get(k2)
+                    if isinstance(v2, str) and v2.strip():
+                        msg = v2.strip()
+                        break
+                if msg:
+                    break
+        if not msg and isinstance(obj.get("errors"), list) and obj["errors"]:
+            first = obj["errors"][0]
+            if isinstance(first, dict):
+                msg = str(first.get("message") or first)
+            else:
+                msg = str(first)
+        if msg:
+            etype = ""
+            err = obj.get("error")
+            if isinstance(err, dict) and isinstance(err.get("type"), str):
+                etype = err["type"]
+            elif isinstance(obj.get("type"), str) and obj.get("type") != "error":
+                etype = obj["type"]
+            return f"{msg}" + (f"  [{etype}]" if etype and etype not in msg else "")
+    return t[:400]
+
+
+def detect_panel_hint(text: str) -> str:
+    low = (text or "").lower()
+    for sig, label in PANEL_SIGNATURES:
+        if sig in low or sig in (text or ""):
+            return label
+    return ""
+
+
+# =====================================================================
+# 二、HTTP 核心（GET / POST / 流式 SSE）
+# =====================================================================
+
+class HttpResult:
+    __slots__ = ("ok", "status", "reason", "headers", "text", "latency_ms", "error", "url", "via")
+
+    def __init__(self, ok, status, reason, headers, text, latency_ms, error, url, via=""):
+        self.ok = ok
+        self.status = status
+        self.reason = reason
+        self.headers = headers or {}
+        self.text = text or ""
+        self.latency_ms = latency_ms
+        self.error = error or ""
+        self.url = url
+        self.via = via
+
+    @property
+    def json(self):
+        return safe_json(self.text)
+
+    def __repr__(self):
+        return f"<HttpResult {self.status} {self.latency_ms}ms ok={self.ok} err={self.error[:60]!r}>"
+
+
+def http_request(method: str, url: str, headers: dict | None = None, payload=None,
+                 timeout: float = DEFAULT_TIMEOUT, verify: bool = True,
+                 read_limit: int = 4_000_000, race: bool = True) -> HttpResult:
+    hdrs = {k: v for k, v in (headers or {}).items() if v is not None}
+    hdrs.setdefault("User-Agent", UA)
+    hdrs.setdefault("Accept", "application/json")
+    data = None
+    if payload is not None:
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        hdrs.setdefault("Content-Type", "application/json")
+    req = urllib.request.Request(url, data=data, headers=hdrs, method=method)
+    t0 = time.perf_counter()
+    try:
+        resp, via = open_url(url, lambda: req, timeout, verify, race=race)
+    except urllib.error.HTTPError as e:
+        raw = b""
+        try:
+            raw = e.read(read_limit)
+        except Exception:
+            pass
+        return HttpResult(False, e.code, str(e.reason), dict(e.headers or {}),
+                          decode_body(raw, dict(e.headers or {})), now_ms(t0), "", url)
+    except TransportError as e:
+        return HttpResult(False, 0, "", {}, "", now_ms(t0), e.message, url, e.via)
+    except Exception as e:  # noqa: BLE001
+        return HttpResult(False, 0, "", {}, "", now_ms(t0), f"{type(e).__name__}: {e}", url)
+    with resp:
+        try:
+            raw = resp.read(read_limit)
+        except (socket.timeout, TimeoutError):
+            return HttpResult(False, resp.status, "", dict(resp.headers or {}), "",
+                              now_ms(t0), "读取响应超时", url, via)
+        except Exception as e:  # noqa: BLE001
+            return HttpResult(False, resp.status, "", dict(resp.headers or {}), "",
+                              now_ms(t0), f"读取失败: {e}", url, via)
+        return HttpResult(True, resp.status, str(resp.reason), dict(resp.headers or {}),
+                          decode_body(raw, dict(resp.headers or {})), now_ms(t0), "", url, via)
+
+
+class SseCollector:
+    """收集一次流式生成的关键指标。"""
+
+    def __init__(self):
+        self.status = 0
+        self.first_ms: float | None = None
+        self.total_ms: float | None = None
+        self.model: str = ""
+        self.text: str = ""
+        self.usage = None
+        self.error: str = ""
+        self.chunks = 0
+        self.done = False
+        self.timed_out = False
+        self.via = ""
+
+
+def stream_generate(url: str, headers: dict, payload: dict, feeder, timeout: float,
+                    verify: bool, stop_event: threading.Event | None = None,
+                    max_text: int = 64, race: bool = True) -> SseCollector:
+    """发一次流式请求，用 feeder 解析 SSE，返回 SseCollector。"""
+    col = SseCollector()
+    hdrs = {k: v for k, v in (headers or {}).items() if v is not None}
+    hdrs.setdefault("User-Agent", UA)
+    hdrs["Accept"] = "text/event-stream"
+    hdrs["Content-Type"] = "application/json"
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(url, data=data, headers=hdrs, method="POST")
+    t0 = time.perf_counter()
+    try:
+        resp, col.via = open_url(url, lambda: req, timeout, verify, race=race)
+    except urllib.error.HTTPError as e:
+        raw = b""
+        try:
+            raw = e.read(200_000)
+        except Exception:
+            pass
+        col.status = e.code
+        col.error = extract_error_message(decode_body(raw, dict(e.headers or {})), e.code)
+        col.total_ms = now_ms(t0)
+        return col
+    except TransportError as e:
+        col.error = e.message
+        col.via = e.via
+        col.total_ms = now_ms(t0)
+        return col
+    except Exception as e:  # noqa: BLE001
+        col.error = f"{type(e).__name__}: {e}"
+        col.total_ms = now_ms(t0)
+        return col
+
+    col.status = resp.status
+    event = ""
+    try:
+        while True:
+            if stop_event is not None and stop_event.is_set():
+                col.error = "已手动停止"
+                break
+            if time.perf_counter() - t0 > timeout:
+                col.timed_out = True
+                break
+            try:
+                line = resp.readline()
+            except (socket.timeout, TimeoutError):
+                col.timed_out = True
+                break
+            except Exception as e:  # noqa: BLE001
+                col.error = f"读取流失败: {e}"
+                break
+            if not line:
+                break
+            text = line.decode("utf-8", "replace").rstrip("\r\n")
+            if not text:
+                event = ""
+                continue
+            if text.startswith(":"):
+                continue
+            if text.startswith("event:"):
+                event = text[6:].strip()
+                continue
+            if not text.startswith("data:"):
+                continue
+            chunk = text[5:].strip()
+            if chunk == "[DONE]":
+                col.done = True
+                break
+            obj = safe_json(chunk)
+            if not isinstance(obj, (dict, list)):
+                continue
+            col.chunks += 1
+            feeder(col, event, obj, t0)
+            if col.done or len(col.text) >= max_text or col.error:
+                break
+    finally:
+        try:
+            resp.close()
+        except Exception:
+            pass
+    col.total_ms = now_ms(t0)
+    return col
+
+
+# --------------------------- SSE 解析器 ---------------------------
+
+def feed_openai(col: SseCollector, event: str, obj, t0: float) -> None:
+    if isinstance(obj, dict):
+        if isinstance(obj.get("error"), (dict, str)) and not obj.get("choices"):
+            col.error = extract_error_message(json.dumps(obj), None)
+            col.done = True
+            return
+        if not col.model and isinstance(obj.get("model"), str):
+            col.model = obj["model"]
+        if isinstance(obj.get("usage"), dict):
+            col.usage = obj["usage"]
+        for ch in obj.get("choices") or []:
+            if not isinstance(ch, dict):
+                continue
+            delta = ch.get("delta") or ch.get("message") or {}
+            if isinstance(delta, dict):
+                piece = delta.get("content") or delta.get("reasoning_content") or ""
+                if isinstance(piece, str) and piece:
+                    if col.first_ms is None:
+                        col.first_ms = now_ms(t0)
+                    col.text += piece
+
+
+def feed_anthropic(col: SseCollector, event: str, obj, t0: float) -> None:
+    if not isinstance(obj, dict):
+        return
+    etype = obj.get("type") or event
+    if etype == "error" or (isinstance(obj.get("error"), dict) and obj["error"]):
+        col.error = extract_error_message(json.dumps(obj), None)
+        col.done = True
+        return
+    if etype == "message_start":
+        msg = obj.get("message") or {}
+        if isinstance(msg, dict):
+            if isinstance(msg.get("model"), str):
+                col.model = msg["model"]
+            if isinstance(msg.get("usage"), dict):
+                col.usage = msg["usage"]
+    elif etype == "content_block_delta":
+        delta = obj.get("delta") or {}
+        piece = delta.get("text") or delta.get("partial_json") or ""
+        if isinstance(piece, str) and piece:
+            if col.first_ms is None:
+                col.first_ms = now_ms(t0)
+            col.text += piece
+    elif etype == "message_delta":
+        if isinstance(obj.get("usage"), dict):
+            col.usage = obj["usage"]
+
+
+def feed_gemini(col: SseCollector, event: str, obj, t0: float) -> None:
+    if not isinstance(obj, dict):
+        return
+    if isinstance(obj.get("error"), dict):
+        col.error = extract_error_message(json.dumps(obj), None)
+        col.done = True
+        return
+    if not col.model and isinstance(obj.get("modelVersion"), str):
+        col.model = obj["modelVersion"]
+    if isinstance(obj.get("usageMetadata"), dict):
+        col.usage = obj["usageMetadata"]
+    for cand in obj.get("candidates") or []:
+        if not isinstance(cand, dict):
+            continue
+        content = cand.get("content") or {}
+        for part in (content.get("parts") or []) if isinstance(content, dict) else []:
+            piece = part.get("text") if isinstance(part, dict) else None
+            if isinstance(piece, str) and piece:
+                if col.first_ms is None:
+                    col.first_ms = now_ms(t0)
+                col.text += piece
+
+
+# =====================================================================
+# 三、协议适配
+# =====================================================================
+
+def gemini_models_url(base: str) -> list[str]:
+    return [f"{base}/v1beta/models", f"{base}/v1/models"]
+
+
+def parse_models_openai(obj) -> list[dict]:
+    out: list[dict] = []
+    if not isinstance(obj, dict):
+        return out
+    data = obj.get("data")
+    if isinstance(data, dict):
+        data = data.get("models") or data.get("data") or data.get("list") or []
+    if isinstance(data, list):
+        for it in data:
+            if isinstance(it, str):
+                out.append({"id": it, "owner": ""})
+            elif isinstance(it, dict):
+                mid = it.get("id") or it.get("model") or it.get("name") or it.get("model_name")
+                if mid:
+                    out.append({
+                        "id": str(mid),
+                        "owner": str(it.get("owned_by") or it.get("owner") or it.get("provider") or ""),
+                    })
+    if not out:
+        for key in ("models", "model", "result"):
+            arr = obj.get(key)
+            if isinstance(arr, list):
+                for it in arr:
+                    if isinstance(it, str):
+                        out.append({"id": it, "owner": ""})
+                    elif isinstance(it, dict):
+                        mid = it.get("id") or it.get("model") or it.get("name")
+                        if mid:
+                            out.append({"id": str(mid), "owner": str(it.get("owned_by") or "")})
+                if out:
+                    break
+    # 去重保序
+    seen, uniq = set(), []
+    for m in out:
+        if m["id"] not in seen:
+            seen.add(m["id"])
+            uniq.append(m)
+    return uniq
+
+
+def parse_models_gemini(obj) -> list[dict]:
+    out: list[dict] = []
+    if not isinstance(obj, dict):
+        return out
+    for it in obj.get("models") or []:
+        if isinstance(it, dict):
+            name = str(it.get("name") or it.get("id") or "")
+            if name:
+                out.append({
+                    "id": name.split("/")[-1],
+                    "owner": "google",
+                    "display": str(it.get("displayName") or ""),
+                })
+        elif isinstance(it, str):
+            out.append({"id": it.split("/")[-1], "owner": "google"})
+    return out
+
+
+PROTOCOLS = {
+    "openai": {
+        "label": "OpenAI 兼容",
+        "models_probes": [
+            ("Bearer", lambda base: f"{base}/v1/models"),
+            ("Bearer", lambda base: f"{base}/models"),
+        ],
+        "parse_models": parse_models_openai,
+        "feed": feed_openai,
+    },
+    "anthropic": {
+        "label": "Anthropic",
+        "models_probes": [
+            ("x-api-key", lambda base: f"{base}/v1/models"),
+        ],
+        "parse_models": parse_models_openai,
+        "feed": feed_anthropic,
+    },
+    "gemini": {
+        "label": "Gemini",
+        "models_probes": [
+            ("x-goog-api-key", lambda base: f"{base}/v1beta/models"),
+            ("x-goog-api-key", lambda base: f"{base}/v1/models"),
+        ],
+        "parse_models": parse_models_gemini,
+        "feed": feed_gemini,
+    },
+}
+
+
+def auth_headers(protocol: str, key: str, scheme: str) -> dict:
+    if not key:
+        return {}
+    if scheme == "Bearer":
+        return {"Authorization": f"Bearer {key}"}
+    if scheme == "x-api-key":
+        return {"x-api-key": key, "anthropic-version": "2023-06-01"}
+    if scheme == "x-goog-api-key":
+        return {"x-goog-api-key": key}
+    return {}
+
+
+def generation_request(protocol: str, base: str, key: str, model: str, stream: bool):
+    """返回 (url, headers, payload) 或 (None, error)。"""
+    prompt = "Say OK"
+    if protocol == "openai":
+        return (f"{base}/v1/chat/completions",
+                {"Authorization": f"Bearer {key}"} if key else {},
+                {"model": model, "messages": [{"role": "user", "content": prompt}],
+                 "max_tokens": 8, "stream": stream})
+    if protocol == "anthropic":
+        hdrs = {"anthropic-version": "2023-06-01"}
+        if key:
+            hdrs["x-api-key"] = key
+        return (f"{base}/v1/messages", hdrs,
+                {"model": model, "max_tokens": 8,
+                 "messages": [{"role": "user", "content": prompt}], "stream": stream})
+    if protocol == "gemini":
+        path = "streamGenerateContent?alt=sse" if stream else "generateContent"
+        url = f"{base}/v1beta/models/{urllib.parse.quote(model)}:{path}"
+        hdrs = {"x-goog-api-key": key} if key else {}
+        return (url, hdrs,
+                {"contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                 "generationConfig": {"maxOutputTokens": 8}})
+    return (None, "未知协议")
+
+
+def parse_nonstream_model_usage(protocol: str, obj) -> tuple[str, object]:
+    """从非流式响应里取 (返回模型, usage)。"""
+    if not isinstance(obj, dict):
+        return "", None
+    if protocol == "gemini":
+        return str(obj.get("modelVersion") or ""), obj.get("usageMetadata")
+    if protocol == "anthropic":
+        return str(obj.get("model") or ""), obj.get("usage")
+    return str(obj.get("model") or ""), obj.get("usage")
+
+
+# =====================================================================
+# 四、站点指纹
+# =====================================================================
+
+def probe_fingerprint(base: str, timeout: float, verify: bool, log=None) -> dict:
+    info = {"panel": "", "system_name": "", "version": "", "title": "", "detail": {}}
+    r = http_request("GET", f"{base}/api/status", timeout=min(timeout, 12), verify=verify,
+                     read_limit=200_000)
+    if log:
+        log(f"  [指纹] GET {base}/api/status -> {r.status or r.error} {r.latency_ms}ms")
+    if r.ok and isinstance(r.json, dict):
+        d = r.json.get("data") if isinstance(r.json.get("data"), dict) else r.json
+        if isinstance(d, dict):
+            ver = str(d.get("version") or d.get("Version") or "")
+            name = str(d.get("system_name") or d.get("systemName") or d.get("name") or "")
+            if ver or name:
+                info["version"], info["system_name"] = ver, name
+                info["detail"] = {k: d.get(k) for k in
+                                  ("version", "system_name", "quota_per_unit", "display_in_currency",
+                                   "enable_online_topup", "enable_online_topup_pay_method",
+                                   "price", "footer_html", "chat_link", "docs_link", "start_time")
+                                  if k in d}
+                if any(k in d for k in ("quota_per_unit", "display_in_currency", "enable_online_topup")):
+                    info["panel"] = "New API（含在线支付/额度字段）"
+                else:
+                    info["panel"] = "one-api / 衍生面板"
+    if not info["panel"]:
+        root = http_request("GET", base + "/", timeout=min(timeout, 12), verify=verify,
+                            read_limit=200_000)
+        if log:
+            log(f"  [指纹] GET {base}/ -> {root.status or root.error} {root.latency_ms}ms")
+        m = re.search(r"<title[^>]*>(.*?)</title>", root.text or "", re.I | re.S)
+        if m:
+            info["title"] = re.sub(r"\s+", " ", m.group(1)).strip()[:80]
+        blob = (root.text or "")[:4000]
+        hint = detect_panel_hint(blob)
+        if hint:
+            info["panel"] = hint
+        elif "new-api" in blob.lower() or "new api" in blob.lower():
+            info["panel"] = "New API（首页特征）"
+    return info
+
+
+# =====================================================================
+# 五、主探测流程
+# =====================================================================
+
+MAINSTREAM_ORDER = {name: idx for idx, name in enumerate(MAINSTREAM_MODELS)}
+
+# 明显不适合做对话测试的模型（向量/语音/图像/审核）
+NON_CHAT_MARKERS = ("embed", "rerank", "tts", "whisper", "audio", "speech", "moderation",
+                    "dall-e", "image", "sora", "veo", "flux", "stable-diffusion",
+                    "vision-encoder", "codex-mini-latest", "computer-use")
+# 变体后缀：batch/free/extended 这类通常不能直接拿来做普通对话
+VARIANT_MARKERS = (":batch", ":free", ":extended", ":online", ":thinking", ":nitro",
+                   ":floor", "-preview", "-beta", "-exp", "-search", "-online", "-thinking")
+
+
+def choose_default_model(models: list[dict], requested: str = "") -> str:
+    """挑一个最适合做「最小生成测试」的模型。"""
+    ids = [m.get("id") for m in models if m.get("id")]
+    if not ids:
+        return requested or ""
+    if requested:
+        if requested in ids:
+            return requested
+        by_norm = {}
+        for i in ids:
+            by_norm.setdefault(norm_model(i), i)
+        return by_norm.get(norm_model(requested), requested)
+
+    scored: list[tuple[float, str]] = []
+    for i in ids:
+        low = i.lower()
+        if any(b in low for b in NON_CHAT_MARKERS):
+            continue
+        nm = norm_model(i)
+        score = 0.0
+        if nm in MAINSTREAM_ORDER:
+            score += 1000 - MAINSTREAM_ORDER[nm] * 5      # 主流优先，名单越靠前越优先
+        if any(v in low for v in VARIANT_MARKERS):
+            score -= 300                                  # batch/free 之类靠后
+        if ":" not in i:
+            score += 20                                   # 无变体后缀的更可能是标准入口
+        score -= len(i) * 0.1                             # 名字短的更干净
+        scored.append((score, i))
+    if not scored:
+        scored = [(0.0, i) for i in ids]
+    scored.sort(key=lambda x: (-x[0], len(x[1]), x[1]))
+    return scored[0][1]
+
+
+def probe_site(base_input: str, key: str, timeout: float = DEFAULT_TIMEOUT,
+               verify: bool = True, log=None,
+               stop_event: threading.Event | None = None) -> dict:
+    """【第 1 步】站点指纹 + 协议识别 + 拉取模型列表。
+
+    只做「读」操作，不发任何生成请求，拿到列表交给人工挑模型。
+    """
+    def L(msg):
+        if log:
+            log(msg)
+
+    res = {
+        "input": base_input, "base": "", "protocol": "", "protocol_label": "",
+        "models": [], "models_ms": None, "models_status": None, "models_error": "",
+        "fingerprint": "", "fingerprint_detail": {},
+        "requested_model": "", "used_model": "", "returned_model": "",
+        "first_token_ms": None, "gen_ms": None, "stream_ok": False, "gen_error": "",
+        "usage": None, "sample_text": "", "http_status": None, "attempts": [],
+        "warnings": [], "gen_warnings": [], "auth_error": "",
+        "verdict": "", "verdict_level": "error", "ok": False, "ok_site": False,
+    }
+    base = normalize_base(base_input)
+    res["base"] = base
+    if not base:
+        res["verdict"] = "地址为空或格式不正确"
+        return res
+
+    L(f"[1/2] 站点指纹探测: {base}")
+    fp = probe_fingerprint(base, timeout, verify, log=L)
+    res["fingerprint"] = fp.get("panel") or fp.get("title") or ""
+    res["fingerprint_detail"] = fp
+    if fp.get("system_name"):
+        res["fingerprint"] = f"{fp['panel']} · {fp['system_name']} {fp.get('version','')}".strip()
+
+    # ---- 协议识别 ----
+    L(f"[2/2] 识别协议族并拉取模型列表: {base}")
+    order = ["openai", "gemini", "anthropic"]
+    low_base = base.lower()
+    if "generativelanguage" in low_base or "googleapis" in low_base:
+        order = ["gemini", "openai", "anthropic"]
+    elif key.startswith("sk-ant") or "anthropic" in low_base:
+        order = ["anthropic", "openai", "gemini"]
+
+    auth_fail_msg = ""
+    transport_fails = 0
+    transport_msg = ""
+    aborted = False
+    for proto in order:
+        spec = PROTOCOLS[proto]
+        for scheme, urlf in spec["models_probes"]:
+            url = urlf(base)
+            for extra_q in ([{}] if scheme != "x-goog-api-key" else [{}, {"key": key}]):
+                u = url if not extra_q else f"{url}?key={urllib.parse.quote(key)}"
+                hdrs = auth_headers(proto, key, scheme)
+                r = http_request("GET", u, headers=hdrs, timeout=timeout, verify=verify)
+                attempt = {"protocol": proto, "url": u, "status": r.status,
+                           "ms": r.latency_ms, "error": r.error, "via": r.via}
+                note = ("" if (not r.via or NET.get("proxy_mode") == "direct")
+                        else f"（{PROXY_MODE_LABELS.get(r.via, r.via)}）")
+                L(f"  [{spec['label']}] GET {u} -> {r.status or r.error} "
+                  f"{r.latency_ms}ms{note}")
+                if r.ok:
+                    models = spec["parse_models"](r.json)
+                    if models or isinstance(r.json, (dict, list)):
+                        res["protocol"] = proto
+                        res["protocol_label"] = spec["label"]
+                        res["models"] = models
+                        res["models_ms"] = r.latency_ms
+                        res["models_status"] = r.status
+                        res["http_status"] = r.status
+                        attempt["models"] = len(models)
+                        res["attempts"].append(attempt)
+                        break
+                    attempt["error"] = "响应不是可解析的模型列表"
+                else:
+                    attempt["error"] = r.error or extract_error_message(r.text, r.status)
+                    if r.status in (401, 403):
+                        auth_fail_msg = attempt["error"]
+                        hint = detect_panel_hint(r.text)
+                        if hint and not res["fingerprint"]:
+                            res["fingerprint"] = hint
+                    if not r.status:            # 网络层就失败了：换再多的路径也是同一个 host
+                        transport_fails += 1
+                        if transport_fails >= 2:
+                            aborted = True
+                            transport_msg = attempt["error"]
+                res["attempts"].append(attempt)
+                if aborted:
+                    break
+            if res["protocol"] or aborted:
+                break
+        if res["protocol"] or aborted:
+            break
+
+    if not res["protocol"]:
+        if aborted:
+            L(f"  连不上站点（{transport_msg}），跳过其余协议探测，免得白等")
+            res["protocol"] = "openai"
+            res["protocol_label"] = "OpenAI 兼容（推测）"
+            res["models_error"] = f"连不上站点：{transport_msg}"
+        else:
+            # 模型端点全挂：仍按 OpenAI 兼容处理，让用户手工输入模型名再测
+            L("  /v1/models 全部不可用；仍按 OpenAI 兼容处理，可手工输入模型名再测试")
+            res["protocol"] = "openai"
+            res["protocol_label"] = "OpenAI 兼容（推测）"
+            res["models_error"] = auth_fail_msg or "所有模型列表端点均失败"
+
+    res["model_count"] = len(res["models"])
+    L(f"  -> 协议={res['protocol_label']} 模型数={res['model_count']}")
+    for host, why in list(NET_FALLBACKS.items()):
+        if host and host in base.lower():
+            res["net_fallbacks"] = list(NET_FALLBACKS.items())
+            L(f"  出口切换：{why}（当前设置：{PROXY_MODE_LABELS.get(NET['proxy_mode'], NET['proxy_mode'])}）")
+            break
+    if stop_event is not None and stop_event.is_set():
+        res["verdict"] = "已手动停止"
+        return res
+    _finalize_site(res)
+    return res
+
+
+def probe_generate(res: dict, key: str, model: str, timeout: float = DEFAULT_TIMEOUT,
+                   verify: bool = True, deep: bool = True, log=None,
+                   stop_event: threading.Event | None = None) -> dict:
+    """【第 2 步】用人工选定的模型发一次最小生成请求：测首字延迟 + 掺水/降级鉴别。
+
+    就地更新并返回第 1 步的 res（可以反复换模型重测，不会累积旧结论）。
+    """
+    def L(msg):
+        if log:
+            log(msg)
+
+    base = res.get("base") or ""
+    used = (model or "").strip() or choose_default_model(res.get("models") or [])
+    res["requested_model"] = (model or "").strip()
+    res["used_model"] = used
+    res["returned_model"] = ""
+    res["first_token_ms"] = None
+    res["gen_ms"] = None
+    res["stream_ok"] = False
+    res["gen_error"] = ""
+    res["usage"] = None
+    res["sample_text"] = ""
+    res["gen_warnings"] = []
+    res["ok"] = False
+    if stop_event is not None and stop_event.is_set():
+        res["verdict"] = "已手动停止"
+        return res
+    if not base or not used:
+        res["verdict"] = "缺少地址或模型，无法做生成测试"
+        res["verdict_level"] = "warn"
+        return res
+
+    L(f"[1/2] 生成测试（流式）: 协议={res.get('protocol_label')} 请求模型 = {used}")
+    url, hdrs, payload = generation_request(res["protocol"], base, key, used, stream=True)
+    # race=False：这是会真扣费的生成请求，不能两条出口各发一次
+    col = stream_generate(url, hdrs, payload, PROTOCOLS[res["protocol"]]["feed"],
+                          timeout=timeout, verify=verify, stop_event=stop_event, race=False)
+    res["gen_ms"] = col.total_ms
+    res["http_status"] = col.status or res["http_status"]
+    attempted_alt = False
+    if col.error and re.search(r"max_tokens|max_completion_tokens|unsupported parameter",
+                               col.error, re.I) and res["protocol"] == "openai":
+        attempted_alt = True
+        payload2 = dict(payload)
+        payload2.pop("max_tokens", None)
+        payload2["max_completion_tokens"] = 8
+        L("  该模型不接受 max_tokens，改用 max_completion_tokens 重试")
+        col = stream_generate(url, hdrs, payload2, feed_openai, timeout=timeout,
+                              verify=verify, stop_event=stop_event, race=False)
+        res["gen_ms"] = col.total_ms
+    if col.first_ms is not None:
+        res["first_token_ms"] = col.first_ms
+        res["stream_ok"] = True
+    res["returned_model"] = col.model
+    res["sample_text"] = col.text[:120]
+    if col.usage:
+        res["usage"] = col.usage
+    if col.error:
+        res["gen_error"] = col.error
+
+    # 流式失败 -> 非流式重试（部分站点/模型不支持 stream；但 401/403 是定论，不必重试）
+    if not res["stream_ok"] and col.status not in (401, 403) and \
+            not (stop_event is not None and stop_event.is_set()):
+        L("  流式未拿到内容，改用非流式重试一次")
+        url2, hdrs2, payload2 = generation_request(res["protocol"], base, key, used, stream=False)
+        r2 = http_request("POST", url2, headers=hdrs2, payload=payload2, timeout=timeout,
+                          verify=verify, race=False)
+        res["http_status"] = r2.status or res["http_status"]
+        L(f"  POST {url2} -> {r2.status or r2.error} {r2.latency_ms}ms")
+        if r2.ok:
+            obj = r2.json
+            rm, usage = parse_nonstream_model_usage(res["protocol"], obj)
+            if rm:
+                res["returned_model"] = res["returned_model"] or rm
+            if usage:
+                res["usage"] = usage
+            text = ""
+            if isinstance(obj, dict):
+                if res["protocol"] == "openai":
+                    chs = obj.get("choices") or []
+                    if chs and isinstance(chs[0], dict):
+                        text = str((chs[0].get("message") or {}).get("content") or "")
+                elif res["protocol"] == "gemini":
+                    for c in obj.get("candidates") or []:
+                        for p in ((c.get("content") or {}).get("parts") or []):
+                            text += str(p.get("text") or "")
+                elif res["protocol"] == "anthropic":
+                    for c in obj.get("content") or []:
+                        if isinstance(c, dict) and c.get("type") == "text":
+                            text += str(c.get("text") or "")
+            if text:
+                res["stream_ok"] = True
+                res["sample_text"] = res["sample_text"] or text[:120]
+                res["gen_warnings"].append(("info", "该站/该模型不支持流式输出，非流式可用"))
+            elif not res["gen_error"]:
+                res["gen_error"] = "响应成功但内容为空"
+        else:
+            res["gen_error"] = extract_error_message(r2.text, r2.status) or r2.error
+
+    # 深度检测：补一次非流式拿 usage（校验计费统计是否真实）
+    if deep and res["stream_ok"] and not res["usage"] and \
+            not (stop_event is not None and stop_event.is_set()):
+        u3, h3, p3 = generation_request(res["protocol"], base, key, used, stream=False)
+        if res["protocol"] == "openai":
+            p3["max_tokens"] = 1
+        r3 = http_request("POST", u3, headers=h3, payload=p3, timeout=timeout, verify=verify,
+                          race=False)
+        L(f"[2/2] 深度检测（非流式取 usage）: POST {u3} -> {r3.status or r3.error} {r3.latency_ms}ms")
+        if r3.ok:
+            rm, usage = parse_nonstream_model_usage(res["protocol"], r3.json)
+            if rm and not res["returned_model"]:
+                res["returned_model"] = rm
+            if usage:
+                res["usage"] = usage
+
+    _finalize_generation(res, attempted_alt)
+    return res
+
+
+def probe(base_input: str, key: str, model: str = "", timeout: float = DEFAULT_TIMEOUT,
+          verify: bool = True, deep: bool = True, log=None,
+          stop_event: threading.Event | None = None) -> dict:
+    """一步到位版本（批量测试 / 命令行用）：拉列表 → 自动或按指定挑模型 → 生成测试。
+
+    图形界面走的是 probe_site + probe_generate 两段式，中间留给人工挑模型。
+    """
+    res = probe_site(base_input, key, timeout=timeout, verify=verify, log=log,
+                     stop_event=stop_event)
+    if not res.get("base") or (stop_event is not None and stop_event.is_set()):
+        return res
+    return probe_generate(res, key, model or "", timeout=timeout, verify=verify, deep=deep,
+                          log=log, stop_event=stop_event)
+
+
+def _finalize_site(res: dict) -> None:
+    """第 1 步的结论：站点是否可达、协议族、模型列表、指纹。"""
+    w = res.setdefault("warnings", [])
+    w.clear()
+    models = res.get("models") or []
+    auth_err = ""
+    for a in res.get("attempts") or []:
+        if a.get("status") in (401, 403):
+            auth_err = a.get("error") or f"HTTP {a['status']}"
+            break
+    res["auth_error"] = auth_err
+
+    if models:
+        res["ok_site"] = True
+        w.append(("ok", f"取到 {len(models)} 个模型（{res.get('models_ms')} ms）"))
+    elif res.get("protocol"):
+        w.append(("warn", res.get("models_error") or "未取到模型列表（部分站点禁用了 /v1/models）"))
+    if res.get("fingerprint"):
+        w.append(("info", f"站点指纹：{res['fingerprint']}"))
+    for _host, why in res.get("net_fallbacks") or []:
+        w.append(("info", why))
+    if models:
+        fams = []
+        for fam, keys in (("OpenAI", ("gpt", "o1", "o3", "o4")),
+                          ("Anthropic", ("claude",)),
+                          ("Google", ("gemini",)),
+                          ("DeepSeek", ("deepseek",)),
+                          ("Qwen", ("qwen",)),
+                          ("GLM", ("glm",)),
+                          ("Kimi", ("kimi", "moonshot"))):
+            if any(any(k in m["id"].lower() for k in keys) for m in models):
+                fams.append(fam)
+        if len(fams) >= 3:
+            w.append(("info", f"聚合站：模型列表覆盖 {'/'.join(fams)} 等多家厂商"))
+    if auth_err:
+        w.append(("error", f"接口鉴权报错：{auth_err}"))
+
+    # 全部尝试都停在网络层（状态码 0）→ 是连不上，不是 Key 不行
+    net_only = (not models and res.get("attempts")
+                and all(not a.get("status") for a in res["attempts"]))
+    net_err = ""
+    if net_only:
+        net_err = (res["attempts"][0].get("error") or "连接失败")
+        mode = NET.get("proxy_mode") or "auto"
+        w.append(("error", f"所有端点都在网络层失败：{net_err}；"
+                           f"当前出口 = {PROXY_MODE_LABELS.get(mode, mode)}，"
+                           "多半是系统代理不通（换「直连」再试）"))
+
+    if res["ok_site"]:
+        res["verdict"] = (f"第 1 步完成：{res.get('protocol_label')}，共 {len(models)} 个模型"
+                          "　→ 请在「模型列表」中挑一个模型，再做第 2 步生成测试")
+        res["verdict_level"] = "ok"
+    elif auth_err:
+        res["verdict"] = f"第 1 步失败：{auth_err}"
+        res["verdict_level"] = "error"
+    elif net_err:
+        res["verdict"] = (f"连不上站点：{net_err}　→ 换「出口」为直连再试；"
+                          "线路抖动时再点一次第 ① 步通常就过了")
+        res["verdict_level"] = "error"
+    elif res.get("protocol"):
+        res["verdict"] = "第 1 步完成，但未取到模型列表：可手工输入模型名后做第 2 步"
+        res["verdict_level"] = "warn"
+    else:
+        res["verdict"] = "无法连接或 Key 无效"
+        res["verdict_level"] = "error"
+
+
+def _finalize_generation(res: dict, attempted_alt: bool = False) -> None:
+    """第 2 步的结论：可用性判定 + 掺水/降级信号（可反复换模型重测）。"""
+    w = res.setdefault("gen_warnings", [])
+    w.clear()
+    req = res.get("used_model") or res.get("requested_model") or ""
+    got = res.get("returned_model") or ""
+    models = res.get("models") or []
+
+    if res.get("stream_ok"):
+        res["ok"] = True
+    elif res.get("gen_error"):
+        res["ok"] = False
+
+    # 1) 返回模型 vs 请求模型
+    if req and got and norm_model(req) != norm_model(got):
+        w.append(("risk", f"返回模型与请求不一致：请求 {req} → 返回 {got}"
+                          "（可能是站点做了别名映射，也可能被替换/降级，建议用官方对比验证）"))
+    elif req and got:
+        w.append(("ok", f"返回模型与请求一致：{got}"))
+
+    # 2) 首字延迟异常低
+    ft = res.get("first_token_ms")
+    if ft is not None and ft < 250:
+        w.append(("warn", f"首字延迟异常低（{ft:.0f}ms），可能命中缓存或并非真实推理"))
+
+    # 3) 请求的模型是否在站点模型列表里
+    if req and models:
+        ids = {m["id"] for m in models}
+        norms = {norm_model(i) for i in ids}
+        if req not in ids and norm_model(req) not in norms and not attempted_alt:
+            w.append(("warn", f"模型 {req} 不在站点返回的模型列表中（站点列表 {len(models)} 个）"))
+
+    # 4) usage 校验
+    usage = res.get("usage")
+    if res.get("stream_ok"):
+        if not isinstance(usage, dict):
+            w.append(("warn", "响应未返回 usage（token 用量），无法核验计费统计"))
+        else:
+            tot = usage.get("total_tokens") or usage.get("totalTokenCount")
+            if not tot:
+                w.append(("warn", f"usage 中 token 数为 0 或缺失：{json.dumps(usage, ensure_ascii=False)[:120]}"))
+
+    if res.get("gen_error"):
+        hint = detect_panel_hint(res["gen_error"])
+        w.append(("error", f"生成失败：{res['gen_error']}" + (f"（{hint}）" if hint else "")))
+    if attempted_alt:
+        w.append(("info", "该模型要求 max_completion_tokens，已自动适配"))
+
+    # 结论
+    if res["ok"]:
+        bits = [res.get("protocol_label") or "未知协议", f"模型 {req}"]
+        if ft is not None:
+            bits.append(f"首字 {ft:.0f}ms")
+        risky = [x for lvl, x in w if lvl == "risk"]
+        res["verdict"] = ("可用（" + "，".join(bits) + "）" +
+                          ("　⚠ " + risky[0] if risky else ""))
+        res["verdict_level"] = "risk" if risky else "ok"
+    elif res.get("gen_error"):
+        res["verdict"] = f"该模型不可用：{res['gen_error']}"
+        res["verdict_level"] = "error"
+    else:
+        res["verdict"] = "生成测试未完成"
+        res["verdict_level"] = "warn"
+
+
+# =====================================================================
+# 六、批量解析 / 导出
+# =====================================================================
+
+def parse_batch_lines(text: str) -> list[dict]:
+    """每行：URL | KEY | [MODEL]，分隔符支持 | 、制表符、逗号、两个以上空格。"""
+    items = []
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = [p for p in re.split(r"\s*[|\t,]\s*|\s{2,}", line) if p != ""]
+        if not parts:
+            continue
+        if len(parts) == 1:
+            items.append({"url": parts[0], "key": "", "model": ""})
+        elif len(parts) == 2:
+            items.append({"url": parts[0], "key": parts[1], "model": ""})
+        else:
+            items.append({"url": parts[0], "key": parts[1], "model": parts[2]})
+    return items
+
+
+def result_to_row(res: dict) -> dict:
+    return {
+        "输入地址": res.get("input", ""),
+        "归一化Base": res.get("base", ""),
+        "协议": res.get("protocol_label", ""),
+        "HTTP状态": res.get("http_status", ""),
+        "可用": "是" if res.get("ok") else "否",
+        "模型数": res.get("model_count", len(res.get("models") or [])),
+        "模型列表耗时ms": res.get("models_ms", ""),
+        "请求模型": res.get("used_model", ""),
+        "返回模型": res.get("returned_model", ""),
+        "首字延迟ms": round(res["first_token_ms"], 1) if res.get("first_token_ms") is not None else "",
+        "生成总耗时ms": res.get("gen_ms", ""),
+        "站点指纹": res.get("fingerprint", ""),
+        "结论": res.get("verdict", ""),
+        "提示": " ; ".join(x for lvl, x in
+                          (res.get("warnings", []) + res.get("gen_warnings", []))
+                          if lvl in ("risk", "warn", "error")),
+    }
+
+
+def export_csv(rows: list[dict], path: str) -> None:
+    import csv
+    if not rows:
+        return
+    fields = list(rows[0].keys())
+    with open(path, "w", newline="", encoding="utf-8-sig") as f:
+        wr = csv.DictWriter(f, fieldnames=fields)
+        wr.writeheader()
+        for r in rows:
+            wr.writerow({k: r.get(k, "") for k in fields})
+
+
+def export_json(payload, path: str) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+
+# =====================================================================
+# 六b、上下文长度（K）
+# =====================================================================
+# 三个 CLI 的窗口都以 token 计，但写入位置各不相同：
+#   Claude Code → env `CLAUDE_CODE_MAX_CONTEXT_TOKENS`
+#   Codex       → config.toml 顶层 `model_context_window`
+#   Grok Build  → `[model.<key>].context_window`
+# 界面上统一按 K 填（1K = 1000 tokens），允许小数 —— 这样 262144 这种
+# 非整千的窗口也能精确写成 262.144K，不会被迫四舍五入成 262K。
+
+CONTEXT_MAX_K = 10000.0
+CONTEXT_K_HINT = "留空 = 不写入；1K = 1000 tokens，可填小数（如 262.144）"
+
+
+def parse_context_k(text) -> tuple[int, str]:
+    """把界面上的 K 值转成 token 数；返回 (tokens, 错误说明)。
+
+    - 空 / 全是空白 → (0, "")，表示不写入这个键
+    - 允许末尾带 k（用户习惯写 200k），允许小数（262.144）
+    - 上限 10000K（= 1000 万 tokens）：再大基本是把 token 数当 K 填了
+    """
+    raw = str(text if text is not None else "").strip()
+    if not raw:
+        return 0, ""
+    s = raw[:-1].strip() if raw.lower().endswith("k") else raw
+    s = s.replace("_", "").strip()
+    try:
+        k = float(s)
+    except (TypeError, ValueError):
+        return 0, f"上下文长度要填数字（单位 K），当前是 {raw!r}"
+    if not (k == k) or k <= 0:                 # k != k 挡掉 nan
+        return 0, "上下文长度要大于 0 K；留空表示不写入"
+    if k > CONTEXT_MAX_K:
+        return 0, (f"上下文长度 {k:g}K 超出上限 {CONTEXT_MAX_K:g}K"
+                   "（看起来像把 token 数填进来了；本框单位是 K）")
+    return int(round(k * 1000)), ""
+
+
+def format_context_k(tokens) -> str:
+    """token 数 → 界面上的 K 字符串（262144 → 262.144，200000 → 200）。"""
+    try:
+        t = int(tokens)
+    except (TypeError, ValueError):
+        return ""
+    if t <= 0:
+        return ""
+    s = f"{t / 1000:.3f}".rstrip("0").rstrip(".")
+    return s or "0"
+
+
+# =====================================================================
+# 七、Claude Code CLI 接入
+# =====================================================================
+# Claude Code CLI（2.x）可以直接接第三方网关，但有两条硬性前提：
+#   1. 网关必须实现 Anthropic Messages 协议：POST <BASE>/v1/messages
+#      只提供 OpenAI 协议（/v1/chat/completions）的站无法直连，需要协议转换层
+#   2. 模型名必须按别名映射：CLI 内部用 sonnet/opus/haiku/fable 别名，不映射就会拿官方 id
+#      去打你的网关，报 404 model_not_found（认证其实是通的）
+# 本节负责：通道检测 → 生成配置 → 合并写入（带备份）/ 生成启动脚本 / 生成隔离配置目录 → 端到端验证
+
+CLAUDE_SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
+CLAUDE_CLI_CANDIDATES = (
+    Path.home() / ".local" / "bin" / "claude.exe",
+    Path.home() / ".local" / "bin" / "claude",
+    Path(os.environ.get("APPDATA") or "") / "npm" / "claude.cmd",
+    Path(os.environ.get("APPDATA") or "") / "npm" / "claude",
+)
+# 由本工具管理的键：写入前先清掉这几个，避免 ANTHROPIC_AUTH_TOKEN 与 ANTHROPIC_API_KEY 同时存在
+CLAUDE_MANAGED_ENV_KEYS = (
+    "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY",
+    "ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "ANTHROPIC_DEFAULT_FABLE_MODEL",
+    "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
+)
+CLAUDE_ALIASES = ("sonnet", "opus", "haiku", "fable")
+CLAUDE_MSG_PATH = "/v1/messages"
+CLAUDE_PING_PROMPT = "Reply with exactly: PONG"
+# 本工具生成的启动脚本 / 隔离配置目录都放这里，便于查找
+CLAUDE_OUTPUT_DIR = Path.home() / ".api_probe"
+
+
+def claude_auth_headers(auth_style: str, key: str) -> dict:
+    """bearer → Authorization: Bearer xxx；x-api-key → x-api-key: xxx"""
+    h = {"anthropic-version": "2023-06-01", "Content-Type": "application/json"}
+    if key:
+        if auth_style == "x-api-key":
+            h["x-api-key"] = key
+        else:
+            h["Authorization"] = f"Bearer {key}"
+    return h
+
+
+def claude_base_for_gateway(base: str) -> str:
+    """ANTHROPIC_BASE_URL 只写到前缀，CLI 自己会拼 /v1/messages。
+
+    这里直接复用 normalize_base：它会剥掉 /v1、/v1beta、/v1/messages 等后缀，
+    也会给没写协议的地址补上 https://。所以用户把完整端点粘进来也不会拼成 /v1/v1/messages。
+    """
+    return normalize_base(base)
+
+
+def claude_ping_payload(model: str, stream: bool = False) -> dict:
+    return {"model": model, "max_tokens": 16,
+            "messages": [{"role": "user", "content": CLAUDE_PING_PROMPT}],
+            "stream": bool(stream)}
+
+
+def anthropic_reply_text(obj) -> str:
+    """从 Anthropic Messages 响应里取纯文本。"""
+    if not isinstance(obj, dict):
+        return ""
+    out = []
+    for blk in obj.get("content") or []:
+        if isinstance(blk, dict) and blk.get("type") == "text":
+            out.append(str(blk.get("text") or ""))
+        elif isinstance(blk, str):
+            out.append(blk)
+    return "".join(out).strip()
+
+
+def check_anthropic_channel(base: str, key: str, model: str = "",
+                            timeout: float = DEFAULT_TIMEOUT, verify: bool = True,
+                            log=None, stop_event: threading.Event | None = None) -> dict:
+    """检测网关是否实现 Anthropic Messages 协议（Claude Code 直连的前提）。
+
+    会依次尝试两种鉴权头：先 Authorization: Bearer，失败再 x-api-key；
+    成功后补一次流式测试（CLI 全程走流式，只测非流式不够）。
+    """
+    def L(msg):
+        if log:
+            log(msg)
+
+    res = {"ok": False, "auth_style": "", "status": 0, "error": "", "model_used": model or "",
+           "latency_ms": None, "stream_ok": False, "first_ms": None, "reply": "",
+           "model_not_found": False, "path_issue": False, "tried": [],
+           "url": "", "verdict": "", "verdict_level": "error"}
+    base = claude_base_for_gateway(base)
+    if not base:
+        res["verdict"] = "地址为空"
+        return res
+    url = base + CLAUDE_MSG_PATH
+    res["url"] = url
+    payload = claude_ping_payload(res["model_used"])
+    # 探测阶段给每次尝试设上限：慢站/挂死的站不至于把整个检测拖成几分钟
+    # （流式测试仍用完整 timeout）
+    probe_timeout = max(5.0, min(timeout, 20.0))
+
+    for style in ("bearer", "x-api-key"):
+        if stop_event is not None and stop_event.is_set():
+            res["verdict"] = "已手动停止"
+            return res
+        r = http_request("POST", url, headers=claude_auth_headers(style, key), payload=payload,
+                         timeout=probe_timeout, verify=verify)
+        # 网络层错误（超时/连不上）比空响应体更有信息量，优先用它
+        msg = "" if r.ok else (r.error or extract_error_message(r.text, r.status))
+        info = {"auth_style": style, "status": r.status, "ms": r.latency_ms, "error": msg}
+        L(f"  [Anthropic] POST {url}（{style}）→ {r.status or r.error} {r.latency_ms}ms")
+        res["tried"].append(info)
+        if r.ok:
+            res.update(ok=True, auth_style=style, status=r.status, latency_ms=r.latency_ms,
+                       reply=anthropic_reply_text(r.json)[:240], error="")
+            info["ok"] = True
+            break
+        low = ((msg or "") + " " + (r.text or "")[:600]).lower()
+        if r.status == 404 and ("model" in low or "not supported" in low):
+            # 404 且提到模型 → 认证已通过，只是模型 id 不在该 key 的可用集合里
+            res.update(model_not_found=True, auth_style=style, status=404, error=msg,
+                       latency_ms=r.latency_ms)
+            break
+        if r.status == 404:
+            res.update(path_issue=True, status=404, error=msg, latency_ms=r.latency_ms)
+            break
+        if r.status in (401, 403):
+            res.update(status=r.status, error=msg)
+            continue          # 换个头再试
+        res.update(status=r.status, error=msg, latency_ms=r.latency_ms)
+        break
+
+    # 流式测试（需要已知可用模型）。实测发现有些网关会偶发断连（RemoteDisconnected），
+    # 但 CLI 本身仍能跑通，所以探两次再下结论，避免误判。
+    if res["ok"] and res["model_used"] and not (stop_event is not None and stop_event.is_set()):
+        stream_timeout = max(10.0, min(timeout, 30.0))
+        for attempt in (1, 2):
+            L(f"  流式测试 POST {url}（stream=true，第 {attempt} 次）")
+            col = stream_generate(url, claude_auth_headers(res["auth_style"], key),
+                                  claude_ping_payload(res["model_used"], stream=True),
+                                  feed_anthropic, timeout=stream_timeout, verify=verify,
+                                  stop_event=stop_event)
+            res["stream_ok"] = col.first_ms is not None
+            res["first_ms"] = col.first_ms
+            if col.text:
+                res["reply"] = res["reply"] or col.text[:240]
+            if res["stream_ok"]:
+                L(f"  流式通过：首字 {col.first_ms:.0f}ms")
+                break
+            res["stream_error"] = col.error or "未收到流式数据"
+            L(f"  第 {attempt} 次流式未通过：{res['stream_error']}")
+            if attempt == 1 and not (stop_event is not None and stop_event.is_set()):
+                time.sleep(1.0)
+
+    # 结论
+    if res["ok"]:
+        if res["stream_ok"]:
+            res["verdict"] = (f"通道可用：认证方式 {res['auth_style']}，"
+                              f"非流式 {res['latency_ms']:.0f}ms / 首字 {res['first_ms']:.0f}ms")
+            res["verdict_level"] = "ok"
+        else:
+            res["verdict"] = (f"非流式可用（认证 {res['auth_style']}），但两次流式探测都没拿到数据"
+                              f"（{res.get('stream_error') or '未知原因'}）"
+                              "—— 可能是站点限流/瞬时抖动，也可能 SSE 未完整实现；"
+                              "CLI 未必不能用，建议直接跑一次端到端验证")
+            res["verdict_level"] = "warn"
+    elif res["model_not_found"]:
+        res["verdict"] = (f"认证通过，但模型「{res['model_used']}」在该网关不可用"
+                          " → 需要做模型映射（这一步是 90% 失败的原因）")
+        res["verdict_level"] = "warn"
+    elif res["path_issue"]:
+        res["verdict"] = ("该地址没有 /v1/messages：要么 ANTHROPIC_BASE_URL 写法不对，"
+                          "要么这个站只提供 OpenAI 协议，Claude Code 无法直连")
+        res["verdict_level"] = "error"
+    else:
+        statuses = [t.get("status") for t in res.get("tried", [])]
+        if statuses and all(s in (401, 403) for s in statuses):
+            # 返回 401/403 而不是 404 → 路由是存在的，协议多半支持，问题在 Key
+            res["verdict"] = (f"端点存在（返回 {statuses[0]} 而非 404，说明 /v1/messages 是实现了的），"
+                              f"但鉴权失败：{res['error']} —— 换一个有效的 Key 再测")
+            res["verdict_level"] = "warn"
+        else:
+            res["verdict"] = f"通道不可用：{res['error'] or '未知错误'}"
+            res["verdict_level"] = "error"
+    return res
+
+
+def evaluate_fluency(first_ms, stream_ok: bool) -> tuple[str, str]:
+    """按首字延迟给个「流畅度」判断，返回 (level, 文案)。"""
+    if not stream_ok or first_ms is None:
+        return "warn", "未拿到流式首字，无法判断流畅度"
+    if first_ms < 1000:
+        return "ok", f"流畅（首字 {first_ms:.0f}ms）"
+    if first_ms < 3000:
+        return "ok", f"良好（首字 {first_ms:.0f}ms）"
+    if first_ms < 8000:
+        return "warn", f"偏慢（首字 {first_ms:.0f}ms）"
+    return "warn", f"很慢（首字 {first_ms:.0f}ms），日常用会明显卡顿"
+
+
+def suggest_claude_model_map(models: list[dict], fallback: str = "") -> dict:
+    """从站点模型列表猜 sonnet/opus/haiku/fable 该映射到哪个真实 id。"""
+    ids = [str(m.get("id") or "") for m in (models or []) if m.get("id")]
+    out: dict = {}
+    for alias in CLAUDE_ALIASES:
+        cands = [i for i in ids if alias in i.lower()]
+        if cands:
+            cands.sort(key=lambda s: (len(s), s))     # 同族优先取最短（通常是没有日期后缀的主名）
+            out[alias] = cands[0]
+    default = out.get("sonnet") or fallback or (choose_default_model(models) if models else "")
+    if default:
+        out["default"] = default
+    return out
+
+
+def run_full_pipeline(base_input: str, key: str, model: str = "",
+                      timeout: float = DEFAULT_TIMEOUT, verify: bool = True, deep: bool = True,
+                      cc_key: str = "", codex_key: str = "",
+                      log=None, stop_event: threading.Event | None = None) -> dict:
+    """一条龙走完用户的四步流程：
+
+        ① 探测模型列表
+        ② 生成测试（能不能真的跑、跑得流不流畅）
+        ③ 检测两条 CLI 通道：Anthropic /v1/messages（Claude Code）与
+           OpenAI /v1/responses、/v1/chat/completions（Codex）
+        ④ 给出模型映射建议（claude 别名 + Codex 默认模型）
+
+    返回 {"site","gen","channel","model_map","steps","fluency","ok","verdict",...}。
+    不做任何写入动作 —— 写配置由 GUI 的「一键接入」显式触发。
+    """
+    def L(msg):
+        if log:
+            log(msg)
+
+    out = {"site": {}, "gen": {}, "channel": {}, "channel_openai": {}, "model_map": {},
+           "codex_model": "", "used_model": "", "fluency_level": "", "fluency": "",
+           "ok": False, "stopped": False, "steps": [], "verdict": ""}
+
+    def step(no, text, ok=None, detail=""):
+        out["steps"].append({"no": no, "text": text, "ok": ok, "detail": detail})
+        L(f"[{no}/4] {text}" + (f" → {detail}" if detail else ""))
+
+    L("=" * 62)
+    L(f"[1/4] 探测模型列表：{base_input}")
+    site = probe_site(base_input, key, timeout=timeout, verify=verify, log=log,
+                      stop_event=stop_event)
+    out["site"] = site
+    base = site.get("base") or ""
+    if not base:
+        out["verdict"] = site.get("verdict") or "地址无效"
+        step(1, "探测模型列表", False, out["verdict"])
+        return out
+    if stop_event is not None and stop_event.is_set():
+        out.update(stopped=True, verdict="已手动停止")
+        return out
+    step(1, "探测模型列表", bool(site.get("ok_site")),
+         f"{site.get('protocol_label') or '-'}，{site.get('model_count', 0)} 个模型")
+
+    used = (model or "").strip() or choose_default_model(site.get("models") or [])
+    out["used_model"] = used
+    if used:
+        L(f"[2/4] 生成测试（模型 {used}）")
+        gen = probe_generate(site, key, used, timeout=timeout, verify=verify, deep=deep,
+                             log=log, stop_event=stop_event)
+        out["gen"] = gen
+        lvl, txt = evaluate_fluency(gen.get("first_token_ms"), bool(gen.get("stream_ok")))
+        out["fluency_level"], out["fluency"] = lvl, txt
+        step(2, f"生成测试（模型 {used}）", bool(gen.get("ok")), txt)
+    else:
+        step(2, "生成测试", False, "没有可用模型，请在「指定模型」里手写一个再试")
+
+    if stop_event is not None and stop_event.is_set():
+        out.update(stopped=True, verdict="已手动停止")
+        return out
+
+    L("[3/4] 检测 CLI 通道：Anthropic(/v1/messages) 与 OpenAI(/v1/responses、/v1/chat/completions)")
+    ch = check_anthropic_channel(base, cc_key or key, used, timeout=timeout, verify=verify,
+                                 log=log, stop_event=stop_event)
+    out["channel"] = ch
+    och = check_openai_channel(base, codex_key or key, used, timeout=timeout, verify=verify,
+                               log=log, stop_event=stop_event)
+    out["channel_openai"] = och
+    a_txt = (f"Anthropic 认证 {ch['auth_style']}" if ch.get("ok") else
+             ("Anthropic 认证通过(模型不可用)" if ch.get("model_not_found") else "Anthropic 不可用"))
+    o_txt = (f"OpenAI wire_api={och['wire_api']}" if och.get("ok") else "OpenAI 不可用")
+    step(3, "检测 CLI 通道（Anthropic + OpenAI）",
+         bool(ch.get("ok") or ch.get("model_not_found") or och.get("ok")),
+         f"{a_txt}；{o_txt}")
+
+    mm = suggest_claude_model_map(site.get("models") or [], fallback=used)
+    out["model_map"] = mm
+    out["codex_model"] = suggest_codex_model(site.get("models") or [], fallback=used)
+    step(4, "生成模型映射建议", bool(mm) or bool(out["codex_model"]),
+         "、".join(f"{k}→{v}" for k, v in mm.items()) or "没匹配到 claude 系模型")
+
+    gen_ok = bool(out["gen"].get("ok"))
+    a_ok = bool(ch.get("ok")) or bool(ch.get("model_not_found"))
+    o_ok = bool(och.get("ok"))
+    out["ok"] = gen_ok and (a_ok or o_ok)
+    bits = ["模型可用" if gen_ok else "生成测试未通过"]
+    bits.append("Claude Code 通道可用" if ch.get("ok")
+                else ("Claude Code 通道认证通过（映射模型后可用）" if ch.get("model_not_found")
+                      else "Claude Code 通道不可用"))
+    bits.append(f"Codex 通道可用（wire_api={och['wire_api']}）" if o_ok else "Codex 通道不可用")
+    out["verdict"] = ("全流程" + ("通过：" if out["ok"] else "未完全通过：") + "；".join(bits)
+                      + (f"；{out['fluency']}" if out["fluency"] else ""))
+    L(f"流程结论：{out['verdict']}")
+    return out
+
+
+def build_claude_env(base: str, key: str, auth_style: str, model_map: dict | None = None,
+                     model_default: str = "", context_window: int = 0) -> dict:
+    """生成要写进 CLI 的 ANTHROPIC_* 环境变量（key 只出其一，避免两个头打架）。
+
+    context_window > 0 时额外写 `CLAUDE_CODE_MAX_CONTEXT_TOKENS`：Claude Code 对
+    **认不出的模型 id** 会拿它当真实窗口（官方模型名仍按内置窗口）。0 / 空 = 不写。
+    """
+    env = {"ANTHROPIC_BASE_URL": claude_base_for_gateway(base)}
+    if key:
+        if auth_style == "x-api-key":
+            env["ANTHROPIC_API_KEY"] = key
+        else:
+            env["ANTHROPIC_AUTH_TOKEN"] = key
+    mm = dict(model_map or {})
+    default = (model_default or mm.pop("default", "") or mm.get("sonnet") or "").strip()
+    if default:
+        env["ANTHROPIC_MODEL"] = default
+    for alias in CLAUDE_ALIASES:
+        v = str(mm.get(alias) or "").strip()
+        if v:
+            env[f"ANTHROPIC_DEFAULT_{alias.upper()}_MODEL"] = v
+    if context_window and int(context_window) > 0:
+        env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(int(context_window))
+    return env
+
+
+def merge_claude_settings(existing, env: dict) -> dict:
+    """把 env 合并进 settings.json：只替换本工具管理的键，其它内容原样保留。"""
+    out = dict(existing) if isinstance(existing, dict) else {}
+    block = dict(out.get("env") or {}) if isinstance(out.get("env"), dict) else {}
+    for k in CLAUDE_MANAGED_ENV_KEYS:
+        block.pop(k, None)                    # 先清掉旧的，保证不会 AUTH_TOKEN/API_KEY 并存
+    block.update({k: v for k, v in (env or {}).items()
+                  if k in CLAUDE_MANAGED_ENV_KEYS and v})
+    out["env"] = block
+    return out
+
+
+def read_claude_settings(path: str | Path | None = None) -> dict:
+    p = Path(path) if path else CLAUDE_SETTINGS_PATH
+    try:
+        if not p.exists():
+            return {}
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def read_claude_context_tokens(path: str | Path | None = None) -> int:
+    """从现有 settings.json 的 env 里读 CLI 当前用的上下文窗口（读不到返回 0）。"""
+    env = read_claude_settings(path).get("env")
+    if not isinstance(env, dict):
+        return 0
+    try:
+        v = int(str(env.get("CLAUDE_CODE_MAX_CONTEXT_TOKENS") or "0").strip())
+    except (TypeError, ValueError):
+        return 0
+    return v if v > 0 else 0
+
+
+def install_claude_settings(env: dict, path: str | Path | None = None,
+                            backup: bool = True) -> dict:
+    """合并写入 settings.json。会先备份；现有文件解析不了就中止，绝不覆盖。"""
+    p = Path(path) if path else CLAUDE_SETTINGS_PATH
+    out = {"ok": False, "path": str(p), "backup": "", "error": "", "settings": {}}
+    existing: dict = {}
+    if p.exists():
+        try:
+            raw = p.read_text(encoding="utf-8")
+            data = json.loads(raw) if raw.strip() else {}
+            if not isinstance(data, dict):
+                raise ValueError("顶层不是 JSON 对象")
+            existing = data
+        except Exception as e:  # noqa: BLE001
+            out["error"] = f"现有配置无法解析（{e}），已中止以免覆盖：{p}"
+            return out
+        if backup:
+            bak = _backup_path(p)
+            try:
+                shutil.copy2(p, bak)
+                out["backup"] = str(bak)
+            except Exception as e:  # noqa: BLE001
+                out["error"] = f"备份失败，已中止：{e}"
+                return out
+    merged = merge_claude_settings(existing, env)
+    try:
+        _atomic_write_text(p, json.dumps(merged, ensure_ascii=False, indent=2) + "\n",
+                           encoding="utf-8")
+    except Exception as e:  # noqa: BLE001
+        out["error"] = f"写入失败：{e}"
+        return out
+    out["ok"] = True
+    out["settings"] = merged
+    return out
+
+
+def slugify(name: str, maxlen: int = 24) -> str:
+    s = re.sub(r"[^A-Za-z0-9_-]+", "-", (name or "").strip()).strip("-").lower()
+    return s[:maxlen] or "site"
+
+
+def non_ascii_env_key(env: dict) -> str:
+    """返回第一个含非 ASCII 的键名（.bat 只能装 ASCII，否则 cmd 会读乱）。"""
+    for k, v in (env or {}).items():
+        if not str(v).isascii():
+            return str(k)
+    return ""
+
+
+def render_launcher_bat(env: dict, config_dir: str = "") -> str:
+    """生成启动脚本内容（CRLF + 纯 ASCII，理由见 README 的 .bat 说明）。"""
+    lines = ["@echo off",
+             "rem Claude Code launcher generated by api_probe - keep this file ASCII-only,",
+             "rem because cmd.exe parses .bat with the OEM code page."]
+    for k in ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY",
+              "ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
+              "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+              "ANTHROPIC_DEFAULT_FABLE_MODEL", "CLAUDE_CODE_MAX_CONTEXT_TOKENS"):
+        if env.get(k):
+            lines.append(f'set "{k}={env[k]}"')
+    if config_dir:
+        lines.append(f'set "CLAUDE_CONFIG_DIR={config_dir}"')
+    lines.append("claude %*")
+    return "\r\n".join(lines) + "\r\n"
+
+
+def write_claude_launcher(env: dict, path: str | Path, config_dir: str = "") -> dict:
+    out = {"ok": False, "path": str(path), "error": ""}
+    bad = non_ascii_env_key(env)
+    if bad:
+        out["error"] = (f"{bad} 的值含非 ASCII 字符，无法安全写进 .bat"
+                        "（cmd 按 OEM 码页读批处理）——请改用写入 settings.json 的方式")
+        return out
+    try:
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write_text(p, render_launcher_bat(env, config_dir),
+                           encoding="ascii", newline="")
+    except Exception as e:  # noqa: BLE001
+        out["error"] = f"写入失败：{e}"
+        return out
+    out["ok"] = True
+    return out
+
+
+def write_isolated_claude_config(env: dict, config_dir: str | Path) -> dict:
+    """生成一个独立配置目录（配合 CLAUDE_CONFIG_DIR 用），与正式 ~/.claude 完全隔离。"""
+    d = Path(config_dir)
+    out = {"ok": False, "dir": str(d), "path": "", "error": ""}
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        p = d / "settings.json"
+        existing = {}
+        if p.exists():
+            try:
+                existing = json.loads(p.read_text(encoding="utf-8")) or {}
+            except Exception:
+                existing = {}
+        _atomic_write_text(p, json.dumps(merge_claude_settings(existing, env),
+                                         ensure_ascii=False, indent=2) + "\n",
+                           encoding="utf-8")
+        out.update(ok=True, path=str(p))
+    except Exception as e:  # noqa: BLE001
+        out["error"] = f"生成失败：{e}"
+    return out
+
+
+def find_claude_cli() -> str:
+    for c in CLAUDE_CLI_CANDIDATES:
+        try:
+            if c and str(c) not in ("", ".") and Path(c).exists():
+                return str(c)
+        except Exception:
+            continue
+    try:
+        return shutil.which("claude") or ""
+    except Exception:
+        return ""
+
+
+def verify_claude_cli(env: dict, cli_path: str = "", timeout: float = 240.0,
+                      log=None) -> dict:
+    """端到端验证：在一个空的隔离配置目录里跑 `claude -p PONG`，证明整条链路真的通。"""
+    def L(msg):
+        if log:
+            log(msg)
+
+    res = {"ok": False, "cli": "", "cmd": "", "result": "", "error": "", "status": "",
+           "is_error": None, "terminal_reason": "", "model_usage": {}, "config_dir": "",
+           "raw": ""}
+    cli = cli_path or find_claude_cli()
+    if cli and not Path(cli).exists():
+        try:
+            if not shutil.which(cli):
+                cli = ""
+        except Exception:
+            cli = ""
+    res["cli"] = cli
+    if not cli:
+        res["error"] = "没找到 claude 命令：先安装 @anthropic-ai/claude-code，或确认它在 PATH 里"
+        return res
+    tmp = Path(tempfile.mkdtemp(prefix="api_probe_cc_"))
+    res["config_dir"] = str(tmp)
+    run_env = dict(os.environ)
+    for k in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
+              "ANTHROPIC_MODEL", "CLAUDE_CODE_MAX_CONTEXT_TOKENS"):
+        run_env.pop(k, None)
+    run_env.update({k: str(v) for k, v in (env or {}).items() if v})
+    run_env["CLAUDE_CONFIG_DIR"] = str(tmp)      # 隔离：不读也不写你正式的 ~/.claude
+    args = [cli, "-p", CLAUDE_PING_PROMPT, "--max-turns", "1", "--output-format", "json"]
+    if cli.lower().endswith((".cmd", ".bat")):
+        args = ["cmd", "/c"] + args
+    res["cmd"] = " ".join(args)
+    L(f"  执行：{res['cmd']}（CLAUDE_CONFIG_DIR={tmp}）")
+    try:
+        cp = subprocess.run(args, env=run_env, capture_output=True, text=True,
+                            encoding="utf-8", errors="replace", timeout=timeout,
+                            cwd=str(tmp))
+    except subprocess.TimeoutExpired:
+        res["error"] = f"执行超时（>{timeout:.0f}s）"
+    except Exception as e:  # noqa: BLE001
+        res["error"] = f"执行失败：{type(e).__name__}: {e}"
+    else:
+        raw = (cp.stdout or "").strip()
+        res["raw"] = raw[-2000:]
+        obj = safe_json(raw)
+        if isinstance(obj, dict):
+            res["result"] = str(obj.get("result") or "")
+            res["is_error"] = obj.get("is_error")
+            res["terminal_reason"] = str(obj.get("terminal_reason") or "")
+            res["status"] = str(obj.get("api_error_status") or "")
+            if isinstance(obj.get("modelUsage"), dict):
+                res["model_usage"] = obj["modelUsage"]
+            res["ok"] = (not obj.get("is_error")) and "PONG" in res["result"]
+        if not res["ok"] and not res["error"]:
+            res["error"] = (res["result"] or (cp.stderr or "").strip()[:400]
+                            or "输出无法解析为 JSON")
+    shutil.rmtree(tmp, ignore_errors=True)
+    return res
+
+
+def find_claude_backups(path: str | Path | None = None) -> list[Path]:
+    """列出 settings.json 旁边的备份（本工具的 .bak-apiprobe-* 与其它 .bak-* 都算）。"""
+    p = Path(path) if path else CLAUDE_SETTINGS_PATH
+    try:
+        items = [q for q in p.parent.glob(p.name + ".bak*") if q.is_file()]
+    except Exception:
+        return []
+    return sorted(items, key=lambda q: q.stat().st_mtime, reverse=True)
+
+
+# =====================================================================
+# 八、Codex CLI 接入（OpenAI 格式）
+# =====================================================================
+# Codex CLI 读 ~/.codex/config.toml，第三方网关靠 [model_providers.*] 描述：
+#     [model_providers.<id>]
+#     name = "..."            # 随便起，给人看
+#     base_url = "https://gw.example.com/v1"   # 注意：与 Anthropic 相反，这里要带 /v1
+#     env_key = "XXX_API_KEY" # Key 不放配置文件，而是从这个环境变量读（Codex 会加载 ~/.codex/.env）
+#     wire_api = "responses"  # 或 "chat"：决定打 /v1/responses 还是 /v1/chat/completions
+# 顶层再写 model / model_provider 指过去。
+# 所以本节的活是两个判断：网关支持哪种 wire_api、这个 Key 能用哪个模型。
+
+CODEX_HOME = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))
+CODEX_CONFIG_PATH = CODEX_HOME / "config.toml"
+CODEX_ENV_PATH = CODEX_HOME / ".env"
+CODEX_PROVIDER_ID = "api_probe"
+CODEX_MANAGED_BEGIN = "# >>> api-probe managed provider (auto-generated) >>>"
+CODEX_MANAGED_END = "# <<< api-probe managed provider <<<"
+CODEX_TOP_BEGIN = "# >>> api-probe managed top-level (auto-generated) >>>"
+CODEX_TOP_END = "# <<< api-probe managed top-level <<<"
+CODEX_PING_PROMPT = "Reply with exactly: PONG"
+
+
+def find_codex_cli() -> str:
+    """找 codex：先 PATH，再桌面版自带运行时（路径带版本号会变，按修改时间取最新）。"""
+    try:
+        w = shutil.which("codex")
+        if w:
+            return w
+    except Exception:
+        pass
+    hits: list[Path] = []
+    for root in (Path(os.environ.get("LOCALAPPDATA") or "") / "OpenAI" / "Codex" / "bin",
+                 Path(os.environ.get("LOCALAPPDATA") or "") / "Programs" / "codex"):
+        try:
+            if root.is_dir():
+                hits.extend(p for p in root.rglob("codex.exe") if p.is_file())
+        except Exception:
+            continue
+    for extra in (Path.home() / ".local" / "bin" / "codex.exe",
+                  Path(os.environ.get("APPDATA") or "") / "npm" / "codex.cmd"):
+        try:
+            if extra.exists():
+                hits.append(extra)
+        except Exception:
+            continue
+    if not hits:
+        return ""
+    hits.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return str(hits[0])
+
+
+def codex_base_url_for_gateway(base: str) -> str:
+    """Codex 的 base_url 要带 /v1（与 ANTHROPIC_BASE_URL 正好相反）。"""
+    root = normalize_base(base)
+    return f"{root}/v1" if root else ""
+
+
+def read_codex_context_tokens(path: str | Path | None = None) -> int:
+    """读现有 config.toml 顶层的 model_context_window（读不到返回 0）。
+
+    Python 3.11+ 用 tomllib；3.9/3.10 没有它，退化成只看第一个表头之前的行。
+    """
+    p = Path(path) if path else CODEX_CONFIG_PATH
+    try:
+        text = _read_text_sig(p)
+    except Exception:
+        return 0
+    try:
+        import tomllib
+        v = tomllib.loads(text or "").get("model_context_window")
+        return int(v) if isinstance(v, int) and v > 0 else 0
+    except ModuleNotFoundError:
+        pass
+    except Exception:
+        return 0
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith("["):
+            break
+        m = re.match(r"^model_context_window\s*=\s*([0-9_]+)\s*(?:#.*)?$", s)
+        if m:
+            try:
+                return int(m.group(1).replace("_", ""))
+            except ValueError:
+                return 0
+    return 0
+
+
+def codex_ping_payload(model: str, wire_api: str) -> dict:
+    if wire_api == "responses":
+        return {"model": model, "input": CODEX_PING_PROMPT, "max_output_tokens": 16}
+    return {"model": model, "max_tokens": 16, "stream": False,
+            "messages": [{"role": "user", "content": CODEX_PING_PROMPT}]}
+
+
+def responses_reply_text(obj) -> str:
+    """从 Responses API 响应里取纯文本。"""
+    if not isinstance(obj, dict):
+        return ""
+    if isinstance(obj.get("output_text"), str) and obj["output_text"]:
+        return obj["output_text"].strip()
+    out = []
+    for item in obj.get("output") or []:
+        if not isinstance(item, dict):
+            continue
+        for blk in item.get("content") or []:
+            if isinstance(blk, dict) and isinstance(blk.get("text"), str):
+                out.append(blk["text"])
+            elif isinstance(blk, str):
+                out.append(blk)
+    return "".join(out).strip()
+
+
+def chat_reply_text(obj) -> str:
+    if not isinstance(obj, dict):
+        return ""
+    for ch in obj.get("choices") or []:
+        if isinstance(ch, dict):
+            msg = ch.get("message") or {}
+            if isinstance(msg, dict) and isinstance(msg.get("content"), str):
+                return msg["content"].strip()
+    return ""
+
+
+def check_openai_channel(base: str, key: str, model: str = "",
+                         timeout: float = DEFAULT_TIMEOUT, verify: bool = True,
+                         log=None, stop_event: threading.Event | None = None,
+                         prefer: str = "responses") -> dict:
+    """检测 OpenAI 格式通道：/v1/responses 与 /v1/chat/completions 哪个可用。
+
+    返回里的 wire_api 就是要写进 Codex config.toml 的值（responses / chat）。
+    prefer 决定先试哪条：Codex 用默认的 responses，Grok 传 "chat"（它默认走 chat_completions）。
+    """
+    def L(msg):
+        if log:
+            log(msg)
+
+    res = {"ok": False, "wire_api": "", "auth_style": "bearer", "status": 0, "error": "",
+           "model_used": model or "", "reply": "", "latency_ms": None, "tried": [],
+           "base_url": codex_base_url_for_gateway(base), "verdict": "", "verdict_level": "error"}
+    gw = codex_base_url_for_gateway(base)
+    if not gw:
+        res["verdict"] = "地址为空"
+        return res
+    probe_timeout = max(5.0, min(timeout, 20.0))
+    order = [("responses", "/responses"), ("chat", "/chat/completions")]
+    if prefer == "chat":
+        order.reverse()
+
+    for wire, path in order:
+        if stop_event is not None and stop_event.is_set():
+            res["verdict"] = "已手动停止"
+            return res
+        url = gw + path
+        r = http_request("POST", url, headers=claude_auth_headers("bearer", key),
+                         payload=codex_ping_payload(res["model_used"], wire),
+                         timeout=probe_timeout, verify=verify)
+        msg = "" if r.ok else (r.error or extract_error_message(r.text, r.status))
+        info = {"wire_api": wire, "url": url, "status": r.status, "ms": r.latency_ms, "error": msg}
+        L(f"  [OpenAI/{wire}] POST {url} → {r.status or r.error} {r.latency_ms}ms")
+        res["tried"].append(info)
+        if r.ok:
+            text = (responses_reply_text(r.json) if wire == "responses"
+                    else chat_reply_text(r.json))
+            res.update(ok=True, wire_api=wire, status=r.status, latency_ms=r.latency_ms,
+                       reply=text[:240], error="")
+            info["ok"] = True
+            break
+        low = ((msg or "") + " " + (r.text or "")[:600]).lower()
+        if r.status == 404 and ("model" in low or "not supported" in low):
+            res.update(status=404, error=msg, latency_ms=r.latency_ms)
+            info["model_not_found"] = True
+            continue          # 路径是通的，只是模型不行 → 再看下一条通道
+        res.update(status=r.status, error=msg, latency_ms=r.latency_ms)
+
+    model_404 = bool(res["tried"]) and all(t.get("model_not_found") for t in res["tried"])
+    if res["ok"]:
+        res["verdict"] = (f"OpenAI 通道可用：wire_api = {res['wire_api']}，"
+                          f"非流式 {res['latency_ms']:.0f}ms，返回 {res['reply'][:40]!r}")
+        res["verdict_level"] = "ok"
+    elif model_404:
+        res["verdict"] = (f"两条通道路径都在（404 但提到模型），只是模型「{res['model_used']}」"
+                          "不可用 → 换个模型再测")
+        res["verdict_level"] = "warn"
+    else:
+        statuses = [t.get("status") for t in res["tried"]]
+        if statuses and all(s in (401, 403) for s in statuses):
+            res["verdict"] = (f"端点存在（返回 {statuses[0]} 而非 404），但鉴权失败：{res['error']}"
+                              " —— 换一个有效 Key 再测")
+            res["verdict_level"] = "warn"
+        else:
+            res["verdict"] = f"OpenAI 通道不可用：{res['error'] or '未知错误'}"
+            res["verdict_level"] = "error"
+    return res
+
+
+def suggest_codex_model(models: list[dict], fallback: str = "") -> str:
+    """从模型清单里挑一个适合 Codex 的默认模型。"""
+    ids = [str(m.get("id") or "") for m in (models or []) if m.get("id")]
+    if not ids:
+        return fallback or ""
+    if fallback and fallback in ids:
+        return fallback
+    cands = [i for i in ids
+             if not any(b in i.lower() for b in NON_CHAT_MARKERS)
+             and not any(v in i.lower() for v in VARIANT_MARKERS)]
+    for want in ("gpt-6", "gpt-5", "gpt-4.1", "o4", "o3", "gpt-4o", "codex", "gpt-4"):
+        hit = [i for i in cands if want in i.lower()]
+        if hit:
+            hit.sort(key=lambda s: (len(s), s))
+            return hit[0]
+    if fallback:
+        return fallback
+    return choose_default_model(models) if models else ""
+
+
+def _toml_str(value: str) -> str:
+    """把任意字符串写成 TOML 基本字符串（JSON 转义是 TOML 转义的子集）。
+
+    网关返回的模型名、用户填的站点名都可能含引号/反斜杠/换行。直接 f'"{v}"'
+    轻则写出非法 TOML（整个配置失效，Codex 桌面版打不开），重则让值逃逸出去
+    注入别的键（例如 sandbox_mode）。json.dumps 产出的 \\" \\\\ \\n \\uXXXX
+    都是合法 TOML 转义，语义与原值一致。
+    """
+    return json.dumps(str(value), ensure_ascii=False)
+
+
+def render_codex_top_block(model: str, context_window: int = 0) -> str:
+    """顶层键（TOML 要求裸键写在任何 [table] 之前）。
+
+    `model_context_window` 也归本工具管：传 0 就不写（并在合并时删掉旧值）。
+    它必须待在顶层 —— Codex 的 ConfigToml 里它是全局键，不是 provider 表字段。
+    """
+    lines = [CODEX_TOP_BEGIN,
+             f"model = {_toml_str(model)}",
+             f"model_provider = {_toml_str(CODEX_PROVIDER_ID)}"]
+    if context_window and int(context_window) > 0:
+        lines.append(f"model_context_window = {int(context_window)}")
+    lines.append(CODEX_TOP_END)
+    return "\n".join(lines) + "\n"
+
+
+def render_codex_provider_block(base_url: str, env_key: str, wire_api: str = "responses",
+                                provider_name: str = "API Probe") -> str:
+    return (f"{CODEX_MANAGED_BEGIN}\n"
+            f"[model_providers.{CODEX_PROVIDER_ID}]\n"
+            f"name = {_toml_str(provider_name)}\n"
+            f"base_url = {_toml_str(base_url)}\n"
+            f"env_key = {_toml_str(env_key)}\n"
+            f"wire_api = {_toml_str(wire_api)}\n"
+            f"{CODEX_MANAGED_END}\n")
+
+
+def _strip_marker_block(text: str, begin: str, end: str) -> str:
+    out, skipping = [], False
+    for line in text.splitlines(keepends=True):
+        if line.strip() == begin:
+            skipping = True
+            continue
+        if line.strip() == end:
+            skipping = False
+            continue
+        if not skipping:
+            out.append(line)
+    return "".join(out)
+
+
+def _strip_provider_table(text: str, provider_id: str) -> str:
+    """删掉任意 [model_providers.<provider_id>] 表，无论是否带标记。
+
+    旧版工具/手工写过的同名表若没有标记，_strip_marker_block 抓不到，
+    再追加一份就成了 TOML 重复键，整个 config.toml 解析失败
+    （Codex 桌面版会因此弹「无法加载组织设置」）。
+    """
+    header = re.compile(
+        r"^\s*\[\s*[\"']?model_providers[\"']?\s*\.\s*[\"']?%s[\"']?\s*\]\s*(?:#.*)?$"
+        % re.escape(provider_id)
+    )
+    out: list[str] = []
+    skipping = False
+    for line in text.splitlines(keepends=True):
+        if header.match(line):
+            skipping = True
+            continue
+        s = line.strip()
+        if skipping and s.startswith("["):        # 任何表头都结束表体（含 [[数组表]]）
+            skipping = False
+        if not skipping:
+            out.append(line)
+    return re.sub(r"\n{3,}", "\n\n", "".join(out))
+
+
+def merge_codex_config(existing: str, model: str, base_url: str, env_key: str,
+                       provider_name: str = "API Probe", wire_api: str = "responses",
+                       context_window: int = 0) -> str:
+    """把 provider 表与顶层 model/model_provider 合并进现有 config.toml。
+
+    - 先删掉上次由本工具写入的标记块，可反复执行
+    - 顶层原有的 model / model_provider / model_context_window 会被替换（否则 TOML
+      重复键直接报错），旧值在备份里；context_window 传 0 表示这个键不写（旧值也删掉）
+    - 顶层块放文件开头（TOML 要求裸键在表之前），provider 表追加到末尾
+    """
+    text = _strip_marker_block(existing or "", CODEX_MANAGED_BEGIN, CODEX_MANAGED_END)
+    text = _strip_marker_block(text, CODEX_TOP_BEGIN, CODEX_TOP_END)
+    text = _strip_provider_table(text, CODEX_PROVIDER_ID)
+    kept: list[str] = []
+    in_table = False
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith("["):                     # 含 [[数组表]]：之后都是表内键，不能当顶层删
+            in_table = True
+        if not in_table and re.match(
+                r"^\s*(model|model_provider|model_context_window)\s*=", line):
+            continue
+        kept.append(line)
+    body = "\n".join(kept).strip("\n")
+    top = render_codex_top_block(model, context_window)
+    table = render_codex_provider_block(base_url, env_key, wire_api, provider_name)
+    return f"{top}\n{body}\n\n{table}" if body else f"{top}\n{table}"
+
+
+def install_codex_config(model: str, base_url: str, env_key: str,
+                         provider_name: str = "API Probe", wire_api: str = "responses",
+                         path: str | Path | None = None,
+                         context_window: int = 0) -> dict:
+    """写入 ~/.codex/config.toml（合并 + 备份；读不出来就中止，不覆盖）。"""
+    p = Path(path) if path else CODEX_CONFIG_PATH
+    out = {"ok": False, "path": str(p), "backup": "", "error": "", "old_model": "",
+           "old_provider": "", "old_context": 0, "text": ""}
+    existing = ""
+    if p.exists():
+        try:
+            existing = _read_text_sig(p)
+        except Exception as e:  # noqa: BLE001
+            out["error"] = f"读取失败，已中止：{e}"
+            return out
+        # 现有文件必须是合法 TOML，否则拒绝写入（有备份也不该冒险破坏用户配置）
+        try:
+            import tomllib
+            tomllib.loads(existing or "")
+        except ModuleNotFoundError:
+            pass                      # Python < 3.11 没得校验，靠备份兜底
+        except Exception as e:  # noqa: BLE001
+            out["error"] = f"现有 config.toml 不是合法 TOML（{e}），已中止以免覆盖：{p}"
+            return out
+        for line in existing.splitlines():
+            s = line.strip()
+            if s.startswith("["):
+                break
+            m = re.match(r'^\s*model\s*=\s*"?([^"\n]*)"?\s*$', line)
+            if m and not out["old_model"]:
+                out["old_model"] = m.group(1).strip()
+            m2 = re.match(r'^\s*model_provider\s*=\s*"?([^"\n]*)"?\s*$', line)
+            if m2 and not out["old_provider"]:
+                out["old_provider"] = m2.group(1).strip()
+            m3 = re.match(r"^\s*model_context_window\s*=\s*([0-9_]+)\s*(?:#.*)?$", line)
+            if m3 and not out["old_context"]:
+                try:
+                    out["old_context"] = int(m3.group(1).replace("_", ""))
+                except ValueError:
+                    pass
+        bak = _backup_path(p)
+        try:
+            shutil.copy2(p, bak)
+            out["backup"] = str(bak)
+        except Exception as e:  # noqa: BLE001
+            out["error"] = f"备份失败，已中止：{e}"
+            return out
+    merged = merge_codex_config(existing, model, base_url, env_key, provider_name, wire_api,
+                                context_window)
+    # 写盘前先自检合并结果：输入合法不代表输出合法，
+    # 一旦写出重复键，Codex 桌面版会直接弹「无法加载组织设置」并拒绝启动。
+    try:
+        import tomllib
+        parsed = tomllib.loads(merged)
+    except ImportError:
+        parsed = None
+    except Exception as e:  # noqa: BLE001
+        out["error"] = f"合并结果不是合法 TOML（{e}），已中止以免写坏配置：{p}"
+        return out
+    if parsed is not None:
+        if CODEX_PROVIDER_ID not in (parsed.get("model_providers") or {}):
+            out["error"] = f"合并结果缺少 [model_providers.{CODEX_PROVIDER_ID}]，已中止：{p}"
+            return out
+        if parsed.get("model_provider") != CODEX_PROVIDER_ID:
+            out["error"] = f"合并结果的 model_provider 不是 {CODEX_PROVIDER_ID}，已中止：{p}"
+            return out
+        got_ctx = parsed.get("model_context_window")
+        if context_window and int(context_window) > 0:
+            if got_ctx != int(context_window):
+                out["error"] = (f"合并结果的 model_context_window 不是 {int(context_window)}，"
+                                f"已中止：{p}")
+                return out
+        elif isinstance(got_ctx, int):
+            out["error"] = f"合并结果仍残留 model_context_window，已中止：{p}"
+            return out
+    try:
+        _atomic_write_text(p, merged, encoding="utf-8")
+    except Exception as e:  # noqa: BLE001
+        out["error"] = f"写入失败：{e}"
+        return out
+    out.update(ok=True, text=merged)
+    return out
+
+
+def _dotenv_value(value: str) -> tuple[str, bool]:
+    """把值编码成 .env 里安全的形式，返回 (文本, 是否加了引号)。
+
+    .env 不是「随便写」：`#` 之后算注释、首尾空白会被裁掉，所以含这些字符的
+    值必须用双引号包起来并转义，否则写进去的值和真实 Key 不一致，用户只会
+    看到莫名其妙的 401。
+    """
+    v = str(value)
+    risky = ("#" in v or "\n" in v or "\r" in v or '"' in v or "\\" in v
+             or v != v.strip() or v[:1] in ("'", '"'))
+    if not risky:
+        return v, False
+    escaped = (v.replace("\\", "\\\\").replace('"', '\\"')
+                .replace("\n", "\\n").replace("\r", "\\r"))
+    return f'"{escaped}"', True
+
+
+def install_codex_env_key(env_key: str, value: str, path: str | Path | None = None) -> dict:
+    """把 Key 写进 ~/.codex/.env —— Codex 会加载它，config 里的 env_key 就从这里取值。"""
+    p = Path(path) if path else CODEX_ENV_PATH
+    out = {"ok": False, "path": str(p), "error": "", "backup": "", "quoted": False}
+    if not env_key or not value:
+        out["error"] = "env_key 或 Key 为空"
+        return out
+    lines: list[str] = []
+    if p.exists():
+        try:
+            lines = _read_text_sig(p).splitlines()
+        except Exception as e:  # noqa: BLE001
+            out["error"] = f"读取失败：{e}"
+            return out
+        try:
+            bak = _backup_path(p)
+            shutil.copy2(p, bak)
+            out["backup"] = str(bak)
+        except Exception:
+            pass
+    kept = [ln for ln in lines if not ln.strip().startswith(f"{env_key}=")]
+    encoded, quoted = _dotenv_value(value)
+    kept.append(f"{env_key}={encoded}")
+    out["quoted"] = quoted
+    try:
+        _atomic_write_text(p, "\n".join(kept).strip("\n") + "\n", encoding="utf-8")
+    except Exception as e:  # noqa: BLE001
+        out["error"] = f"写入失败：{e}"
+        return out
+    out["ok"] = True
+    return out
+
+
+def find_codex_backups(path: str | Path | None = None) -> list[Path]:
+    p = Path(path) if path else CODEX_CONFIG_PATH
+    try:
+        items = [q for q in p.parent.glob(p.name + ".bak*") if q.is_file()]
+    except Exception:
+        return []
+    return sorted(items, key=lambda q: q.stat().st_mtime, reverse=True)
+
+
+# ---------------------- Codex 桌面版（Electron / MSIX） ----------------------
+# 桌面版与 CLI 共用同一份 ~/.codex/config.toml（桌面版自己的 UI 设置也放在这份文件的
+# [desktop] 段里，足以证明它读这个文件），所以写配置对两者同时生效。
+# 但 Key 不一样：CLI 会加载 CODEX_HOME/.env，而桌面版是从**用户级环境变量**取值
+# （GUI 程序由 Explorer 启动，拿的正是 HKCU\Environment 里的变量）。
+# 另外桌面版是常驻进程，改完要重启才会重新读配置与环境变量。
+
+def read_user_env_var(name: str) -> str:
+    """读用户级环境变量（HKCU\\Environment）。"""
+    if sys.platform != "win32" or not name:
+        return ""
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as k:
+            val, _ = winreg.QueryValueEx(k, name)
+            return str(val or "")
+    except FileNotFoundError:
+        return ""
+    except Exception:
+        return ""
+
+
+def set_user_env_var(name: str, value: str, persist: bool = True) -> dict:
+    """设置用户级环境变量，供 Codex 桌面版读取。
+
+    - 写 HKCU\\Environment；再广播 WM_SETTINGCHANGE，让之后新启动的程序立刻看到
+    - 同时写进当前进程环境，便于紧接着做验证
+    """
+    out = {"ok": False, "name": name, "error": "", "persisted": False}
+    if not name:
+        out["error"] = "变量名为空"
+        return out
+    os.environ[name] = str(value)
+    if sys.platform != "win32":
+        out["ok"] = True                     # 非 Windows：只影响当前进程
+        return out
+    if not persist:
+        out["ok"] = True
+        return out
+    try:
+        import winreg
+        with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, "Environment", 0,
+                                winreg.KEY_SET_VALUE) as k:
+            winreg.SetValueEx(k, name, 0, winreg.REG_SZ, str(value))
+        out["persisted"] = True
+    except Exception as e:  # noqa: BLE001
+        out["error"] = f"写注册表失败：{e}"
+        return out
+    try:
+        import ctypes
+        HWND_BROADCAST, WM_SETTINGCHANGE, SMTO_ABORTIFHUNG = 0xFFFF, 0x1A, 0x2
+        ctypes.windll.user32.SendMessageTimeoutW(HWND_BROADCAST, WM_SETTINGCHANGE, 0,
+                                                 "Environment", SMTO_ABORTIFHUNG,
+                                                 5000, None)
+    except Exception:
+        pass                                  # 广播失败只是要等重新登录，不影响已写入的值
+    out["ok"] = True
+    return out
+
+
+def delete_user_env_var(name: str) -> bool:
+    """删掉用户级环境变量（清理用，比如测试变量）。"""
+    if sys.platform != "win32" or not name:
+        return False
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment", 0,
+                            winreg.KEY_SET_VALUE) as k:
+            winreg.DeleteValue(k, name)
+        return True
+    except Exception:
+        return False
+
+
+def codex_desktop_installed() -> bool:
+    """判断 Codex 桌面版是否装过：看它的数据目录 / 自带可执行目录 / 全局状态文件。"""
+    local = os.environ.get("LOCALAPPDATA") or ""
+    for p in (Path(local) / "Codex" / "Logs",
+              Path(local) / "OpenAI" / "Codex" / "bin",
+              Path.home() / ".codex" / ".codex-global-state.json"):
+        try:
+            if p.exists():
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def launch_codex_desktop(cli_path: str = "") -> dict:
+    """拉起 Codex 桌面版（用官方 `codex app`；找不到 CLI 就报错，不猜 exe 路径）。"""
+    out = {"ok": False, "cmd": "", "error": ""}
+    cli = cli_path or find_codex_cli()
+    if not cli:
+        out["error"] = "找不到 codex 可执行文件，没法拉起桌面版（可以先手动打开）"
+        return out
+    args = [cli, "app"]
+    if cli.lower().endswith((".cmd", ".bat")):
+        args = ["cmd", "/c"] + args
+    out["cmd"] = " ".join(args)
+    try:
+        flags = 0
+        if sys.platform == "win32":
+            flags = (getattr(subprocess, "DETACHED_PROCESS", 0)
+                     | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+        subprocess.Popen(args, creationflags=flags, close_fds=True)
+    except Exception as e:  # noqa: BLE001
+        out["error"] = f"启动失败：{e}"
+        return out
+    out["ok"] = True
+    return out
+
+
+def verify_codex_cli(model: str, base_url: str, env_key: str, key: str,
+                     cli_path: str = "", timeout: float = 300.0, log=None,
+                     wire_api: str = "responses", context_window: int = 0) -> dict:
+    """端到端验证：在隔离的 CODEX_HOME 里跑 `codex exec "Reply with exactly: PONG"`。"""
+    def L(msg):
+        if log:
+            log(msg)
+
+    res = {"ok": False, "cli": "", "cmd": "", "result": "", "error": "", "config_home": "",
+           "raw": "", "wire_api": wire_api}
+    cli = cli_path or find_codex_cli()
+    if cli and not Path(cli).exists():
+        try:
+            if not shutil.which(cli):
+                cli = ""
+        except Exception:
+            cli = ""
+    res["cli"] = cli
+    if not cli:
+        res["error"] = "没找到 codex 命令（装 Codex CLI，或用桌面版自带的 codex.exe）"
+        return res
+
+    home = Path(tempfile.mkdtemp(prefix="api_probe_codex_"))
+    work = Path(tempfile.mkdtemp(prefix="api_probe_codexwork_"))
+    res["config_home"] = str(home)
+    try:
+        _atomic_write_text(home / "config.toml",
+                           merge_codex_config("", model, base_url, env_key, "API Probe",
+                                              wire_api, context_window),
+                           encoding="utf-8")
+        _atomic_write_text(home / ".env", f"{env_key}={key}\n", encoding="utf-8")
+        last = work / "last.txt"
+        args = [cli, "exec", CODEX_PING_PROMPT, "-C", str(work), "--skip-git-repo-check",
+                "--ephemeral", "-s", "read-only", "-o", str(last)]
+        if cli.lower().endswith((".cmd", ".bat")):
+            args = ["cmd", "/c"] + args
+        res["cmd"] = " ".join(args)
+        run_env = dict(os.environ)
+        run_env["CODEX_HOME"] = str(home)
+        run_env[env_key] = key
+        L(f"  执行：{res['cmd']}（CODEX_HOME={home}）")
+        try:
+            cp = subprocess.run(args, env=run_env, capture_output=True, text=True,
+                                encoding="utf-8", errors="replace", timeout=timeout,
+                                cwd=str(work))
+        except subprocess.TimeoutExpired:
+            res["error"] = f"执行超时（>{timeout:.0f}s）"
+            return res
+        except Exception as e:  # noqa: BLE001
+            res["error"] = f"执行失败：{type(e).__name__}: {e}"
+            return res
+        text = ""
+        if last.exists():
+            try:
+                text = last.read_text(encoding="utf-8", errors="replace").strip()
+            except Exception:
+                text = ""
+        if not text:
+            text = (cp.stdout or "").strip()
+        res["result"] = text[-600:]
+        res["raw"] = ((cp.stdout or "") + "\n" + (cp.stderr or "")).strip()[-2000:]
+        res["ok"] = "PONG" in text
+        if not res["ok"]:
+            tail = (cp.stderr or "").strip() or (cp.stdout or "").strip()
+            res["error"] = tail[-400:] or "输出里没有 PONG"
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+        shutil.rmtree(work, ignore_errors=True)
+    return res
+
+
+def render_codex_launcher(env_key: str, key: str, codex_exe: str = "",
+                          codex_home: str = "") -> str:
+    """启动脚本：临时设好环境变量再拉起 codex（CRLF + 纯 ASCII）。"""
+    lines = ["@echo off",
+             "rem Codex launcher generated by api_probe - keep this file ASCII-only,",
+             "rem because cmd.exe parses .bat with the OEM code page."]
+    if codex_home:
+        lines.append(f'set "CODEX_HOME={codex_home}"')
+    lines.append(f'set "{env_key}={key}"')
+    lines.append(f'"{codex_exe}" %*' if codex_exe else "codex %*")
+    return "\r\n".join(lines) + "\r\n"
+
+
+def write_codex_launcher(env_key: str, key: str, path: str | Path,
+                         codex_exe: str = "", codex_home: str = "") -> dict:
+    out = {"ok": False, "path": str(path), "error": ""}
+    for name, val in ((env_key, key), ("CODEX_HOME", codex_home), ("codex", codex_exe)):
+        if val and not str(val).isascii():
+            out["error"] = (f"{name} 的值含非 ASCII 字符，没法安全写进 .bat"
+                            "（cmd 按 OEM 码页读批处理）——请改用写 config.toml + .env 的方式")
+            return out
+    try:
+        p = Path(path)
+        _atomic_write_text(p, render_codex_launcher(env_key, key, codex_exe, codex_home),
+                           encoding="ascii", newline="")
+    except Exception as e:  # noqa: BLE001
+        out["error"] = f"写入失败：{e}"
+        return out
+    out["ok"] = True
+    return out
+
+
+# =====================================================================
+# 九、Grok Build 接入
+# =====================================================================
+# Grok Build（TUI）读 ~/.grok/config.toml，第三方网关靠 [model.<key>] 表描述：
+#     [model.<catalog-key>]
+#     model = "<发给 API 的真实模型 id>"
+#     base_url = "https://gw.example.com/v1"
+#     name = "显示名"
+#     api_backend = "chat_completions" | "responses" | "messages"   # 默认 chat_completions
+#     env_key = "GROK_API_KEY"        # 推荐：Key 放环境变量（官方也建议优先 env_key）
+#     api_key = "sk-..."              # 也可以内联
+#     extra_headers = { "x-api-key" = "..." }   # Anthropic 协议要用它传 key
+#     context_window = 128000
+# 三种 api_backend 正好对应本工具已经会测的三条通道，所以用哪条可以由检测结果决定。
+
+GROK_HOME = Path(os.environ.get("GROK_HOME") or (Path.home() / ".grok"))
+GROK_CONFIG_PATH = GROK_HOME / "config.toml"
+GROK_MODEL_KEY = "api_probe"
+GROK_ENV_KEY_DEFAULT = "GROK_API_KEY"
+GROK_MANAGED_BEGIN = "# >>> api-probe managed model (auto-generated) >>>"
+GROK_MANAGED_END = "# <<< api-probe managed model <<<"
+GROK_TOP_BEGIN = "# >>> api-probe managed top-level (auto-generated) >>>"
+GROK_TOP_END = "# <<< api-probe managed top-level <<<"
+GROK_PING_PROMPT = "Reply with exactly: PONG"
+GROK_BACKENDS = ("chat_completions", "responses", "messages")
+BACKEND_LABEL = {"chat_completions": "OpenAI Chat Completions",
+                 "responses": "OpenAI Responses",
+                 "messages": "Anthropic Messages"}
+
+
+def find_grok_cli() -> str:
+    """找 grok：先 PATH，再 ~/.grok/bin（官方安装器的默认位置）。"""
+    try:
+        w = shutil.which("grok")
+        if w:
+            return w
+    except Exception:
+        pass
+    for c in (GROK_HOME / "bin" / "grok.exe", GROK_HOME / "bin" / "grok",
+              Path(os.environ.get("LOCALAPPDATA") or "") / "Programs" / "grok" / "grok.exe"):
+        try:
+            if c.exists():
+                return str(c)
+        except Exception:
+            continue
+    return ""
+
+
+def grok_base_url_for_gateway(base: str) -> str:
+    """Grok 的 base_url 与 Codex 一样要带 /v1。"""
+    root = normalize_base(base)
+    return f"{root}/v1" if root else ""
+
+
+def read_grok_context_tokens(path: str | Path | None = None) -> int:
+    """读现有 [model.<key>].context_window（读不到返回 0）。"""
+    p = Path(path) if path else GROK_CONFIG_PATH
+    try:
+        text = _read_text_sig(p)
+    except Exception:
+        return 0
+    try:
+        import tomllib
+        v = ((tomllib.loads(text or "").get("model") or {}).get(GROK_MODEL_KEY) or {}) \
+            .get("context_window")
+        return int(v) if isinstance(v, int) and v > 0 else 0
+    except ModuleNotFoundError:
+        pass
+    except Exception:
+        return 0
+    in_model = False
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith("["):
+            in_model = bool(re.match(
+                r'^\[\s*model\s*\.\s*["\']?%s["\']?\s*\]$' % re.escape(GROK_MODEL_KEY), s))
+            continue
+        if in_model:
+            m = re.match(r"^context_window\s*=\s*([0-9_]+)\s*(?:#.*)?$", s)
+            if m:
+                try:
+                    return int(m.group(1).replace("_", ""))
+                except ValueError:
+                    return 0
+    return 0
+
+
+def suggest_grok_model(models: list[dict], fallback: str = "") -> str:
+    """挑一个适合 Grok Build 的默认模型（优先 grok 系，其次通用聊天模型）。"""
+    ids = [str(m.get("id") or "") for m in (models or []) if m.get("id")]
+    if not ids:
+        return fallback or ""
+    if fallback and fallback in ids:
+        return fallback
+    cands = [i for i in ids
+             if not any(b in i.lower() for b in NON_CHAT_MARKERS)
+             and not any(v in i.lower() for v in VARIANT_MARKERS)]
+    for want in ("grok-4", "grok-3", "grok", "gpt-6", "gpt-5", "claude-sonnet", "claude-opus",
+                 "gpt-4.1", "gpt-4o"):
+        hit = [i for i in cands if want in i.lower()]
+        if hit:
+            hit.sort(key=lambda s: (len(s), s))
+            return hit[0]
+    return fallback or (choose_default_model(models) if models else "")
+
+
+def backend_from_channels(anthropic_ok: bool, openai_wire: str) -> str:
+    """根据已探测到的通道决定 Grok 该用哪个 api_backend。
+
+    优先级：chat_completions > responses > messages。
+    理由：chat_completions 是 Grok 的默认协议、也是各网关实现最完整的一条；
+    Responses 虽新，但 Grok 在它上面默认要带 reasoning.summary，
+    有些网关会拒（官方文档也建议对这类网关设 reasoning_summary="none"）；
+    messages 只在网关是 Anthropic 专用时才用。
+    """
+    if openai_wire == "chat":
+        return "chat_completions"
+    if openai_wire == "responses":
+        return "responses"
+    if anthropic_ok:
+        return "messages"
+    return "chat_completions"
+
+
+def _toml_key(k) -> str:
+    """TOML 表名里的键：是裸键（字母数字下划线横线）就不加引号，否则加引号。"""
+    s = str(k)
+    if re.fullmatch(r"[A-Za-z0-9_-]+", s):
+        return s
+    return _toml_str(s)
+
+
+def render_grok_model_block(catalog_key: str, model: str, base_url: str,
+                            backend: str = "chat_completions",
+                            display_name: str = "API Probe",
+                            env_key: str = "", api_key: str = "",
+                            context_window: int = 200000,
+                            extra_headers: dict | None = None) -> str:
+    """生成 [model.<key>] 表。env_key 与 api_key 二选一（env_key 优先）。"""
+    lines = [GROK_MANAGED_BEGIN,
+             f"[model.{_toml_key(catalog_key)}]",
+             f"model = {_toml_str(model)}",
+             f"base_url = {_toml_str(base_url)}",
+             f"name = {_toml_str(display_name)}",
+             f"api_backend = {_toml_str(backend)}"]
+    if context_window:
+        lines.append(f"context_window = {int(context_window)}")
+    if env_key:
+        lines.append(f"env_key = {_toml_str(env_key)}")
+    elif api_key:
+        lines.append(f"api_key = {_toml_str(api_key)}")
+    if extra_headers:
+        inner = ", ".join(f"{_toml_str(k)} = {_toml_str(v)}" for k, v in extra_headers.items())
+        lines.append(f"extra_headers = {{ {inner} }}")
+    lines.append(GROK_MANAGED_END)
+    return "\n".join(lines) + "\n"
+
+
+def render_grok_top_block(default_key: str) -> str:
+    """托管块：把 [models].default 指到我们的模型。"""
+    return (f"{GROK_TOP_BEGIN}\n"
+            f"[models]\n"
+            f"default = {_toml_str(default_key)}\n"
+            f"{GROK_TOP_END}\n")
+
+
+def _strip_grok_model_table(text: str, catalog_key: str) -> str:
+    """删掉任意 [model.<key>] 表，无论是否带本工具的标记。
+
+    旧版工具或手工写过的同名表若没有标记，`_strip_marker_block` 抓不到，
+    再追加一份就成了 TOML 重复键 —— Grok 读整份 config.toml 会直接失败。
+    （Codex 那边有 `_strip_provider_table`，这里是对应的 Grok 版本。）
+    """
+    header = re.compile(
+        r"^\s*\[\s*model\s*\.\s*[\"']?%s[\"']?\s*\]\s*(?:#.*)?$" % re.escape(catalog_key)
+    )
+    out: list[str] = []
+    skipping = False
+    for line in text.splitlines(keepends=True):
+        if header.match(line):
+            skipping = True
+            continue
+        s = line.strip()
+        if skipping and s.startswith("["):        # 下一个表头（含 [[数组表]]）结束表体
+            skipping = False
+        if not skipping:
+            out.append(line)
+    return re.sub(r"\n{3,}", "\n\n", "".join(out))
+
+
+def merge_grok_config(existing: str, catalog_key: str, model: str, base_url: str,
+                      backend: str = "chat_completions", display_name: str = "API Probe",
+                      env_key: str = "", api_key: str = "",
+                      context_window: int = 200000,
+                      extra_headers: dict | None = None,
+                      set_default: bool = True) -> str:
+    """把 [model.<key>] 合并进现有 config.toml。
+
+    - 先删掉上次由本工具写入的标记区与**同名 [model.<key>] 表**（无论有没有标记），
+      可反复执行；旧版/手工写过的无标记表也不会变成重复键
+    - 只动我们自己的 [model.api_probe]；用户的 [cli]、[auth]、其它 [model.*] 原样保留
+    - set_default=True 时设置 [models].default：用户已有 [models] 段就只改 default 那一行
+      （保留其它字段），没有才追加托管块
+    """
+    text = _strip_marker_block(existing or "", GROK_MANAGED_BEGIN, GROK_MANAGED_END)
+    text = _strip_marker_block(text, GROK_TOP_BEGIN, GROK_TOP_END)
+    text = _strip_grok_model_table(text, catalog_key)
+    block = render_grok_model_block(catalog_key, model, base_url, backend, display_name,
+                                    env_key, api_key, context_window, extra_headers)
+    body = text.strip("\n")
+    if not set_default:
+        return f"{body}\n\n{block}" if body else block
+
+    out_lines: list[str] = []
+    in_models = False
+    replaced = False
+    for line in body.splitlines():
+        s = line.strip()
+        if s.startswith("[") and not s.startswith("[["):
+            in_models = (s == "[models]")
+            out_lines.append(line)
+            continue
+        if in_models and re.match(r"^\s*default\s*=", line):
+            out_lines.append(f"default = {_toml_str(catalog_key)}")
+            replaced = True
+            continue
+        out_lines.append(line)
+    new_body = "\n".join(out_lines).strip("\n")
+    top = "" if replaced else render_grok_top_block(catalog_key)
+    parts = [p for p in (top, new_body, block) if p]
+    return "\n\n".join(parts) + "\n"
+
+
+def install_grok_config(catalog_key: str, model: str, base_url: str,
+                        backend: str = "chat_completions", display_name: str = "API Probe",
+                        env_key: str = "", api_key: str = "", context_window: int = 200000,
+                        extra_headers: dict | None = None, set_default: bool = True,
+                        path: str | Path | None = None) -> dict:
+    """写入 ~/.grok/config.toml（合并 + 备份；现有文件不是合法 TOML 就拒绝写入）。"""
+    p = Path(path) if path else GROK_CONFIG_PATH
+    out = {"ok": False, "path": str(p), "backup": "", "error": "", "old_default": "",
+           "text": ""}
+    existing = ""
+    if p.exists():
+        try:
+            existing = _read_text_sig(p)
+        except Exception as e:  # noqa: BLE001
+            out["error"] = f"读取失败，已中止：{e}"
+            return out
+        try:
+            import tomllib
+            parsed = tomllib.loads(existing or "")
+            mt = parsed.get("models")
+            if isinstance(mt, dict):
+                out["old_default"] = str(mt.get("default") or "")
+        except ModuleNotFoundError:
+            pass
+        except Exception as e:  # noqa: BLE001
+            out["error"] = f"现有 config.toml 不是合法 TOML（{e}），已中止以免覆盖：{p}"
+            return out
+        bak = _backup_path(p)
+        try:
+            shutil.copy2(p, bak)
+            out["backup"] = str(bak)
+        except Exception as e:  # noqa: BLE001
+            out["error"] = f"备份失败，已中止：{e}"
+            return out
+    merged = merge_grok_config(existing, catalog_key, model, base_url, backend,
+                               display_name, env_key, api_key, context_window,
+                               extra_headers, set_default)
+    try:
+        _atomic_write_text(p, merged, encoding="utf-8")
+    except Exception as e:  # noqa: BLE001
+        out["error"] = f"写入失败：{e}"
+        return out
+    out.update(ok=True, text=merged)
+    return out
+
+
+def find_grok_backups(path: str | Path | None = None) -> list[Path]:
+    p = Path(path) if path else GROK_CONFIG_PATH
+    try:
+        items = [q for q in p.parent.glob(p.name + ".bak*") if q.is_file()]
+    except Exception:
+        return []
+    return sorted(items, key=lambda q: q.stat().st_mtime, reverse=True)
+
+
+def write_grok_launcher(env_key: str, key: str, path: str | Path,
+                        grok_exe: str = "", grok_home: str = "") -> dict:
+    """启动脚本：临时设好环境变量再拉起 grok（纯 ASCII + CRLF）。"""
+    out = {"ok": False, "path": str(path), "error": ""}
+    for name, val in ((env_key, key), ("GROK_HOME", grok_home), ("grok", grok_exe)):
+        if val and not str(val).isascii():
+            out["error"] = (f"{name} 的值含非 ASCII 字符，没法安全写进 .bat"
+                            "（cmd 按 OEM 码页读批处理）——请改用 env_key 环境变量方式")
+            return out
+    lines = ["@echo off",
+             "rem Grok launcher generated by api_probe - keep this file ASCII-only,",
+             "rem because cmd.exe parses .bat with the OEM code page."]
+    if grok_home:
+        lines.append(f'set "GROK_HOME={grok_home}"')
+    if env_key and key:
+        lines.append(f'set "{env_key}={key}"')
+    lines.append(f'"{grok_exe}" %*' if grok_exe else "grok %*")
+    try:
+        p = Path(path)
+        _atomic_write_text(p, "\r\n".join(lines) + "\r\n", encoding="ascii", newline="")
+    except Exception as e:  # noqa: BLE001
+        out["error"] = f"写入失败：{e}"
+        return out
+    out["ok"] = True
+    return out
+
+
+def verify_grok_cli(model_key: str, env_key: str, key: str, cli_path: str = "",
+                    timeout: float = 300.0, log=None, extra_env: dict | None = None,
+                    config_path: str | Path | None = None) -> dict:
+    """端到端验证：`grok -p "Reply with exactly: PONG" -m <key> --output-format json`。
+
+    用的是 config_path（默认 ~/.grok/config.toml）里的模型配置，Key 通过 env_key 传入。
+    """
+    def L(msg):
+        if log:
+            log(msg)
+
+    res = {"ok": False, "cli": "", "cmd": "", "result": "", "error": "", "raw": "",
+           "model_key": model_key}
+    cli = cli_path or find_grok_cli()
+    if cli and not Path(cli).exists():
+        try:
+            if not shutil.which(cli):
+                cli = ""
+        except Exception:
+            cli = ""
+    res["cli"] = cli
+    if not cli:
+        res["error"] = "没找到 grok 命令（官方安装器通常放在 ~/.grok/bin/grok.exe）"
+        return res
+
+    work = Path(tempfile.mkdtemp(prefix="api_probe_grokwork_"))
+    args = [cli, "-p", GROK_PING_PROMPT, "-m", model_key,
+            "--output-format", "json", "--max-turns", "1", "--cwd", str(work)]
+    if cli.lower().endswith((".cmd", ".bat")):
+        args = ["cmd", "/c"] + args
+    res["cmd"] = " ".join(args)
+    run_env = dict(os.environ)
+    if extra_env:
+        run_env.update({k: str(v) for k, v in extra_env.items() if v})
+    if env_key and key:
+        run_env[env_key] = key
+    if config_path:
+        run_env["GROK_HOME"] = str(Path(config_path).parent)
+    L(f"  执行：{res['cmd']}")
+    try:
+        cp = subprocess.run(args, env=run_env, capture_output=True, text=True,
+                            encoding="utf-8", errors="replace", timeout=timeout,
+                            cwd=str(work))
+    except subprocess.TimeoutExpired:
+        res["error"] = f"执行超时（>{timeout:.0f}s）"
+        shutil.rmtree(work, ignore_errors=True)
+        return res
+    except Exception as e:  # noqa: BLE001
+        res["error"] = f"执行失败：{type(e).__name__}: {e}"
+        shutil.rmtree(work, ignore_errors=True)
+        return res
+    shutil.rmtree(work, ignore_errors=True)
+    raw = (cp.stdout or "").strip()
+    res["raw"] = ((cp.stdout or "") + "\n" + (cp.stderr or "")).strip()[-2000:]
+    obj = safe_json(raw)
+    text = ""
+    if isinstance(obj, dict):
+        for kn in ("result", "response", "text", "content", "message"):
+            v = obj.get(kn)
+            if isinstance(v, str) and v.strip():
+                text = v.strip()
+                break
+        if not text and isinstance(obj.get("messages"), list):
+            for m in obj["messages"]:
+                if isinstance(m, dict) and isinstance(m.get("content"), str):
+                    text += m["content"]
+            text = text.strip()
+        if obj.get("is_error") is True and not res["error"]:
+            res["error"] = str(obj.get("result") or obj.get("error") or "grok 报错")[:400]
+    if not text:
+        text = raw
+    res["result"] = text[-600:]
+    res["ok"] = "PONG" in text
+    if not res["ok"] and not res["error"]:
+        res["error"] = ((cp.stderr or "").strip() or raw)[-400:] or "输出里没有 PONG"
+    return res
+
+
+# =====================================================================
+# 十、图形界面
+# =====================================================================
+
+# 「站点」下拉里那个不落盘的临时项
+ADHOC_SITE = "✎ 自定义（临时）"
+
+# 一个中转站可以存多把 Key（有的站 OpenAI 一把、Anthropic 一把），每把带格式标签
+KEY_FORMATS = ("auto", "openai", "anthropic")
+KEY_FORMAT_LABEL = {"auto": "自动识别", "openai": "OpenAI 格式", "anthropic": "Anthropic 格式"}
+
+
+def site_keys(rec) -> list[dict]:
+    """取站点记录里的 Key 列表。兼容只有单个 key 的旧结构。"""
+    if not isinstance(rec, dict):
+        return []
+    ks = rec.get("keys")
+    if isinstance(ks, list):
+        out = [k for k in ks if isinstance(k, dict) and str(k.get("name") or "").strip()]
+        if out:
+            return out
+    single = str(rec.get("key") or "").strip()
+    return [{"name": "默认", "format": "auto", "key": single}] if single else []
+
+
+def find_site_key(rec, name: str):
+    for k in site_keys(rec):
+        if k.get("name") == name:
+            return k
+    return None
+
+
+def pick_site_key(rec, prefer_format: str = ""):
+    """挑一把 Key：先找格式完全匹配的，其次「自动识别」，再退回站点当前选中的，最后第一把。"""
+    ks = site_keys(rec)
+    if not ks:
+        return None
+    if prefer_format:
+        for k in ks:
+            if k.get("format") == prefer_format:
+                return k
+        for k in ks:
+            if k.get("format") == "auto":
+                return k
+    act = str((rec or {}).get("active_key") or "")
+    for k in ks:
+        if k.get("name") == act:
+            return k
+    return ks[0]
+
+
+def upsert_site_key(rec: dict, name: str, value: str, fmt: str = "auto") -> dict:
+    """新增或更新一把 Key（同名视为更新）。返回那把 Key。"""
+    name = (name or "").strip()
+    ks = rec.setdefault("keys", [])
+    if not isinstance(ks, list):
+        ks = rec["keys"] = []
+    k = find_site_key(rec, name)
+    if k is None:
+        k = {"name": name, "format": fmt, "key": value}
+        ks.append(k)
+    else:
+        k["format"] = fmt or k.get("format") or "auto"
+        k["key"] = value
+    rec["active_key"] = name
+    rec["key"] = value
+    return k
+
+
+def remove_site_key(rec: dict, name: str) -> bool:
+    ks = rec.get("keys")
+    if not isinstance(ks, list):
+        return False
+    for i, k in enumerate(ks):
+        if isinstance(k, dict) and k.get("name") == name:
+            ks.pop(i)
+            if rec.get("active_key") == name:
+                rec["active_key"] = ks[0]["name"] if ks else ""
+                rec["key"] = ks[0].get("key", "") if ks else ""
+            return True
+    return False
+
+# 添加/编辑站点对话框里的「常用预设」快速填充
+QUICK_PRESETS = [
+    ("自定义 / 中转站", ""),
+    ("OpenAI 官方", "https://api.openai.com"),
+    ("Anthropic 官方", "https://api.anthropic.com"),
+    ("Gemini 官方", "https://generativelanguage.googleapis.com"),
+    ("DeepSeek", "https://api.deepseek.com"),
+    ("硅基流动 SiliconFlow", "https://api.siliconflow.cn"),
+    ("OpenRouter", "https://openrouter.ai/api/v1"),
+    ("阿里云百炼", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
+    ("智谱 GLM", "https://open.bigmodel.cn/api/paas/v4"),
+    ("月之暗面 Kimi", "https://api.moonshot.cn"),
+]
+
+COLORS = {
+    "ok": "#0a7d32",
+    "warn": "#b45309",
+    "risk": "#b91c1c",
+    "error": "#b91c1c",
+    "info": "#1f4e79",
+    "muted": "#6b7280",
+}
+
+LEVEL_LABEL = {
+    "ok": "✔ 校验",
+    "info": "ℹ 提示",
+    "warn": "⚠ 警告",
+    "risk": "⛔ 风险",
+    "error": "✘ 错误",
+}
+
+
+class ProbeApp:
+    def __init__(self, root):
+        import tkinter as tk
+        from tkinter import ttk
+
+        self.tk = tk
+        self.ttk = ttk
+        self.root = root
+        self.q: queue.Queue = queue.Queue()
+        self.stop_event = threading.Event()
+        self.busy = False
+        self.last_result: dict | None = None      # 第 2 步之后的结果（含两段信息）
+        self.site_result: dict | None = None      # 第 1 步的结果，供反复换模型重测
+        self.batch_rows: list[dict] = []
+        self._site_signature = ""                 # 记录第 1 步对应的「地址+Key」，变了就作废
+        self._save_job = None                     # 延迟写盘的 after 句柄
+        # 站点管理：sites 是用户添加的多个中转站，adhoc 是「自定义（临时）」那一格
+        self.sites: list[dict] = []
+        self.adhoc: dict = {"name": ADHOC_SITE, "url": "", "key": "", "model": ""}
+        self._active_site = ADHOC_SITE            # 当前已装载进输入框的那一格
+        # Claude Code 接入
+        self.cc_state: dict = {}                  # 最近一次 Anthropic 通道检测结果
+        self.codex_state: dict = {}               # 最近一次 OpenAI 通道检测结果
+        self.grok_state: dict = {}                # 最近一次 Grok 协议选择结果
+        self.cc_model_vars: dict = {}             # 别名 -> (StringVar, Combobox)
+        self.tab_claude = None
+        self.tab_codex = None
+        self.tab_grok = None
+
+        root.title(f"{APP_NAME} v{APP_VERSION}")
+        root.geometry("1180x760")
+        root.minsize(980, 640)
+        self._setup_style()
+        self._build_ui()
+        self._load_config()
+        self._refresh_cc_gate()                   # 启动时接入按钮是锁着的
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.root.after(80, self._pump)
+
+    # ---------------- 样式 ----------------
+    def _setup_style(self):
+        ttk = self.ttk
+        style = ttk.Style()
+        for theme in ("vista", "winnative", "clam"):
+            if theme in style.theme_names():
+                try:
+                    style.theme_use(theme)
+                    break
+                except Exception:
+                    pass
+        base_font = ("Microsoft YaHei UI", 9)
+        mono = ("Consolas", 9)
+        style.configure(".", font=base_font)
+        style.configure("Treeview", font=base_font, rowheight=22)
+        style.configure("Treeview.Heading", font=("Microsoft YaHei UI", 9, "bold"))
+        style.configure("Title.TLabel", font=("Microsoft YaHei UI", 12, "bold"))
+        style.configure("Hint.TLabel", foreground=COLORS["muted"])
+        self.mono_font = mono
+
+    # ---------------- 界面 ----------------
+    def _build_ui(self):
+        tk, ttk = self.tk, self.ttk
+
+        # 顶部：输入区
+        top = ttk.LabelFrame(self.root, text=" 连接信息 ")
+        top.pack(fill="x", padx=10, pady=(10, 6))
+
+        row1 = ttk.Frame(top)
+        row1.pack(fill="x", padx=8, pady=(8, 4))
+        ttk.Label(row1, text="站点").pack(side="left")
+        self.var_site = tk.StringVar(value=ADHOC_SITE)
+        self.cmb_site = ttk.Combobox(row1, textvariable=self.var_site, width=26,
+                                     values=[ADHOC_SITE], state="readonly")
+        self.cmb_site.pack(side="left", padx=(6, 6))
+        self.cmb_site.bind("<<ComboboxSelected>>", self._on_site_change)
+        ttk.Button(row1, text="＋ 添加站点", command=self.add_site).pack(side="left")
+        self.btn_edit_site = ttk.Button(row1, text="编辑", command=self.edit_site, state="disabled")
+        self.btn_edit_site.pack(side="left", padx=4)
+        self.btn_del_site = ttk.Button(row1, text="删除", command=self.delete_site, state="disabled")
+        self.btn_del_site.pack(side="left")
+
+        self.var_timeout = tk.StringVar(value=str(int(DEFAULT_TIMEOUT)))
+        ttk.Spinbox(row1, from_=3, to=180, increment=1, width=5,
+                    textvariable=self.var_timeout).pack(side="right")
+        ttk.Label(row1, text="超时(秒)").pack(side="right", padx=(0, 6))
+
+        row_url = ttk.Frame(top)
+        row_url.pack(fill="x", padx=8, pady=(0, 4))
+        ttk.Label(row_url, text="API 地址").pack(side="left")
+        self.var_url = tk.StringVar()
+        self.ent_url = ttk.Entry(row_url, textvariable=self.var_url, font=self.mono_font)
+        self.ent_url.pack(side="left", fill="x", expand=True, padx=(6, 0))
+        self.ent_url.bind("<Return>", lambda e: self.fetch_models())
+        self.ent_url.bind("<KeyRelease>", self._on_conn_changed)
+
+        row2 = ttk.Frame(top)
+        row2.pack(fill="x", padx=8, pady=(0, 4))
+        ttk.Label(row2, text="API Key").pack(side="left")
+        self.var_keyname = tk.StringVar()
+        self.cmb_key = ttk.Combobox(row2, textvariable=self.var_keyname, width=15,
+                                    state="readonly", values=[])
+        self.cmb_key.pack(side="left", padx=(6, 4))
+        self.cmb_key.bind("<<ComboboxSelected>>", self._on_key_change)
+        self.var_key = tk.StringVar()
+        self.ent_key = ttk.Entry(row2, textvariable=self.var_key, show="*", font=self.mono_font)
+        self.ent_key.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        self.ent_key.bind("<Return>", lambda e: self.fetch_models())
+        self.ent_key.bind("<KeyRelease>", self._on_conn_changed)
+        self.var_show = tk.BooleanVar(value=False)
+        ttk.Checkbutton(row2, text="显示", variable=self.var_show,
+                        command=self._toggle_key).pack(side="left")
+        ttk.Button(row2, text="＋存为 Key", command=self.add_site_key).pack(side="left", padx=(8, 0))
+        self.btn_key_del = ttk.Button(row2, text="－删除", command=self.delete_site_key,
+                                      state="disabled")
+        self.btn_key_del.pack(side="left", padx=(4, 0))
+
+        ttk.Label(row2, text="指定模型").pack(side="left", padx=(14, 0))
+        self.var_model = tk.StringVar()
+        ent_model = ttk.Entry(row2, textvariable=self.var_model, width=26, font=self.mono_font)
+        ent_model.pack(side="left", padx=(6, 0))
+        ent_model.bind("<Return>", lambda e: self.run_generation())
+
+        row3 = ttk.Frame(top)
+        row3.pack(fill="x", padx=8, pady=(0, 8))
+        ttk.Label(row3, text="额外代理").pack(side="left", padx=(0, 4))
+        self.var_proxy_url = tk.StringVar()
+        self.ent_proxy = ttk.Entry(row3, textvariable=self.var_proxy_url, width=20,
+                                   font=self.mono_font)
+        self.ent_proxy.pack(side="left", padx=(4, 0))
+        self.ent_proxy.bind("<FocusOut>", lambda e: self._on_proxy_change())
+        self.ent_proxy.bind("<Return>", lambda e: self._on_proxy_change())
+        ttk.Label(row3, text="（默认「系统代理 ∥ 直连」并行；填了就改走这条，可留空）",
+                  style="Hint.TLabel").pack(side="left", padx=(4, 0))
+        self.var_verify = tk.BooleanVar(value=True)
+        ttk.Checkbutton(row3, text="校验 TLS 证书（自签站可取消）",
+                        variable=self.var_verify).pack(side="left", padx=(12, 0))
+        self.var_deep = tk.BooleanVar(value=True)
+        ttk.Checkbutton(row3, text="深度检测（补测 usage）",
+                        variable=self.var_deep).pack(side="left", padx=(12, 0))
+        self.var_remember = tk.BooleanVar(value=False)
+        ttk.Checkbutton(row3, text="记住 Key（本机加密保存，含批量列表）",
+                        variable=self.var_remember,
+                        command=self._on_remember_toggle).pack(side="left", padx=(12, 0))
+        ttk.Button(row3, text="清除已存 Key",
+                   command=self.clear_saved_key).pack(side="left", padx=(8, 0))
+        ttk.Label(row3, text=f"配置：{CONFIG_PATH}", style="Hint.TLabel").pack(side="right")
+
+        btns = ttk.Frame(top)
+        btns.pack(fill="x", padx=8, pady=(0, 8))
+        self.btn_list = ttk.Button(btns, text="①  获取模型列表", command=self.fetch_models)
+        self.btn_list.pack(side="left")
+        self.btn_gen = ttk.Button(btns, text="②  对选中模型发测试", command=self.run_generation,
+                                  state="disabled")
+        self.btn_gen.pack(side="left", padx=6)
+        ttk.Button(btns, text="③  接入 Claude Code",
+                   command=self.goto_claude_tab).pack(side="left", padx=6)
+        ttk.Button(btns, text="④  接入 Codex",
+                   command=self.goto_codex_tab).pack(side="left", padx=6)
+        ttk.Button(btns, text="⑤  接入 Grok",
+                   command=self.goto_grok_tab).pack(side="left", padx=6)
+        self.btn_flow = ttk.Button(btns, text="▶  全流程（探测 → 测速 → 接入）",
+                                   command=self.run_full_flow)
+        self.btn_flow.pack(side="left", padx=(14, 4))
+        self.btn_stop = ttk.Button(btns, text="■  停止", command=self.stop, state="disabled")
+        self.btn_stop.pack(side="left", padx=6)
+        ttk.Button(btns, text="复制结论", command=self.copy_verdict).pack(side="left", padx=(18, 4))
+        ttk.Button(btns, text="导出 JSON", command=lambda: self.export_last("json")).pack(side="left", padx=4)
+        ttk.Button(btns, text="导出 CSV", command=lambda: self.export_last("csv")).pack(side="left", padx=4)
+        self.lbl_status = ttk.Label(btns, text="就绪", style="Hint.TLabel")
+        self.lbl_status.pack(side="right")
+
+        # 中部：标签页
+        self.nb = ttk.Notebook(self.root)
+        self.nb.pack(fill="both", expand=True, padx=10, pady=(0, 6))
+
+        self._build_tab_overview()
+        self._build_tab_models()
+        self._build_tab_batch()
+        self._build_tab_claude()
+        self._build_tab_codex()
+        self._build_tab_grok()
+        self._build_tab_log()
+
+        # 底部状态
+        bottom = ttk.Frame(self.root)
+        bottom.pack(fill="x", padx=10, pady=(0, 8))
+        self.lbl_summary = ttk.Label(bottom, text="第 ① 步拉取模型列表 → 在「模型列表」里挑一个模型 → 第 ② 步发测试。"
+                                                 "地址支持直接粘贴 https://xxx.com/v1/chat/completions 这种完整写法。",
+                                     style="Hint.TLabel")
+        self.lbl_summary.pack(side="left")
+
+    def _build_tab_overview(self):
+        ttk = self.ttk
+        frame = ttk.Frame(self.nb)
+        self.nb.add(frame, text="  概览  ")
+
+        self.tv_ov = ttk.Treeview(frame, columns=("item", "value"), show="headings", height=18)
+        self.tv_ov.heading("item", text="项目")
+        self.tv_ov.heading("value", text="结果")
+        self.tv_ov.column("item", width=150, anchor="w", stretch=False)
+        self.tv_ov.column("value", width=900, anchor="w")
+        vs = ttk.Scrollbar(frame, orient="vertical", command=self.tv_ov.yview)
+        self.tv_ov.configure(yscrollcommand=vs.set)
+        self.tv_ov.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=6)
+        vs.pack(side="right", fill="y", pady=6, padx=(0, 6))
+        for lvl, color in COLORS.items():
+            self.tv_ov.tag_configure(lvl, foreground=color)
+        self.tv_ov.tag_configure("head", font=("Microsoft YaHei UI", 10, "bold"))
+
+    def _build_tab_models(self):
+        tk, ttk = self.tk, self.ttk
+        frame = ttk.Frame(self.nb)
+        self.nb.add(frame, text="  模型列表  ")
+
+        bar = ttk.Frame(frame)
+        bar.pack(fill="x", padx=6, pady=(6, 0))
+        ttk.Label(bar, text="过滤").pack(side="left")
+        self.var_filter = tk.StringVar()
+        ent = ttk.Entry(bar, textvariable=self.var_filter, width=32, font=self.mono_font)
+        ent.pack(side="left", padx=6)
+        ent.bind("<KeyRelease>", lambda e: self._refresh_models())
+        self.var_only_main = tk.BooleanVar(value=False)
+        ttk.Checkbutton(bar, text="只看主流模型", variable=self.var_only_main,
+                        command=self._refresh_models).pack(side="left", padx=8)
+        ttk.Button(bar, text="复制全部模型名", command=self.copy_models).pack(side="left", padx=6)
+        ttk.Button(bar, text="导出模型列表", command=self.export_models).pack(side="left")
+        self.lbl_models = ttk.Label(bar, text="（尚未测试）", style="Hint.TLabel")
+        self.lbl_models.pack(side="right", padx=6)
+
+        bar2 = ttk.Frame(frame)
+        bar2.pack(fill="x", padx=6, pady=(6, 0))
+        ttk.Label(bar2, text="当前选中：").pack(side="left")
+        self.lbl_picked = ttk.Label(bar2, text="（未选择）", font=self.mono_font,
+                                    foreground=COLORS["info"])
+        self.lbl_picked.pack(side="left")
+        ttk.Button(bar2, text="②  用选中模型发测试",
+                   command=self.run_generation).pack(side="left", padx=10)
+        ttk.Label(bar2, text="单击选中 / 双击直接测试；列表里没有的模型，可直接在上方「指定模型」手写。",
+                  style="Hint.TLabel").pack(side="left", padx=4)
+
+        body = ttk.Frame(frame)
+        body.pack(fill="both", expand=True, padx=6, pady=6)
+        self.tv_models = ttk.Treeview(body, columns=("idx", "id", "tag", "owner"),
+                                      show="headings", selectmode="browse")
+        for col, txt, w, anchor in (("idx", "#", 60, "e"), ("id", "模型 ID", 520, "w"),
+                                    ("tag", "标记", 120, "w"), ("owner", "归属/备注", 220, "w")):
+            self.tv_models.heading(col, text=txt)
+            self.tv_models.column(col, width=w, anchor=anchor, stretch=(col == "id"))
+        vs = ttk.Scrollbar(body, orient="vertical", command=self.tv_models.yview)
+        self.tv_models.configure(yscrollcommand=vs.set)
+        self.tv_models.pack(side="left", fill="both", expand=True)
+        vs.pack(side="right", fill="y")
+        self.tv_models.bind("<<TreeviewSelect>>", self._on_model_select)
+        self.tv_models.bind("<Double-1>", self._on_model_dclick)
+
+    def _build_tab_batch(self):
+        tk, ttk = self.tk, self.ttk
+        frame = ttk.Frame(self.nb)
+        self.nb.add(frame, text="  批量测试  ")
+
+        left = ttk.LabelFrame(frame, text=" 每行一个站点：地址 | Key | [模型]（批量模式自动挑模型；想指定就写第三列） ")
+        left.pack(side="left", fill="both", expand=False, padx=(6, 4), pady=6)
+        self.txt_batch = tk.Text(left, width=46, height=20, font=self.mono_font, wrap="none")
+        self.txt_batch.pack(fill="both", expand=True, padx=6, pady=6)
+        self.txt_batch.insert("1.0",
+                              "# 示例（以 # 开头的行会被忽略）\n"
+                              "https://api.deepseek.com | sk-xxxxxxxx | deepseek-chat\n"
+                              "https://your-relay.com/v1 | sk-yyyyyyyy\n")
+        self.txt_batch.bind("<KeyRelease>", lambda e: self._schedule_save())
+
+        right = ttk.Frame(frame)
+        right.pack(side="left", fill="both", expand=True, padx=(4, 6), pady=6)
+
+        bar = ttk.Frame(right)
+        bar.pack(fill="x")
+        self.btn_batch = ttk.Button(bar, text="▶  开始批量测试", command=self.start_batch)
+        self.btn_batch.pack(side="left")
+        ttk.Label(bar, text="并发").pack(side="left", padx=(10, 2))
+        self.var_workers = tk.StringVar(value="2")
+        ttk.Spinbox(bar, from_=1, to=8, width=4, textvariable=self.var_workers).pack(side="left")
+        ttk.Button(bar, text="导出 CSV", command=lambda: self.export_batch("csv")).pack(side="left", padx=8)
+        ttk.Button(bar, text="导出 JSON", command=lambda: self.export_batch("json")).pack(side="left")
+        ttk.Button(bar, text="导入站点列表", command=self.import_sites_to_batch).pack(side="left", padx=8)
+        ttk.Button(bar, text="清空结果", command=self._clear_batch).pack(side="left", padx=8)
+
+        cols = ("url", "proto", "status", "ms", "first", "n", "models", "panel", "verdict")
+        heads = (("url", "地址", 240), ("proto", "协议", 110), ("status", "HTTP", 60),
+                 ("ms", "列表ms", 70), ("first", "首字ms", 70), ("n", "模型数", 70),
+                 ("models", "请求→返回模型", 260), ("panel", "指纹", 150), ("verdict", "结论", 340))
+        self.tv_batch = ttk.Treeview(right, columns=cols, show="headings")
+        for c, txt, w in heads:
+            self.tv_batch.heading(c, text=txt)
+            self.tv_batch.column(c, width=w, anchor="w", stretch=(c in ("verdict", "url")))
+        vs = ttk.Scrollbar(right, orient="vertical", command=self.tv_batch.yview)
+        self.tv_batch.configure(yscrollcommand=vs.set)
+        self.tv_batch.pack(side="left", fill="both", expand=True, pady=(6, 0))
+        vs.pack(side="right", fill="y", pady=(6, 0))
+        for lvl, color in COLORS.items():
+            self.tv_batch.tag_configure(lvl, foreground=color)
+        self.tv_batch.bind("<Double-1>", self._on_batch_dclick)
+
+    def _build_tab_claude(self):
+        tk, ttk = self.tk, self.ttk
+        frame = ttk.Frame(self.nb)
+        self.nb.add(frame, text="  Claude Code  ")
+        self.tab_claude = frame
+
+        # ---- 通道检测 ----
+        head = ttk.LabelFrame(
+            frame, text=" ③ 接入 Claude Code —— 前提：网关实现 Anthropic Messages 协议（POST <BASE>/v1/messages）；CLI 需 2.x ")
+        head.pack(fill="x", padx=6, pady=(6, 4))
+        r1 = ttk.Frame(head)
+        r1.pack(fill="x", padx=8, pady=(6, 2))
+        self.btn_cc_check = ttk.Button(r1, text="检测通道 /v1/messages", command=self.cc_check)
+        self.btn_cc_check.pack(side="left")
+        ttk.Label(r1, text="（用当前选中站点的地址与 Key；先过这一步再写配置）",
+                  style="Hint.TLabel").pack(side="left", padx=6)
+        self.lbl_cc_cli = ttk.Label(r1, text="", style="Hint.TLabel")
+        self.lbl_cc_cli.pack(side="right")
+
+        self.tv_cc = ttk.Treeview(head, columns=("k", "v"), show="headings", height=6)
+        self.tv_cc.heading("k", text="项目")
+        self.tv_cc.heading("v", text="结果")
+        self.tv_cc.column("k", width=110, anchor="w", stretch=False)
+        self.tv_cc.column("v", width=880, anchor="w")
+        self.tv_cc.pack(fill="x", padx=8, pady=(2, 8))
+        for lvl, color in COLORS.items():
+            self.tv_cc.tag_configure(lvl, foreground=color)
+
+        # ---- 模型映射 ----
+        mapf = ttk.LabelFrame(
+            frame, text=" 模型映射：CLI 别名 → 网关真实模型 id（不做映射 = 拿官方 id 去打你的网关 = 404 model_not_found） ")
+        mapf.pack(fill="x", padx=6, pady=4)
+        grid = ttk.Frame(mapf)
+        grid.pack(fill="x", padx=8, pady=(6, 2))
+        pairs = [("默认模型", "default"), ("sonnet", "sonnet"), ("opus", "opus"),
+                 ("haiku", "haiku"), ("fable", "fable")]
+        for i, (label, key) in enumerate(pairs):
+            row, col = divmod(i, 2)
+            ttk.Label(grid, text=label).grid(row=row, column=col * 3, sticky="w",
+                                             padx=(0, 4), pady=3)
+            var = tk.StringVar()
+            cmb = ttk.Combobox(grid, textvariable=var, width=32, font=self.mono_font)
+            cmb.grid(row=row, column=col * 3 + 1, sticky="we", padx=(0, 16), pady=3)
+            self.cc_model_vars[key] = (var, cmb)
+        grid.columnconfigure(1, weight=1)
+        grid.columnconfigure(4, weight=1)
+        ttk.Label(grid, text="使用哪个 Key").grid(row=2, column=0, sticky="w", padx=(0, 4), pady=3)
+        self.var_cc_key = tk.StringVar()
+        self.cmb_cc_key = ttk.Combobox(grid, textvariable=self.var_cc_key, width=32,
+                                       state="readonly")
+        self.cmb_cc_key.grid(row=2, column=1, sticky="we", padx=(0, 16), pady=3)
+        ttk.Label(grid, text="（同一站点可存多把 Key，这里默认挑 Anthropic 格式的那把）",
+                  style="Hint.TLabel").grid(row=2, column=2, columnspan=2, sticky="w")
+        ttk.Label(grid, text="上下文长度（K）").grid(row=3, column=0, sticky="w",
+                                                    padx=(0, 4), pady=3)
+        self.var_cc_ctx = tk.StringVar()
+        ent_cc_ctx = ttk.Entry(grid, textvariable=self.var_cc_ctx, width=32,
+                               font=self.mono_font)
+        ent_cc_ctx.grid(row=3, column=1, sticky="we", padx=(0, 16), pady=3)
+        ttk.Label(grid, text=CONTEXT_K_HINT + "；仅对 Claude Code 不认识的模型 id 生效",
+                  style="Hint.TLabel").grid(row=3, column=2, columnspan=3, sticky="w")
+        self._bind_ctx_save(ent_cc_ctx)
+        r2 = ttk.Frame(mapf)
+        r2.pack(fill="x", padx=8, pady=(0, 6))
+        ttk.Button(r2, text="从当前站点模型列表自动匹配",
+                   command=self.cc_autofill).pack(side="left")
+        ttk.Label(r2, text="（也可直接手打 id；列表为空就先做上面的第 ① 步）",
+                  style="Hint.TLabel").pack(side="left", padx=6)
+
+        # ---- 接入方式 ----
+        act = ttk.LabelFrame(frame, text=" 接入方式（可多选） ")
+        act.pack(fill="x", padx=6, pady=4)
+        self.cc_write_settings = tk.BooleanVar(value=True)
+        self.cc_write_launcher = tk.BooleanVar(value=False)
+        self.cc_write_isolated = tk.BooleanVar(value=False)
+        self.cc_run_verify = tk.BooleanVar(value=True)
+        ttk.Checkbutton(act, text="写入用户配置 ~/.claude/settings.json（合并 + 自动备份）",
+                        variable=self.cc_write_settings).pack(anchor="w", padx=8, pady=(6, 2))
+        r3 = ttk.Frame(act)
+        r3.pack(fill="x", padx=8, pady=2)
+        ttk.Checkbutton(r3, text="生成启动脚本（设环境变量，不落盘 Key）",
+                        variable=self.cc_write_launcher).pack(side="left")
+        ttk.Checkbutton(r3, text="生成隔离配置目录（CLAUDE_CONFIG_DIR，与正式配置互不干扰）",
+                        variable=self.cc_write_isolated).pack(side="left", padx=(16, 0))
+        r4 = ttk.Frame(act)
+        r4.pack(fill="x", padx=8, pady=(2, 4))
+        ttk.Checkbutton(r4, text="运行端到端验证（claude -p PONG，隔离目录，不碰你的正式配置）",
+                        variable=self.cc_run_verify).pack(side="left")
+        self.lbl_cc_target = ttk.Label(r4, text=f"配置文件：{CLAUDE_SETTINGS_PATH}",
+                                       style="Hint.TLabel")
+        self.lbl_cc_target.pack(side="right")
+        r5 = ttk.Frame(act)
+        r5.pack(fill="x", padx=8, pady=(0, 8))
+        self.btn_cc_install = ttk.Button(r5, text="▶  一键接入", command=self.cc_install,
+                                         state="disabled")
+        self.btn_cc_install.pack(side="left")
+        self.lbl_cc_gate = ttk.Label(r5, text="", style="Hint.TLabel")
+        self.lbl_cc_gate.pack(side="left", padx=8)
+        ttk.Button(r5, text="仅预览配置", command=self.cc_preview).pack(side="left", padx=4)
+        ttk.Button(r5, text="复制临时命令", command=self.cc_copy_oneliner).pack(side="left", padx=4)
+        ttk.Button(r5, text="恢复上次备份", command=self.cc_restore).pack(side="left", padx=(14, 4))
+        ttk.Button(r5, text="打开 ~/.claude", command=self.cc_open_dir).pack(side="left")
+        ttk.Button(r5, text="打开输出目录",
+                   command=lambda: self._open_path(CLAUDE_OUTPUT_DIR)).pack(side="left", padx=4)
+
+        # ---- 日志 ----
+        logf = ttk.LabelFrame(frame, text=" 执行日志 ")
+        logf.pack(fill="both", expand=True, padx=6, pady=(0, 6))
+        self.txt_cc = tk.Text(logf, font=self.mono_font, wrap="word", height=8,
+                              background="#111827", foreground="#e5e7eb",
+                              insertbackground="#e5e7eb")
+        vs = ttk.Scrollbar(logf, orient="vertical", command=self.txt_cc.yview)
+        self.txt_cc.configure(yscrollcommand=vs.set)
+        self.txt_cc.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=6)
+        vs.pack(side="right", fill="y", pady=6, padx=(0, 6))
+
+    def _build_tab_codex(self):
+        tk, ttk = self.tk, self.ttk
+        frame = ttk.Frame(self.nb)
+        self.nb.add(frame, text="  Codex (OpenAI)  ")
+        self.tab_codex = frame
+
+        head = ttk.LabelFrame(
+            frame, text=" ④ 接入 Codex —— 前提：网关提供 /v1/responses 或 /v1/chat/completions；CLI 与桌面版共用同一份 config.toml ")
+        head.pack(fill="x", padx=6, pady=(6, 4))
+        r1 = ttk.Frame(head)
+        r1.pack(fill="x", padx=8, pady=(6, 2))
+        self.btn_codex_check = ttk.Button(r1, text="检测通道（responses / chat）",
+                                          command=self.codex_check)
+        self.btn_codex_check.pack(side="left")
+        ttk.Label(r1, text="（用当前站点的地址与 Key；结果里的 wire_api 会写进配置）",
+                  style="Hint.TLabel").pack(side="left", padx=6)
+        self.lbl_codex_cli = ttk.Label(r1, text="", style="Hint.TLabel")
+        self.lbl_codex_cli.pack(side="right")
+
+        self.tv_codex = ttk.Treeview(head, columns=("k", "v"), show="headings", height=6)
+        self.tv_codex.heading("k", text="项目")
+        self.tv_codex.heading("v", text="结果")
+        self.tv_codex.column("k", width=110, anchor="w", stretch=False)
+        self.tv_codex.column("v", width=880, anchor="w")
+        self.tv_codex.pack(fill="x", padx=8, pady=(2, 8))
+        for lvl, color in COLORS.items():
+            self.tv_codex.tag_configure(lvl, foreground=color)
+
+        mapf = ttk.LabelFrame(frame, text=" 模型与 Provider（写入 ~/.codex/config.toml） ")
+        mapf.pack(fill="x", padx=6, pady=4)
+        grid = ttk.Frame(mapf)
+        grid.pack(fill="x", padx=8, pady=(6, 2))
+        ttk.Label(grid, text="默认模型").grid(row=0, column=0, sticky="w", padx=(0, 4), pady=3)
+        self.var_codex_model = tk.StringVar()
+        self.cmb_codex_model = ttk.Combobox(grid, textvariable=self.var_codex_model, width=32,
+                                            font=self.mono_font)
+        self.cmb_codex_model.grid(row=0, column=1, sticky="we", padx=(0, 16), pady=3)
+        ttk.Label(grid, text="base_url").grid(row=0, column=2, sticky="w", padx=(0, 4), pady=3)
+        self.var_codex_base = tk.StringVar()
+        ttk.Entry(grid, textvariable=self.var_codex_base, width=34,
+                  font=self.mono_font).grid(row=0, column=3, sticky="we", pady=3)
+        ttk.Label(grid, text="Key 环境变量").grid(row=1, column=0, sticky="w", padx=(0, 4), pady=3)
+        self.var_codex_envkey = tk.StringVar(value="CODEX_API_KEY")
+        ttk.Entry(grid, textvariable=self.var_codex_envkey, width=32,
+                  font=self.mono_font).grid(row=1, column=1, sticky="we", padx=(0, 16), pady=3)
+        ttk.Label(grid, text="wire_api").grid(row=1, column=2, sticky="w", padx=(0, 4), pady=3)
+        self.var_codex_wire = tk.StringVar(value="（检测后自动填）")
+        c = ttk.Combobox(grid, textvariable=self.var_codex_wire, width=14, state="readonly",
+                         values=["responses", "chat"])
+        c.grid(row=1, column=3, sticky="w", pady=3)
+        grid.columnconfigure(1, weight=1)
+        grid.columnconfigure(3, weight=1)
+        ttk.Label(grid, text="使用哪个 Key").grid(row=2, column=0, sticky="w", padx=(0, 4), pady=3)
+        self.var_codex_key = tk.StringVar()
+        self.cmb_codex_key = ttk.Combobox(grid, textvariable=self.var_codex_key, width=32,
+                                          state="readonly")
+        self.cmb_codex_key.grid(row=2, column=1, sticky="we", padx=(0, 16), pady=3)
+        ttk.Label(grid, text="（默认挑 OpenAI 格式的那把）",
+                  style="Hint.TLabel").grid(row=2, column=2, columnspan=2, sticky="w")
+        ttk.Label(grid, text="上下文长度（K）").grid(row=3, column=0, sticky="w",
+                                                    padx=(0, 4), pady=3)
+        self.var_codex_ctx = tk.StringVar()
+        ent_codex_ctx = ttk.Entry(grid, textvariable=self.var_codex_ctx, width=32,
+                                  font=self.mono_font)
+        ent_codex_ctx.grid(row=3, column=1, sticky="we", padx=(0, 16), pady=3)
+        ttk.Label(grid, text=CONTEXT_K_HINT + "（如 256 → 256000 tokens）",
+                  style="Hint.TLabel").grid(row=3, column=2, columnspan=2, sticky="w")
+        self._bind_ctx_save(ent_codex_ctx)
+        r2 = ttk.Frame(mapf)
+        r2.pack(fill="x", padx=8, pady=(0, 6))
+        ttk.Button(r2, text="从当前站点模型列表挑一个",
+                   command=self.codex_autofill).pack(side="left")
+        ttk.Label(r2, text="（优先 gpt-6 / gpt-5 / gpt-4.1 / o 系列；也可手打）",
+                  style="Hint.TLabel").pack(side="left", padx=6)
+
+        act = ttk.LabelFrame(frame, text=" 接入方式（可多选；桌面版与 CLI 共用同一份 config.toml） ")
+        act.pack(fill="x", padx=6, pady=4)
+        self.codex_write_config = tk.BooleanVar(value=True)
+        self.codex_write_env = tk.BooleanVar(value=True)
+        self.codex_write_sysenv = tk.BooleanVar(value=True)
+        self.codex_write_launcher = tk.BooleanVar(value=False)
+        self.codex_run_verify = tk.BooleanVar(value=True)
+        ttk.Checkbutton(act, text="写入 ~/.codex/config.toml（只合并 provider 与 model，改前备份）",
+                        variable=self.codex_write_config).pack(anchor="w", padx=8, pady=(6, 2))
+        ttk.Checkbutton(act, text="写入用户级环境变量（★Codex 桌面版靠它取 Key；改完需重启桌面版）",
+                        variable=self.codex_write_sysenv).pack(anchor="w", padx=8, pady=2)
+        ttk.Checkbutton(act, text="把 Key 写进 ~/.codex/.env（CLI 的 env_key 机制；明文，改前备份）",
+                        variable=self.codex_write_env).pack(anchor="w", padx=8, pady=2)
+        rd = ttk.Frame(act)
+        rd.pack(fill="x", padx=8, pady=(2, 2))
+        ttk.Button(rd, text="打开 Codex 桌面版",
+                   command=self.codex_open_desktop).pack(side="left")
+        self.lbl_codex_desktop = ttk.Label(rd, text="", style="Hint.TLabel")
+        self.lbl_codex_desktop.pack(side="left", padx=8)
+        r3 = ttk.Frame(act)
+        r3.pack(fill="x", padx=8, pady=2)
+        ttk.Checkbutton(r3, text="生成启动脚本（临时设环境变量再启动 codex）",
+                        variable=self.codex_write_launcher).pack(side="left")
+        ttk.Checkbutton(r3, text="运行端到端验证（codex exec PONG，隔离 CODEX_HOME）",
+                        variable=self.codex_run_verify).pack(side="left", padx=(16, 0))
+        r4 = ttk.Frame(act)
+        r4.pack(fill="x", padx=8, pady=(2, 8))
+        self.btn_codex_install = ttk.Button(r4, text="▶  一键接入 Codex", command=self.codex_install,
+                                            state="disabled")
+        self.btn_codex_install.pack(side="left")
+        self.lbl_codex_gate = ttk.Label(r4, text="", style="Hint.TLabel")
+        self.lbl_codex_gate.pack(side="left", padx=8)
+        ttk.Button(r4, text="仅预览配置", command=self.codex_preview).pack(side="left", padx=4)
+        ttk.Button(r4, text="复制临时命令", command=self.codex_copy_oneliner).pack(side="left", padx=4)
+        ttk.Button(r4, text="恢复上次备份", command=self.codex_restore).pack(side="left", padx=(14, 4))
+        ttk.Button(r4, text="打开 ~/.codex", command=self.codex_open_dir).pack(side="left")
+
+        logf = ttk.LabelFrame(frame, text=" 执行日志 ")
+        logf.pack(fill="both", expand=True, padx=6, pady=(0, 6))
+        self.txt_codex = tk.Text(logf, font=self.mono_font, wrap="word", height=8,
+                                 background="#111827", foreground="#e5e7eb",
+                                 insertbackground="#e5e7eb")
+        vs = ttk.Scrollbar(logf, orient="vertical", command=self.txt_codex.yview)
+        self.txt_codex.configure(yscrollcommand=vs.set)
+        self.txt_codex.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=6)
+        vs.pack(side="right", fill="y", pady=6, padx=(0, 6))
+
+    def _build_tab_grok(self):
+        tk, ttk = self.tk, self.ttk
+        frame = ttk.Frame(self.nb)
+        self.nb.add(frame, text="  Grok Build  ")
+        self.tab_grok = frame
+
+        head = ttk.LabelFrame(
+            frame, text=" ⑤ 接入 Grok Build —— 写入 ~/.grok/config.toml 的 [model.api_probe]；"
+                        "支持 chat_completions / responses / messages 三种协议 ")
+        head.pack(fill="x", padx=6, pady=(6, 4))
+        r1 = ttk.Frame(head)
+        r1.pack(fill="x", padx=8, pady=(6, 2))
+        self.btn_grok_check = ttk.Button(r1, text="自动选协议（测三条通道）",
+                                         command=self.grok_check)
+        self.btn_grok_check.pack(side="left")
+        ttk.Label(r1, text="（优先 Chat Completions，其次 Responses / Anthropic Messages）",
+                  style="Hint.TLabel").pack(side="left", padx=6)
+        self.lbl_grok_cli = ttk.Label(r1, text="", style="Hint.TLabel")
+        self.lbl_grok_cli.pack(side="right")
+
+        self.tv_grok = ttk.Treeview(head, columns=("k", "v"), show="headings", height=6)
+        self.tv_grok.heading("k", text="项目")
+        self.tv_grok.heading("v", text="结果")
+        self.tv_grok.column("k", width=130, anchor="w", stretch=False)
+        self.tv_grok.column("v", width=860, anchor="w")
+        self.tv_grok.pack(fill="x", padx=8, pady=(2, 8))
+        for lvl, color in COLORS.items():
+            self.tv_grok.tag_configure(lvl, foreground=color)
+
+        mapf = ttk.LabelFrame(frame, text=" 模型与协议（写入 ~/.grok/config.toml） ")
+        mapf.pack(fill="x", padx=6, pady=4)
+        grid = ttk.Frame(mapf)
+        grid.pack(fill="x", padx=8, pady=(6, 2))
+        ttk.Label(grid, text="默认模型").grid(row=0, column=0, sticky="w", padx=(0, 4), pady=3)
+        self.var_grok_model = tk.StringVar()
+        self.cmb_grok_model = ttk.Combobox(grid, textvariable=self.var_grok_model, width=32,
+                                           font=self.mono_font)
+        self.cmb_grok_model.grid(row=0, column=1, sticky="we", padx=(0, 16), pady=3)
+        ttk.Label(grid, text="base_url").grid(row=0, column=2, sticky="w", padx=(0, 4), pady=3)
+        self.var_grok_base = tk.StringVar()
+        ttk.Entry(grid, textvariable=self.var_grok_base, width=34,
+                  font=self.mono_font).grid(row=0, column=3, sticky="we", pady=3)
+        ttk.Label(grid, text="api_backend").grid(row=1, column=0, sticky="w", padx=(0, 4), pady=3)
+        self.var_grok_backend = tk.StringVar(value="chat_completions")
+        ttk.Combobox(grid, textvariable=self.var_grok_backend, width=32, state="readonly",
+                     values=list(GROK_BACKENDS)).grid(row=1, column=1, sticky="we",
+                                                      padx=(0, 16), pady=3)
+        ttk.Label(grid, text="Key 环境变量").grid(row=1, column=2, sticky="w", padx=(0, 4), pady=3)
+        self.var_grok_envkey = tk.StringVar(value=GROK_ENV_KEY_DEFAULT)
+        ttk.Entry(grid, textvariable=self.var_grok_envkey, width=34,
+                  font=self.mono_font).grid(row=1, column=3, sticky="we", pady=3)
+        ttk.Label(grid, text="上下文长度（K）").grid(row=2, column=0, sticky="w",
+                                                    padx=(0, 4), pady=3)
+        self.var_grok_ctx = tk.StringVar()
+        ent_grok_ctx = ttk.Entry(grid, textvariable=self.var_grok_ctx, width=32,
+                                 font=self.mono_font)
+        ent_grok_ctx.grid(row=2, column=1, sticky="we", padx=(0, 16), pady=3)
+        self._bind_ctx_save(ent_grok_ctx)
+        ttk.Label(grid, text=CONTEXT_K_HINT + "（如 200 → 200000 tokens）",
+                  style="Hint.TLabel").grid(row=3, column=0, columnspan=4, sticky="w",
+                                            padx=(0, 4), pady=(0, 2))
+        ttk.Label(grid, text="使用哪个 Key").grid(row=2, column=2, sticky="w", padx=(0, 4), pady=3)
+        self.var_grok_key = tk.StringVar()
+        self.cmb_grok_key = ttk.Combobox(grid, textvariable=self.var_grok_key, width=34,
+                                         state="readonly")
+        self.cmb_grok_key.grid(row=2, column=3, sticky="we", pady=3)
+        grid.columnconfigure(1, weight=1)
+        grid.columnconfigure(3, weight=1)
+        r2 = ttk.Frame(mapf)
+        r2.pack(fill="x", padx=8, pady=(0, 6))
+        ttk.Button(r2, text="从当前站点模型列表挑一个",
+                   command=self.grok_autofill).pack(side="left")
+        ttk.Label(r2, text="（优先 grok 系；也可手打。模型名会作为 [model] 里的 model id）",
+                  style="Hint.TLabel").pack(side="left", padx=6)
+
+        act = ttk.LabelFrame(frame, text=" 接入方式（可多选） ")
+        act.pack(fill="x", padx=6, pady=4)
+        self.grok_write_config = tk.BooleanVar(value=True)
+        self.grok_write_sysenv = tk.BooleanVar(value=True)
+        self.grok_write_inline = tk.BooleanVar(value=False)
+        self.grok_write_launcher = tk.BooleanVar(value=False)
+        self.grok_run_verify = tk.BooleanVar(value=True)
+        self.grok_set_default = tk.BooleanVar(value=True)
+        ttk.Checkbutton(act, text="写入 ~/.grok/config.toml（只加 [model.api_probe]，改前备份）",
+                        variable=self.grok_write_config).pack(anchor="w", padx=8, pady=(6, 2))
+        ttk.Checkbutton(act, text="写入用户级环境变量（推荐：Key 不进配置文件，Grok 的 env_key 从这里取）",
+                        variable=self.grok_write_sysenv).pack(anchor="w", padx=8, pady=2)
+        ttk.Checkbutton(act, text="改为把 Key 内联进 config.toml 的 api_key（明文，不推荐）",
+                        variable=self.grok_write_inline).pack(anchor="w", padx=8, pady=2)
+        ttk.Checkbutton(act, text="同时把 [models].default 指向这个模型（不勾则只是新增一个可选模型）",
+                        variable=self.grok_set_default).pack(anchor="w", padx=8, pady=2)
+        r3 = ttk.Frame(act)
+        r3.pack(fill="x", padx=8, pady=2)
+        ttk.Checkbutton(r3, text="生成启动脚本（临时设环境变量再启动 grok）",
+                        variable=self.grok_write_launcher).pack(side="left")
+        ttk.Checkbutton(r3, text="运行端到端验证（grok -p PONG）",
+                        variable=self.grok_run_verify).pack(side="left", padx=(16, 0))
+        r4 = ttk.Frame(act)
+        r4.pack(fill="x", padx=8, pady=(2, 8))
+        self.btn_grok_install = ttk.Button(r4, text="▶  一键接入 Grok Build",
+                                           command=self.grok_install, state="disabled")
+        self.btn_grok_install.pack(side="left")
+        self.lbl_grok_gate = ttk.Label(r4, text="", style="Hint.TLabel")
+        self.lbl_grok_gate.pack(side="left", padx=8)
+        ttk.Button(r4, text="仅预览配置", command=self.grok_preview).pack(side="left", padx=4)
+        ttk.Button(r4, text="恢复上次备份", command=self.grok_restore).pack(side="left", padx=(14, 4))
+        ttk.Button(r4, text="打开 ~/.grok", command=self.grok_open_dir).pack(side="left")
+
+        logf = ttk.LabelFrame(frame, text=" 执行日志 ")
+        logf.pack(fill="both", expand=True, padx=6, pady=(0, 6))
+        self.txt_grok = tk.Text(logf, font=self.mono_font, wrap="word", height=8,
+                                background="#111827", foreground="#e5e7eb",
+                                insertbackground="#e5e7eb")
+        vs = ttk.Scrollbar(logf, orient="vertical", command=self.txt_grok.yview)
+        self.txt_grok.configure(yscrollcommand=vs.set)
+        self.txt_grok.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=6)
+        vs.pack(side="right", fill="y", pady=6, padx=(0, 6))
+
+    def _build_tab_log(self):
+        tk, ttk = self.tk, self.ttk
+        frame = ttk.Frame(self.nb)
+        self.nb.add(frame, text="  原始日志  ")
+        bar = ttk.Frame(frame)
+        bar.pack(fill="x", padx=6, pady=(6, 0))
+        ttk.Button(bar, text="清空日志", command=lambda: self._log_clear()).pack(side="left")
+        ttk.Button(bar, text="复制日志", command=self.copy_log).pack(side="left", padx=6)
+        ttk.Label(bar, text="每个 HTTP 请求的地址、状态码、耗时；失败时含响应片段。",
+                  style="Hint.TLabel").pack(side="left", padx=10)
+        self.txt_log = tk.Text(frame, font=self.mono_font, wrap="word", state="disabled",
+                               background="#111827", foreground="#e5e7eb", insertbackground="#e5e7eb")
+        self.txt_log.pack(fill="both", expand=True, padx=6, pady=6)
+
+    # ---------------- 全流程（探测 → 测速 → 接入） ----------------
+    def run_full_flow(self):
+        """按用户要的顺序一条龙：输入地址+Key → 探测模型 → 测是否跑得动/流不流畅 → 准备接入 Claude Code。"""
+        if self.busy:
+            self._set_status("正在测试中，请稍候…")
+            return
+        base = self.var_url.get().strip()
+        if not base:
+            self._set_status("请先填写 API 地址")
+            return
+        key = self.var_key.get().strip()
+        model = self.var_model.get().strip()
+        if not model and self.cc_model_vars:
+            model = self.cc_model_vars["default"][0].get().strip()
+        self.stop_event.clear()
+        self._save_config()
+        self._log_clear()
+        self.busy = True
+        self.btn_list.configure(state="disabled")
+        self.btn_gen.configure(state="disabled")
+        self.btn_batch.configure(state="disabled")
+        self.btn_stop.configure(state="normal")
+        self._set_action_busy(True)
+        self.tv_ov.delete(*self.tv_ov.get_children())
+        self.tv_models.delete(*self.tv_models.get_children())
+        self.tv_cc.delete(*self.tv_cc.get_children())
+        self.site_result = None
+        self.last_result = None
+        self.cc_state = {}
+        self._set_status("全流程进行中…")
+        self.lbl_summary.configure(text=f"全流程：{base}")
+        self._cc_log_append("=" * 52)
+        self._cc_log_append(f"全流程开始：{base}（模型 {model or '自动挑一个'}）")
+        self._log_append(f"=== 全流程开始 {base} ===")
+        timeout = self._timeout()
+        verify = bool(self.var_verify.get())
+        deep = bool(self.var_deep.get())
+
+        def work():
+            try:
+                res = run_full_pipeline(
+                    base, key, model, timeout=timeout, verify=verify, deep=deep,
+                    cc_key=self._key_value_for(self.var_cc_key, "anthropic"),
+                    codex_key=self._key_value_for(self.var_codex_key, "openai"),
+                    log=self._log, stop_event=self.stop_event)
+                self.q.put(("flow_done", res))
+            except Exception as e:  # noqa: BLE001
+                self.q.put(("fatal", f"{type(e).__name__}: {e}"))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _render_flow(self, res: dict):
+        site = res.get("site") or {}
+        gen = res.get("gen") or site
+        ch = res.get("channel") or {}
+        if site:
+            self.site_result = site
+            self.last_result = site
+            self._site_signature = self._signature()
+            self._refresh_models()
+            self.lbl_models.configure(text=f"共 {len(site.get('models') or [])} 个模型")
+        self._render_overview(gen if gen else site)
+        self.cc_state = ch
+        if ch:
+            self._render_cc_check(ch)
+        och = res.get("channel_openai") or {}
+        self.codex_state = och
+        if och:
+            self._render_codex_check(och)
+        ids = [str(m.get("id") or "") for m in (site.get("models") or []) if m.get("id")]
+        mm = res.get("model_map") or {}
+        for k, (var, cmb) in self.cc_model_vars.items():
+            cmb.configure(values=ids)
+            if mm.get(k):
+                var.set(mm[k])
+        cmb_cx = self.cmb_codex_model
+        cmb_cx.configure(values=ids)
+        if res.get("codex_model"):
+            self.var_codex_model.set(res["codex_model"])
+        self.var_codex_base.set(codex_base_url_for_gateway(self.var_url.get().strip()))
+        cli = find_claude_cli()
+        self.lbl_cc_cli.configure(text=("CLI：" + cli) if cli
+                                  else "没找到 claude 命令（端到端验证会跳过）")
+        cx_cli = find_codex_cli()
+        self.lbl_codex_cli.configure(text=("CLI：" + cx_cli) if cx_cli
+                                     else "没找到 codex（端到端验证会跳过）")
+        for s in res.get("steps", []):
+            mark = {True: "✔", False: "✘"}.get(s.get("ok"), "·")
+            line = (f"{mark} [{s['no']}/4] {s['text']}"
+                    + (f" → {s['detail']}" if s.get("detail") else ""))
+            self._cc_log_append(line)
+            self._codex_log_append(line)
+        self._cc_log_append(f"结论：{res.get('verdict', '')}")
+        self._codex_log_append(f"结论：{res.get('verdict', '')}")
+        ready_claude = self.cc_ready()[0]
+        ready_codex = self.codex_ready()[0]
+        self.nb.select(self.tab_claude if ready_claude else
+                       (self.tab_codex if ready_codex else self.tab_claude))
+        self._set_status("全流程完成" if res.get("ok") else "全流程完成（有未通过项，见日志）")
+        self.lbl_summary.configure(text=res.get("verdict", ""))
+        self._log_append(f"=== 全流程完成：{res.get('verdict', '')} ===")
+        self._finish_busy()
+        if res.get("stopped"):
+            return
+        from tkinter import messagebox
+        if ready_claude and self.cc_write_settings.get():
+            extra = "　Codex 通道也可用，可在 Codex 页点「一键接入 Codex」。" if ready_codex else ""
+            if messagebox.askyesno("全流程通过",
+                                   "模型能跑、Claude Code 通道也通了。\n\n"
+                                   "现在把这套配置写进 Claude Code 吗？\n"
+                                   "（合并进 ~/.claude/settings.json，改前自动备份）" + extra):
+                self.cc_install()
+        elif ready_codex and self.codex_write_config.get():
+            if messagebox.askyesno("全流程通过",
+                                   "模型能跑、OpenAI 通道也通了。\n\n"
+                                   "现在把这套配置写进 Codex 吗？\n"
+                                   "（合并进 ~/.codex/config.toml，改前自动备份）"):
+                self.codex_install()
+
+    # ---------------- Claude Code 接入 ----------------
+    def _open_path(self, path) -> None:
+        """在文件管理器里打开目录（跨平台；非 Windows 用 open / xdg-open）。"""
+        p = Path(path)
+        if not p.exists():
+            self._set_status(f"路径不存在：{p}")
+            return
+        target = str(p) if p.is_dir() else str(p.parent)
+        try:
+            if sys.platform == "win32":
+                if p.is_dir():
+                    os.startfile(str(p))
+                else:
+                    subprocess.Popen(["explorer", "/select,", str(p)])
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", target])
+            else:
+                subprocess.Popen(["xdg-open", target])
+        except Exception as e:  # noqa: BLE001
+            self._set_status(f"打开失败：{e}")
+
+    def cc_log_msg(self, msg: str) -> None:
+        self.q.put(("cc_log", msg))
+
+    def _cc_log_append(self, msg: str) -> None:
+        self.txt_cc.insert("end", f"{time.strftime('%H:%M:%S')}  {msg}\n")
+        self.txt_cc.see("end")
+
+    def cc_ready(self) -> tuple[bool, str]:
+        """门禁：通道探测通过即可接入 —— 它本身就是一次真实的最小生成（拿到 PONG）。
+
+        第 ② 步生成测试只作为提示：它走的是工具自己挑的协议路径，
+        而 CLI 走的是 /v1/messages，两者不一定同时可用（例如只代理 Anthropic 的站）。
+        返回 (是否可以接入, 说明或不可接入的原因)。
+        """
+        ch = self.cc_state or {}
+        gen_ok = bool((self.site_result or {}).get("ok"))
+        if ch.get("ok"):
+            return True, ("" if gen_ok else
+                          "注意：第 ② 步生成测试未通过，但 Claude Code 用的 /v1/messages 已实测可用")
+        if ch.get("model_not_found"):
+            return False, "通道认证通过但模型不可用：先在下面做好模型映射，再点「检测通道」复测"
+        if ch:
+            return False, f"Anthropic 通道未通过：{ch.get('verdict') or '未知原因'}"
+        return False, "还没检测 Anthropic 通道：先点「检测通道 /v1/messages」或「▶ 全流程」"
+
+    def _refresh_cc_gate(self) -> None:
+        ok, why = self.cc_ready()
+        try:
+            self.btn_cc_install.configure(state="normal" if ok else "disabled")
+            self.lbl_cc_gate.configure(
+                text=(("已解锁，可以接入" + (f"（{why}）" if why else "")) if ok
+                      else f"未解锁：{why}"),
+                foreground=COLORS["ok"] if ok else COLORS["muted"])
+        except Exception:
+            pass
+
+    def _set_action_busy(self, flag: bool) -> None:
+        """忙碌时禁用「检测 / 全流程」，并按各自门禁决定各「一键接入」是否可点。"""
+        state = "disabled" if flag else "normal"
+        for btn in (getattr(self, "btn_cc_check", None), getattr(self, "btn_flow", None),
+                    getattr(self, "btn_codex_check", None), getattr(self, "btn_grok_check", None)):
+            try:
+                btn.configure(state=state)
+            except Exception:
+                pass
+        if flag:
+            for btn in (getattr(self, "btn_cc_install", None),
+                        getattr(self, "btn_codex_install", None),
+                        getattr(self, "btn_grok_install", None)):
+                try:
+                    btn.configure(state="disabled")
+                except Exception:
+                    pass
+        else:
+            self._refresh_cc_gate()
+            self._refresh_codex_gate()
+            self._refresh_grok_gate()
+
+    def goto_claude_tab(self):
+        self.nb.select(self.tab_claude)
+        self.cc_refresh_context()
+        self._set_status("先点「① 检测通道 /v1/messages」，通过后再「一键接入」")
+
+    def cc_refresh_context(self):
+        """刷新 CLI 探测结果、候选模型下拉、配置路径。"""
+        models = (self.site_result or {}).get("models") or []
+        ids = [str(m.get("id") or "") for m in models if m.get("id")]
+        for key, (var, cmb) in self.cc_model_vars.items():
+            cmb.configure(values=ids)
+            if key == "default" and not var.get() and self.var_model.get().strip():
+                var.set(self.var_model.get().strip())
+        cli = find_claude_cli()
+        self.lbl_cc_cli.configure(text=("CLI：" + cli) if cli
+                                  else "没找到 claude 命令（端到端验证会跳过）")
+        self.lbl_cc_target.configure(text=f"配置文件：{CLAUDE_SETTINGS_PATH}")
+        if ids:
+            self.cc_autofill()
+
+    def cc_autofill(self):
+        models = (self.site_result or {}).get("models") or []
+        if not models:
+            self._set_status("还没有模型列表：先在主界面点「① 获取模型列表」")
+            return
+        m = suggest_claude_model_map(models, fallback=self.var_model.get().strip())
+        n = 0
+        for k, v in m.items():
+            if k in self.cc_model_vars and v:
+                self.cc_model_vars[k][0].set(v)
+                n += 1
+        self._set_status(f"已按模型名自动匹配 {n} 项，可手工改成你要的 id")
+
+    def cc_check(self):
+        if self.busy:
+            self._set_status("正在测试中，请稍候…")
+            return
+        base = self.var_url.get().strip()
+        if not base:
+            self._set_status("请先填写 API 地址")
+            return
+        key = self._key_value_for(self.var_cc_key, "anthropic")
+        model = self.cc_model_vars["default"][0].get().strip() or self.var_model.get().strip()
+        self.stop_event.clear()
+        self.busy = True
+        self._set_action_busy(True)
+        self._set_status("正在检测 Anthropic Messages 通道…")
+        self._cc_log_append(f"=== 检测通道：{base.rstrip('/')}/v1/messages"
+                            f"（模型 {model or '未指定'}）===")
+        timeout, verify = self._timeout(), bool(self.var_verify.get())
+
+        def work():
+            try:
+                res = check_anthropic_channel(base, key, model, timeout=timeout, verify=verify,
+                                              log=self.cc_log_msg, stop_event=self.stop_event)
+                self.q.put(("cc_check_done", res))
+            except Exception as e:  # noqa: BLE001
+                self.q.put(("fatal", f"{type(e).__name__}: {e}"))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _render_cc_check(self, res: dict):
+        self.cc_state = res
+        tv = self.tv_cc
+        tv.delete(*tv.get_children())
+
+        def add(k, v, level="info"):
+            tv.insert("", "end", values=(k, v), tags=(level,))
+
+        add("结论", res.get("verdict", ""), res.get("verdict_level", "info"))
+        add("端点", res.get("url", ""), "muted")
+        add("认证方式", res.get("auth_style") or "-")
+        add("HTTP 状态", str(res.get("status") or "-"))
+        add("非流式耗时", f"{res['latency_ms']:.0f} ms" if res.get("latency_ms") else "-")
+        add("流式首字", f"{res['first_ms']:.0f} ms" if res.get("first_ms") else "-",
+            "ok" if res.get("stream_ok") else "warn")
+        add("返回内容", (res.get("reply") or "-").replace("\n", " ")[:180])
+        for t in res.get("tried", []):
+            add(f"尝试 {t.get('auth_style')}",
+                f"HTTP {t.get('status') or '-'}　{t.get('error') or ''}"[:220],
+                "ok" if t.get("ok") else "warn")
+        self._cc_log_append(f"检测结论：{res.get('verdict', '')}")
+        self._set_status("通道检测完成")
+        self._finish_busy()
+
+    def cc_build_env(self):
+        mm = {k: v[0].get().strip() for k, v in self.cc_model_vars.items()}
+        default = mm.pop("default", "")
+        style = (self.cc_state or {}).get("auth_style") or "bearer"
+        ctx, _err = self._context_tokens(self.var_cc_ctx, "Claude Code")
+        env = build_claude_env(self.var_url.get().strip(),
+                               self._key_value_for(self.var_cc_key, "anthropic"),
+                               style, mm, default, context_window=ctx)
+        return env, style
+
+    @staticmethod
+    def _mask_env(env: dict) -> dict:
+        return {k: (mask_key(v) if is_secret_env_key(k) else v)
+                for k, v in (env or {}).items()}
+
+    def _context_tokens(self, var, label: str) -> tuple[int, str]:
+        """读一个「上下文长度（K）」输入框；返回 (tokens, 错误说明)。"""
+        tokens, err = parse_context_k(var.get())
+        return tokens, (f"{label} 的上下文长度：{err}" if err else "")
+
+    def cc_preview(self):
+        _ctx, cerr = self._context_tokens(self.var_cc_ctx, "Claude Code")
+        if cerr:
+            self._cc_log_append(f"✘ {cerr}")
+            self._set_status(cerr)
+            return
+        env, style = self.cc_build_env()
+        if not env.get("ANTHROPIC_BASE_URL"):
+            self._set_status("请先填写 API 地址")
+            return
+        merged = merge_claude_settings(read_claude_settings(), env)
+        self._cc_log_append("=== 预览：即将合并进 settings.json 的内容（Key 已打码）===")
+        self._cc_log_append("认证头：" + ("x-api-key" if style == "x-api-key"
+                                          else "Authorization: Bearer"))
+        preview = dict(merged)
+        if isinstance(preview.get("env"), dict):
+            preview["env"] = self._mask_env(preview["env"])
+        self._cc_log_append(json.dumps(preview, ensure_ascii=False, indent=2))
+        self._set_status("预览已打印到下方日志（Key 已打码）")
+
+    def cc_copy_oneliner(self):
+        _ctx, cerr = self._context_tokens(self.var_cc_ctx, "Claude Code")
+        if cerr:
+            self._cc_log_append(f"✘ {cerr}")
+            self._set_status(cerr)
+            return
+        env, _ = self.cc_build_env()
+        if not env.get("ANTHROPIC_BASE_URL") or not self._key_value_for(self.var_cc_key,
+                                                                      "anthropic"):
+            self._set_status("需要地址与 Key 才能生成临时命令")
+            return
+        payload = json.dumps({"env": env}, ensure_ascii=False, separators=(",", ":"))
+        cmd = f"claude --settings '{payload}' -p \"hi\""
+        self.root.clipboard_clear()
+        self.root.clipboard_append(cmd)
+        self._cc_log_append("已复制临时命令（含真实 Key，别外发；适用于 Git Bash / PowerShell）：")
+        self._cc_log_append(cmd)
+        self._set_status("临时命令已复制到剪贴板")
+
+    def cc_install(self):
+        from tkinter import messagebox
+        if self.busy:
+            self._set_status("正在测试中，请稍候…")
+            return
+        # 硬门禁：必须先生成测试 + 通道检测都通过
+        ready, why = self.cc_ready()
+        if not ready:
+            self._set_status(why)
+            try:
+                messagebox.showwarning("还不能接入 Claude Code", why)
+            except Exception:
+                pass
+            return
+        _ctx, cerr = self._context_tokens(self.var_cc_ctx, "Claude Code")
+        if cerr:
+            self._cc_log_append(f"✘ {cerr}")
+            self._set_status(cerr)
+            return
+        env, _style = self.cc_build_env()
+        if not env.get("ANTHROPIC_BASE_URL"):
+            self._set_status("请先填写 API 地址")
+            return
+        if not any(k in env for k in ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY")):
+            if not messagebox.askyesno("没有 Key", "当前没填 Key，写进配置后 CLI 无法认证。仍要继续？"):
+                return
+        do_settings = bool(self.cc_write_settings.get())
+        do_launcher = bool(self.cc_write_launcher.get())
+        do_isolated = bool(self.cc_write_isolated.get())
+        do_verify = bool(self.cc_run_verify.get())
+        if not any((do_settings, do_launcher, do_isolated, do_verify)):
+            self._set_status("没有勾选任何接入方式")
+            return
+        site = self.var_site.get()
+        slug = slugify(site if site != ADHOC_SITE else "custom")
+        outdir = CLAUDE_OUTPUT_DIR / f"claude-code-{slug}"
+        timeout = max(60.0, self._timeout() * 6)
+        self.stop_event.clear()
+        self.busy = True
+        self._set_action_busy(True)
+        self._set_status("正在接入 Claude Code…")
+        self._cc_log_append(f"=== 一键接入开始（站点：{site}）===")
+
+        def work():
+            summary = {"ok": True, "lines": []}
+
+            def note(msg, ok=True):
+                summary["lines"].append(msg)
+                summary["ok"] = summary["ok"] and ok
+                self.cc_log_msg(msg)
+
+            try:
+                if do_settings:
+                    r = install_claude_settings(env, CLAUDE_SETTINGS_PATH)
+                    if r["ok"]:
+                        note(f"✔ 已写入 {r['path']}"
+                             + (f"（备份：{r['backup']}）" if r["backup"] else "（原本没有文件）"))
+                    else:
+                        note(f"✘ 写配置失败：{r['error']}", ok=False)
+                if do_isolated:
+                    d = outdir / "config"
+                    r = write_isolated_claude_config(env, d)
+                    if r["ok"]:
+                        note(f"✔ 隔离配置：{r['path']}")
+                        lr = write_claude_launcher(env, d / "start-claude.bat", config_dir=str(d))
+                        note(f"✔ 启动脚本：{lr['path']}" if lr["ok"]
+                             else f"✘ 启动脚本失败：{lr['error']}", ok=lr["ok"])
+                    else:
+                        note(f"✘ 隔离配置失败：{r['error']}", ok=False)
+                if do_launcher:
+                    lp = outdir / f"start-claude-{slug}.bat"
+                    r = write_claude_launcher(env, lp)
+                    note(f"✔ 启动脚本：{r['path']}" if r["ok"]
+                         else f"✘ 启动脚本失败：{r['error']}", ok=r["ok"])
+                if do_verify:
+                    note("… 正在跑端到端验证（claude -p PONG），首次可能要十几秒")
+                    vr = verify_claude_cli(env, timeout=timeout, log=self.cc_log_msg)
+                    if vr["ok"]:
+                        note(f"✔ 端到端验证通过：result={vr['result']!r} "
+                             f"terminal_reason={vr['terminal_reason'] or '-'} "
+                             f"模型={list(vr['model_usage'].keys()) or '-'}")
+                    else:
+                        hint = ""
+                        low = (vr["error"] or "").lower()
+                        if vr["status"] == "404" or "model" in low or "not exist" in low:
+                            hint = "　→ 大概率是模型映射不对：点「从当前站点模型列表自动匹配」再重试"
+                        elif vr["status"] in ("401", "403"):
+                            hint = "　→ 鉴权失败：确认这个 Key 对当前站点有效"
+                        note(f"✘ 端到端验证未通过：{vr['error']}"
+                             + (f"（api_error_status={vr['status']}）" if vr["status"] else "")
+                             + hint, ok=False)
+                self.q.put(("cc_install_done", summary))
+            except Exception as e:  # noqa: BLE001
+                self.q.put(("fatal", f"{type(e).__name__}: {e}"))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _finish_cc_install(self, summary: dict):
+        ok = bool(summary.get("ok"))
+        self._cc_log_append("=== 一键接入完成 ===" if ok else "=== 一键接入完成（有失败项，见上）===")
+        self._set_status("接入完成" if ok else "接入完成，但有失败项（见日志）")
+        self._finish_busy()
+
+    def cc_restore(self):
+        from tkinter import messagebox
+        baks = find_claude_backups()
+        if not baks:
+            self._set_status("没有找到备份文件")
+            return
+        newest = baks[0]
+        if not messagebox.askyesno(
+                "恢复备份",
+                f"用这个备份覆盖当前配置？\n\n{newest}\n\n（当前文件会先另存一份再覆盖）"):
+            return
+        try:
+            cur = CLAUDE_SETTINGS_PATH
+            if cur.exists():
+                ts = time.strftime("%Y%m%d-%H%M%S")
+                shutil.copy2(cur, cur.with_name(cur.name + f".bak-apiprobe-{ts}"))
+            shutil.copy2(newest, cur)
+            self._cc_log_append(f"✔ 已从备份恢复：{newest}")
+            self._set_status("已恢复备份")
+        except Exception as e:  # noqa: BLE001
+            self._set_status(f"恢复失败：{e}")
+
+    def cc_open_dir(self):
+        self._open_path(CLAUDE_SETTINGS_PATH.parent)
+
+    # ---------------- Codex（OpenAI 格式）接入 ----------------
+    def codex_log_msg(self, msg: str) -> None:
+        self.q.put(("codex_log", msg))
+
+    def _codex_log_append(self, msg: str) -> None:
+        self.txt_codex.insert("end", f"{time.strftime('%H:%M:%S')}  {msg}\n")
+        self.txt_codex.see("end")
+
+    def goto_codex_tab(self):
+        self.nb.select(self.tab_codex)
+        self.codex_refresh_context()
+        self._set_status("先点「检测通道（responses / chat）」，通过后再「一键接入 Codex」")
+
+    def codex_refresh_context(self):
+        """刷新可选模型、base_url、codex 路径。"""
+        models = (self.site_result or {}).get("models") or []
+        ids = [str(m.get("id") or "") for m in models if m.get("id")]
+        self.cmb_codex_model.configure(values=ids)
+        if not self.var_codex_model.get():
+            self.var_codex_model.set(
+                suggest_codex_model(models, fallback=self.var_model.get().strip()))
+        self.var_codex_base.set(codex_base_url_for_gateway(self.var_url.get().strip()))
+        cli = find_codex_cli()
+        self.lbl_codex_cli.configure(text=("CLI：" + cli) if cli
+                                     else "没找到 codex（端到端验证会跳过）")
+        self._refresh_codex_desktop_label()
+
+    def _refresh_codex_desktop_label(self) -> None:
+        """显示 Codex 桌面版的检测结果与它要用到的环境变量状态。"""
+        try:
+            if not codex_desktop_installed():
+                self.lbl_codex_desktop.configure(
+                    text="未检测到 Codex 桌面版（只写配置的话 CLI 也能用）")
+                return
+            name = self.var_codex_envkey.get().strip() or "CODEX_API_KEY"
+            cur = read_user_env_var(name)
+            state = f"已设（{mask_key(cur)}）" if cur else "未设置 ← 桌面版会取不到 Key"
+            self.lbl_codex_desktop.configure(text=f"已检测到桌面版；用户环境变量 {name}：{state}")
+        except Exception:
+            pass
+
+    def codex_open_desktop(self):
+        r = launch_codex_desktop(find_codex_cli())
+        if r["ok"]:
+            self._codex_log_append(f"✔ 已拉起 Codex 桌面版：{r['cmd']}")
+            self._set_status("已打开 Codex 桌面版（刚改过配置或 Key 的话，重启它才会读到最新值）")
+        else:
+            self._codex_log_append(f"✘ {r['error']}")
+            self._set_status(r["error"])
+
+    def codex_autofill(self):
+        models = (self.site_result or {}).get("models") or []
+        if not models:
+            self._set_status("还没有模型列表：先在主界面点「① 获取模型列表」")
+            return
+        pick = suggest_codex_model(models, fallback=self.var_model.get().strip())
+        if pick:
+            self.var_codex_model.set(pick)
+            self._set_status(f"已选默认模型：{pick}")
+
+    def codex_ready(self) -> tuple[bool, str]:
+        """门禁：OpenAI 通道探测通过即可接入 —— 它本身就是一次真实的生成（拿到 PONG）。
+
+        第 ② 步生成测试只作提示：它走工具自己挑的协议路径，Codex 走的是
+        /v1/responses 或 /v1/chat/completions，某些只实现 responses 的网关两者并不同时可用。
+        """
+        ch = self.codex_state or {}
+        gen_ok = bool((self.site_result or {}).get("ok"))
+        if ch.get("ok"):
+            return True, ("" if gen_ok else
+                          "注意：第 ② 步生成测试未通过，但 Codex 用的通道已实测可用")
+        if any(t.get("model_not_found") for t in ch.get("tried") or []):
+            return False, "通道路径通了但模型不可用：换一个模型后再点「检测通道」"
+        if ch:
+            return False, f"OpenAI 通道未通过：{ch.get('verdict') or '未知原因'}"
+        return False, "还没检测 OpenAI 通道：先点「检测通道（responses / chat）」或「▶ 全流程」"
+
+    def _refresh_codex_gate(self) -> None:
+        ok, why = self.codex_ready()
+        try:
+            self.btn_codex_install.configure(state="normal" if ok else "disabled")
+            self.lbl_codex_gate.configure(
+                text=(("已解锁，可以接入" + (f"（{why}）" if why else "")) if ok
+                      else f"未解锁：{why}"),
+                foreground=COLORS["ok"] if ok else COLORS["muted"])
+        except Exception:
+            pass
+
+    def codex_check(self):
+        if self.busy:
+            self._set_status("正在测试中，请稍候…")
+            return
+        base = self.var_url.get().strip()
+        if not base:
+            self._set_status("请先填写 API 地址")
+            return
+        key = self._key_value_for(self.var_codex_key, "openai")
+        model = self.var_codex_model.get().strip() or self.var_model.get().strip()
+        self.stop_event.clear()
+        self.busy = True
+        self._set_action_busy(True)
+        self._set_status("正在检测 OpenAI 通道…")
+        self._codex_log_append(f"=== 检测 OpenAI 通道：{codex_base_url_for_gateway(base)}"
+                               f"（模型 {model or '未指定'}）===")
+        timeout, verify = self._timeout(), bool(self.var_verify.get())
+
+        def work():
+            try:
+                res = check_openai_channel(base, key, model, timeout=timeout, verify=verify,
+                                           log=self.codex_log_msg, stop_event=self.stop_event)
+                self.q.put(("codex_check_done", res))
+            except Exception as e:  # noqa: BLE001
+                self.q.put(("fatal", f"{type(e).__name__}: {e}"))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _render_codex_check(self, res: dict):
+        self.codex_state = res
+        tv = self.tv_codex
+        tv.delete(*tv.get_children())
+
+        def add(k, v, level="info"):
+            tv.insert("", "end", values=(k, v), tags=(level,))
+
+        add("结论", res.get("verdict", ""), res.get("verdict_level", "info"))
+        add("wire_api（要写进配置）", res.get("wire_api") or "-",
+            "ok" if res.get("wire_api") else "warn")
+        add("base_url（Codex 用）", res.get("base_url", ""), "muted")
+        add("HTTP 状态", str(res.get("status") or "-"))
+        add("耗时", f"{res['latency_ms']:.0f} ms" if res.get("latency_ms") else "-")
+        add("返回内容", (res.get("reply") or "-").replace("\n", " ")[:180])
+        for t in res.get("tried", []):
+            add(f"尝试 {t.get('wire_api')}",
+                f"HTTP {t.get('status') or '-'}　{t.get('error') or ''}"[:220],
+                "ok" if t.get("ok") else "warn")
+        if res.get("wire_api"):
+            self.var_codex_wire.set(res["wire_api"])
+        self._codex_log_append(f"检测结论：{res.get('verdict', '')}")
+        self._set_status("OpenAI 通道检测完成")
+        self._finish_busy()
+
+    def codex_params(self):
+        model = self.var_codex_model.get().strip() or self.var_model.get().strip()
+        base_url = self.var_codex_base.get().strip() or \
+            codex_base_url_for_gateway(self.var_url.get().strip())
+        env_key = self.var_codex_envkey.get().strip() or "CODEX_API_KEY"
+        wire = self.var_codex_wire.get().strip()
+        if wire not in ("responses", "chat"):
+            wire = (self.codex_state or {}).get("wire_api") or "responses"
+        ctx, _err = self._context_tokens(self.var_codex_ctx, "Codex")
+        return model, base_url, env_key, wire, ctx
+
+    def codex_preview(self):
+        _ctx, cerr = self._context_tokens(self.var_codex_ctx, "Codex")
+        if cerr:
+            self._codex_log_append(f"✘ {cerr}")
+            self._set_status(cerr)
+            return
+        model, base_url, env_key, wire, ctx = self.codex_params()
+        if not base_url or not model:
+            self._set_status("需要地址与模型才能预览")
+            return
+        existing = ""
+        try:
+            if CODEX_CONFIG_PATH.exists():
+                existing = _read_text_sig(CODEX_CONFIG_PATH)
+        except Exception:
+            pass
+        merged = merge_codex_config(existing, model, base_url, env_key,
+                                    self.var_site.get() or "API Probe", wire,
+                                    context_window=ctx)
+        self._codex_log_append("=== 预览：合并后的 ~/.codex/config.toml（只显示前 30 行）===")
+        for line in merged.splitlines()[:30]:
+            self._codex_log_append(line)
+        if self.codex_write_sysenv.get():
+            self._codex_log_append(f"另外会把用户级环境变量 {env_key} 设成你的 Key"
+                                   "（Codex 桌面版就是靠它取值的）")
+        self._set_status("预览已打印到下方日志")
+
+    def codex_copy_oneliner(self):
+        _ctx, cerr = self._context_tokens(self.var_codex_ctx, "Codex")
+        if cerr:
+            self._codex_log_append(f"✘ {cerr}")
+            self._set_status(cerr)
+            return
+        model, base_url, env_key, wire, ctx = self.codex_params()
+        if not base_url or not model or not self._key_value_for(self.var_codex_key, "openai"):
+            self._set_status("需要地址、模型与 Key 才能生成临时命令")
+            return
+        cmd = (f'codex exec -c model="{model}" '
+               f'-c model_provider="{CODEX_PROVIDER_ID}" '
+               f'-c model_providers.{CODEX_PROVIDER_ID}.base_url="{base_url}" '
+               f'-c model_providers.{CODEX_PROVIDER_ID}.wire_api="{wire}" '
+               f'-c model_providers.{CODEX_PROVIDER_ID}.env_key="{env_key}" '
+               + (f"-c model_context_window={ctx} " if ctx > 0 else "")
+               + '"hi"')
+        self.root.clipboard_clear()
+        self.root.clipboard_append(cmd)
+        self._codex_log_append("已复制临时命令（不含 Key；运行前先设好 "
+                               f"{env_key} 环境变量）：")
+        self._codex_log_append(cmd)
+        self._set_status("临时命令已复制到剪贴板")
+
+    def codex_install(self):
+        from tkinter import messagebox
+        if self.busy:
+            self._set_status("正在测试中，请稍候…")
+            return
+        ready, why = self.codex_ready()
+        if not ready:
+            self._set_status(why)
+            try:
+                messagebox.showwarning("还不能接入 Codex", why)
+            except Exception:
+                pass
+            return
+        _ctx, cerr = self._context_tokens(self.var_codex_ctx, "Codex")
+        if cerr:
+            self._codex_log_append(f"✘ {cerr}")
+            self._set_status(cerr)
+            return
+        model, base_url, env_key, wire, ctx = self.codex_params()
+        if not model or not base_url:
+            self._set_status("缺少模型或地址")
+            return
+        key = self._key_value_for(self.var_codex_key, "openai")
+        do_config = bool(self.codex_write_config.get())
+        do_env = bool(self.codex_write_env.get())
+        do_sysenv = bool(self.codex_write_sysenv.get())
+        do_launcher = bool(self.codex_write_launcher.get())
+        do_verify = bool(self.codex_run_verify.get())
+        if not any((do_config, do_env, do_sysenv, do_launcher, do_verify)):
+            self._set_status("没有勾选任何接入方式")
+            return
+        if (do_env or do_launcher or do_sysenv) and not key:
+            if not messagebox.askyesno("没有 Key", "要写 .env / 生成启动脚本，但没有填 Key。继续？"):
+                return
+        site = self.var_site.get()
+        slug = slugify(site if site != ADHOC_SITE else "custom")
+        outdir = CLAUDE_OUTPUT_DIR / f"codex-{slug}"
+        cli = find_codex_cli()
+        timeout = max(60.0, self._timeout() * 6)
+        self.stop_event.clear()
+        self.busy = True
+        self._set_action_busy(True)
+        self._set_status("正在接入 Codex…")
+        self._codex_log_append(f"=== 一键接入 Codex 开始（站点：{site}，模型：{model}"
+                               + (f"，上下文 {format_context_k(ctx)}K" if ctx else "") + "）===")
+
+        def work():
+            summary = {"ok": True, "lines": []}
+
+            def note(msg, ok=True):
+                summary["lines"].append(msg)
+                summary["ok"] = summary["ok"] and ok
+                self.codex_log_msg(msg)
+
+            try:
+                if do_config:
+                    r = install_codex_config(model, base_url, env_key,
+                                             site or "API Probe", wire,
+                                             context_window=ctx)
+                    if r["ok"]:
+                        olds = []
+                        if r["old_model"]:
+                            olds.append(f"model={r['old_model']}")
+                        if r["old_provider"]:
+                            olds.append(f"provider={r['old_provider']}")
+                        if r["old_context"]:
+                            olds.append(f"context={r['old_context']}")
+                        old = (f"（原 {' / '.join(olds)}，已备份）" if olds else
+                               "（原本没有配置文件）")
+                        note(f"✔ 已写入 {r['path']}{old}")
+                    else:
+                        note(f"✘ 写 config.toml 失败：{r['error']}", ok=False)
+                if do_env:
+                    r = install_codex_env_key(env_key, key)
+                    note(f"✔ 已把 Key 写进 {r['path']}（变量名 {env_key}）"
+                         + (f"，备份 {r['backup']}" if r["backup"] else "")
+                         if r["ok"] else f"✘ 写 .env 失败：{r['error']}", ok=r["ok"])
+                if do_sysenv:
+                    r = set_user_env_var(env_key, key)
+                    if r["ok"]:
+                        note(f"✔ 已写入用户级环境变量 {env_key}"
+                             + ("（并已广播，之后新启动的程序立刻可见）" if r["persisted"]
+                                else "（未持久化，仅影响当前进程）"))
+                        note("  → Codex 桌面版如果现在开着，请重启它才会读到新 Key"
+                             "（配置文件的改动也一样）")
+                    else:
+                        note(f"✘ 写用户级环境变量失败：{r['error']}", ok=False)
+                if do_launcher:
+                    lp = outdir / f"start-codex-{slug}.bat"
+                    r = write_codex_launcher(env_key, key, lp, cli)
+                    note(f"✔ 启动脚本：{r['path']}" if r["ok"]
+                         else f"✘ 启动脚本失败：{r['error']}", ok=r["ok"])
+                if do_verify:
+                    note("… 正在跑端到端验证（codex exec PONG），首次可能要几十秒")
+                    vr = verify_codex_cli(model, base_url, env_key, key, cli_path=cli,
+                                          timeout=timeout, log=self.codex_log_msg, wire_api=wire,
+                                          context_window=ctx)
+                    if vr["ok"]:
+                        note(f"✔ 端到端验证通过：{vr['result'].strip()[:120]!r}")
+                    else:
+                        note(f"✘ 端到端验证未通过：{vr['error']}", ok=False)
+                self.q.put(("codex_install_done", summary))
+            except Exception as e:  # noqa: BLE001
+                self.q.put(("fatal", f"{type(e).__name__}: {e}"))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _finish_codex_install(self, summary: dict):
+        ok = bool(summary.get("ok"))
+        self._codex_log_append("=== 一键接入 Codex 完成 ===" if ok
+                               else "=== 一键接入 Codex 完成（有失败项，见上）===")
+        self._set_status("Codex 接入完成" if ok else "Codex 接入完成，但有失败项（见日志）")
+        self._finish_busy()
+
+    def codex_restore(self):
+        from tkinter import messagebox
+        baks = find_codex_backups()
+        if not baks:
+            self._set_status("没有找到 config.toml 的备份")
+            return
+        newest = baks[0]
+        if not messagebox.askyesno("恢复备份",
+                                   f"用这个备份覆盖 ~/.codex/config.toml？\n\n{newest}\n\n"
+                                   "（当前文件会先另存一份再覆盖）"):
+            return
+        try:
+            if CODEX_CONFIG_PATH.exists():
+                ts = time.strftime("%Y%m%d-%H%M%S")
+                shutil.copy2(CODEX_CONFIG_PATH,
+                             CODEX_CONFIG_PATH.with_name(CODEX_CONFIG_PATH.name
+                                                         + f".bak-apiprobe-{ts}"))
+            shutil.copy2(newest, CODEX_CONFIG_PATH)
+            self._codex_log_append(f"✔ 已从备份恢复：{newest}")
+            self._set_status("已恢复备份")
+        except Exception as e:  # noqa: BLE001
+            self._set_status(f"恢复失败：{e}")
+
+    def codex_open_dir(self):
+        self._open_path(CODEX_HOME)
+
+    # ---------------- Grok Build 接入 ----------------
+    def grok_log_msg(self, msg: str) -> None:
+        self.q.put(("grok_log", msg))
+
+    def _grok_log_append(self, msg: str) -> None:
+        self.txt_grok.insert("end", f"{time.strftime('%H:%M:%S')}  {msg}\n")
+        self.txt_grok.see("end")
+
+    def goto_grok_tab(self):
+        self.nb.select(self.tab_grok)
+        self.grok_refresh_context()
+        self._set_status("先点「自动选协议」，通过后再「一键接入 Grok Build」")
+
+    def grok_refresh_context(self):
+        """刷新候选模型、base_url、grok 路径。"""
+        models = (self.site_result or {}).get("models") or []
+        ids = [str(m.get("id") or "") for m in models if m.get("id")]
+        self.cmb_grok_model.configure(values=ids)
+        if not self.var_grok_model.get():
+            self.var_grok_model.set(
+                suggest_grok_model(models, fallback=self.var_model.get().strip()))
+        self.var_grok_base.set(grok_base_url_for_gateway(self.var_url.get().strip()))
+        cli = find_grok_cli()
+        self.lbl_grok_cli.configure(text=("CLI：" + cli) if cli
+                                    else "没找到 grok（端到端验证会跳过）")
+
+    def grok_autofill(self):
+        models = (self.site_result or {}).get("models") or []
+        if not models:
+            self._set_status("还没有模型列表：先在主界面点「① 获取模型列表」")
+            return
+        pick = suggest_grok_model(models, fallback=self.var_model.get().strip())
+        if pick:
+            self.var_grok_model.set(pick)
+            self._set_status(f"已选默认模型：{pick}")
+
+    def grok_ready(self) -> tuple[bool, str]:
+        """门禁：协议探测通过（即那条通道实测能出 PONG）才允许接入。"""
+        ch = self.grok_state or {}
+        gen_ok = bool((self.site_result or {}).get("ok"))
+        if ch.get("ok"):
+            return True, ("" if gen_ok else
+                          "注意：第 ② 步生成测试未通过，但 Grok 要用的那条通道已实测可用")
+        if ch:
+            return False, f"协议探测未通过：{ch.get('verdict') or '未知原因'}"
+        return False, "还没探测协议：先点「自动选协议（测三条通道）」"
+
+    def _refresh_grok_gate(self) -> None:
+        ok, why = self.grok_ready()
+        try:
+            self.btn_grok_install.configure(state="normal" if ok else "disabled")
+            self.lbl_grok_gate.configure(
+                text=(("已解锁，可以接入" + (f"（{why}）" if why else "")) if ok
+                      else f"未解锁：{why}"),
+                foreground=COLORS["ok"] if ok else COLORS["muted"])
+        except Exception:
+            pass
+
+    def grok_check(self):
+        """依次探测三种协议，按 Anthropic > Responses > Chat 的优先级挑一个能用的。"""
+        if self.busy:
+            self._set_status("正在测试中，请稍候…")
+            return
+        base = self.var_url.get().strip()
+        if not base:
+            self._set_status("请先填写 API 地址")
+            return
+        key = self._key_value_for(self.var_grok_key, "")
+        model = self.var_grok_model.get().strip() or self.var_model.get().strip()
+        self.stop_event.clear()
+        self.busy = True
+        self._set_action_busy(True)
+        self._set_status("正在探测三种协议…")
+        self._grok_log_append(f"=== 探测协议：{base}（模型 {model or '未指定'}）===")
+        timeout, verify = self._timeout(), bool(self.var_verify.get())
+
+        def work():
+            try:
+                ach = check_anthropic_channel(base, key, model, timeout=timeout,
+                                              verify=verify, log=self.grok_log_msg,
+                                              stop_event=self.stop_event)
+                och = check_openai_channel(base, key, model, timeout=timeout, verify=verify,
+                                           log=self.grok_log_msg, stop_event=self.stop_event,
+                                           prefer="chat")
+                backend = backend_from_channels(bool(ach.get("ok")), och.get("wire_api") or "")
+                res = {"ok": bool(ach.get("ok") or och.get("ok")), "backend": backend,
+                       "anthropic": ach, "openai": och}
+                if res["ok"]:
+                    res["verdict"] = (f"用 {BACKEND_LABEL.get(backend, backend)}"
+                                      f"（api_backend = {backend}）")
+                    res["verdict_level"] = "ok"
+                else:
+                    res["verdict"] = ("三条通道都没通："
+                                      + (ach.get("verdict") or "") + "；"
+                                      + (och.get("verdict") or ""))
+                    res["verdict_level"] = "error"
+                self.q.put(("grok_check_done", res))
+            except Exception as e:  # noqa: BLE001
+                self.q.put(("fatal", f"{type(e).__name__}: {e}"))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _render_grok_check(self, res: dict):
+        self.grok_state = res
+        tv = self.tv_grok
+        tv.delete(*tv.get_children())
+
+        def add(k, v, level="info"):
+            tv.insert("", "end", values=(k, v), tags=(level,))
+
+        add("结论", res.get("verdict", ""), res.get("verdict_level", "info"))
+        add("选用的 api_backend", res.get("backend") or "-",
+            "ok" if res.get("ok") else "warn")
+        add("对应的协议", BACKEND_LABEL.get(res.get("backend") or "", "-"), "muted")
+        ach = res.get("anthropic") or {}
+        och = res.get("openai") or {}
+        add("Anthropic Messages", ach.get("verdict") or "-",
+            "ok" if ach.get("ok") else "warn")
+        add("OpenAI Responses", (och.get("tried") or [{}])[0].get("error") or
+            ("可用" if (och.get("wire_api") == "responses") else "不可用"),
+            "ok" if och.get("wire_api") == "responses" else "warn")
+        add("OpenAI Chat Completions", (och.get("tried") or [{}, {}])[-1].get("error") or
+            ("可用" if (och.get("wire_api") == "chat") else "不可用"),
+            "ok" if och.get("wire_api") == "chat" else "warn")
+        if res.get("ok"):
+            self.var_grok_backend.set(res["backend"])
+        self._grok_log_append(f"探测结论：{res.get('verdict', '')}")
+        self._set_status("协议探测完成")
+        self._finish_busy()
+
+    def grok_params(self):
+        model = self.var_grok_model.get().strip() or self.var_model.get().strip()
+        base_url = self.var_grok_base.get().strip() or \
+            grok_base_url_for_gateway(self.var_url.get().strip())
+        backend = self.var_grok_backend.get().strip() or "chat_completions"
+        if backend not in GROK_BACKENDS:
+            backend = "chat_completions"
+        env_key = self.var_grok_envkey.get().strip() or GROK_ENV_KEY_DEFAULT
+        ctx, _err = self._context_tokens(self.var_grok_ctx, "Grok Build")
+        return model, base_url, backend, env_key, ctx
+
+    def grok_preview(self):
+        _ctx, cerr = self._context_tokens(self.var_grok_ctx, "Grok Build")
+        if cerr:
+            self._grok_log_append(f"✘ {cerr}")
+            self._set_status(cerr)
+            return
+        model, base_url, backend, env_key, ctx = self.grok_params()
+        if not model or not base_url:
+            self._set_status("需要地址与模型才能预览")
+            return
+        existing = ""
+        try:
+            if GROK_CONFIG_PATH.exists():
+                existing = GROK_CONFIG_PATH.read_text(encoding="utf-8")
+        except Exception:
+            pass
+        inline = bool(self.grok_write_inline.get())
+        merged = merge_grok_config(
+            existing, GROK_MODEL_KEY, model, base_url, backend,
+            self.var_site.get() or "API Probe",
+            env_key="" if inline else env_key,
+            api_key=self._key_value_for(self.var_grok_key, "") if inline else "",
+            context_window=ctx,
+            extra_headers={"x-api-key": "***"} if backend == "messages" and inline else None,
+            set_default=bool(self.grok_set_default.get()))
+        self._grok_log_append("=== 预览：合并后的 ~/.grok/config.toml ===")
+        for line in merged.splitlines()[:40]:
+            self._grok_log_append(line)
+        self._set_status("预览已打印到下方日志")
+
+    def grok_install(self):
+        from tkinter import messagebox
+        if self.busy:
+            self._set_status("正在测试中，请稍候…")
+            return
+        ready, why = self.grok_ready()
+        if not ready:
+            self._set_status(why)
+            try:
+                messagebox.showwarning("还不能接入 Grok Build", why)
+            except Exception:
+                pass
+            return
+        _ctx, cerr = self._context_tokens(self.var_grok_ctx, "Grok Build")
+        if cerr:
+            self._grok_log_append(f"✘ {cerr}")
+            self._set_status(cerr)
+            return
+        model, base_url, backend, env_key, ctx = self.grok_params()
+        if not model or not base_url:
+            self._set_status("缺少模型或地址")
+            return
+        key = self._key_value_for(self.var_grok_key, "")
+        do_config = bool(self.grok_write_config.get())
+        do_sysenv = bool(self.grok_write_sysenv.get())
+        do_inline = bool(self.grok_write_inline.get())
+        do_launcher = bool(self.grok_write_launcher.get())
+        do_verify = bool(self.grok_run_verify.get())
+        set_default = bool(self.grok_set_default.get())     # Tk 变量只在主线程读
+        if not any((do_config, do_sysenv, do_inline, do_launcher, do_verify)):
+            self._set_status("没有勾选任何接入方式")
+            return
+        if (do_sysenv or do_launcher) and not key:
+            if not messagebox.askyesno("没有 Key", "要写环境变量 / 生成启动脚本，但没有 Key。继续？"):
+                return
+        if do_inline and not key:
+            self._set_status("勾了「内联 Key」但输入框里没有 Key")
+            return
+        site = self.var_site.get()
+        slug = slugify(site if site != ADHOC_SITE else "custom")
+        outdir = CLAUDE_OUTPUT_DIR / f"grok-{slug}"
+        cli = find_grok_cli()
+        timeout = max(60.0, self._timeout() * 6)
+        self.stop_event.clear()
+        self.busy = True
+        self._set_action_busy(True)
+        self._set_status("正在接入 Grok Build…")
+        self._grok_log_append(f"=== 一键接入 Grok 开始（站点 {site}，模型 {model}，"
+                              f"api_backend {backend}"
+                              + (f"，上下文 {format_context_k(ctx)}K" if ctx else "") + "）===")
+
+        def work():
+            summary = {"ok": True, "lines": []}
+
+            def note(msg, ok=True):
+                summary["lines"].append(msg)
+                summary["ok"] = summary["ok"] and ok
+                self.grok_log_msg(msg)
+
+            try:
+                if do_config:
+                    extra = ({"x-api-key": key} if (do_inline and backend == "messages"
+                                                    and key) else None)
+                    r = install_grok_config(
+                        GROK_MODEL_KEY, model, base_url, backend,
+                        site or "API Probe",
+                        env_key="" if do_inline else env_key,
+                        api_key=key if do_inline else "",
+                        context_window=ctx, extra_headers=extra,
+                        set_default=set_default)
+                    if r["ok"]:
+                        old = (f"（原 [models].default = {r['old_default']}，已备份）"
+                               if r["old_default"] else
+                               ("（原本没有配置文件）" if not r["backup"] else ""))
+                        note(f"✔ 已写入 {r['path']}{old}")
+                    else:
+                        note(f"✘ 写 config.toml 失败：{r['error']}", ok=False)
+                if do_sysenv:
+                    r = set_user_env_var(env_key, key)
+                    if r["ok"]:
+                        note(f"✔ 已写入用户级环境变量 {env_key}"
+                             + ("（已广播，新启动的程序立刻可见）" if r["persisted"] else ""))
+                    else:
+                        note(f"✘ 写用户级环境变量失败：{r['error']}", ok=False)
+                if do_launcher:
+                    lp = outdir / f"start-grok-{slug}.bat"
+                    r = write_grok_launcher(env_key, key, lp, cli, str(GROK_HOME))
+                    note(f"✔ 启动脚本：{r['path']}" if r["ok"]
+                         else f"✘ 启动脚本失败：{r['error']}", ok=r["ok"])
+                if do_verify:
+                    note("… 正在跑端到端验证（grok -p PONG），可能要几十秒")
+                    vr = verify_grok_cli(GROK_MODEL_KEY, env_key, key, cli_path=cli,
+                                         timeout=timeout, log=self.grok_log_msg)
+                    if vr["ok"]:
+                        note(f"✔ 端到端验证通过：{vr['result'].strip()[:120]!r}")
+                    else:
+                        note(f"✘ 端到端验证未通过：{vr['error']}", ok=False)
+                self.q.put(("grok_install_done", summary))
+            except Exception as e:  # noqa: BLE001
+                self.q.put(("fatal", f"{type(e).__name__}: {e}"))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _finish_grok_install(self, summary: dict):
+        ok = bool(summary.get("ok"))
+        self._grok_log_append("=== 一键接入 Grok 完成 ===" if ok
+                              else "=== 一键接入 Grok 完成（有失败项，见上）===")
+        self._set_status("Grok 接入完成" if ok else "Grok 接入完成，但有失败项（见日志）")
+        self._finish_busy()
+
+    def grok_restore(self):
+        from tkinter import messagebox
+        baks = find_grok_backups()
+        if not baks:
+            self._set_status("没有找到 config.toml 的备份")
+            return
+        newest = baks[0]
+        if not messagebox.askyesno("恢复备份",
+                                   f"用这个备份覆盖 ~/.grok/config.toml？\n\n{newest}\n\n"
+                                   "（当前文件会先另存一份再覆盖）"):
+            return
+        try:
+            if GROK_CONFIG_PATH.exists():
+                ts = time.strftime("%Y%m%d-%H%M%S")
+                shutil.copy2(GROK_CONFIG_PATH,
+                             GROK_CONFIG_PATH.with_name(GROK_CONFIG_PATH.name
+                                                        + f".bak-apiprobe-{ts}"))
+            shutil.copy2(newest, GROK_CONFIG_PATH)
+            self._grok_log_append(f"✔ 已从备份恢复：{newest}")
+            self._set_status("已恢复备份")
+        except Exception as e:  # noqa: BLE001
+            self._set_status(f"恢复失败：{e}")
+
+    def grok_open_dir(self):
+        self._open_path(GROK_HOME)
+
+    # ---------------- 小工具 ----------------
+    def _toggle_key(self):
+        self.ent_key.configure(show="" if self.var_show.get() else "*")
+
+    # ---------------- 站点管理（多个中转站） ----------------
+    def _site_index(self, name: str) -> int:
+        for i, s in enumerate(self.sites):
+            if s.get("name") == name:
+                return i
+        return -1
+
+    def _record_for(self, name: str):
+        """按名字取站点记录；「自定义」返回 adhoc 那一格。"""
+        if name == ADHOC_SITE:
+            return self.adhoc
+        i = self._site_index(name)
+        return self.sites[i] if i >= 0 else None
+
+    def _current_record(self):
+        return self._record_for(self.var_site.get())
+
+    def _stash_current_fields(self) -> None:
+        """把输入框里当前的 地址/Key/模型 写回「当前装载的那一格」。
+
+        必须是 _active_site（上一次真正装载的），不能用下拉框的当前值 —— 否则
+        切换站点的瞬间会把旧站点的内容覆盖到新站点上。
+        Key 除了写 rec["key"]，还会同步进 keys[] 里当前选中的那一把。
+        """
+        rec = self._record_for(self._active_site)
+        if rec is None:
+            return
+        cur_key = self.var_key.get().strip()
+        rec["url"] = self.var_url.get().strip()
+        rec["model"] = self.var_model.get().strip()
+        rec["key"] = cur_key
+        k = find_site_key(rec, str(rec.get("active_key") or ""))
+        if k is not None:
+            k["key"] = cur_key
+
+    def _apply_record(self, rec: dict) -> None:
+        self.var_url.set(rec.get("url", "") or "")
+        self.var_key.set(rec.get("key", "") or "")
+        self.var_model.set(rec.get("model", "") or "")
+        self._refresh_key_combo()
+
+    def _refresh_key_combo(self) -> None:
+        """按当前装载的那一格刷新 Key 下拉。"""
+        rec = self._record_for(self._active_site) or {}
+        names = [k["name"] for k in site_keys(rec)]
+        act = str(rec.get("active_key") or "")
+        if act not in names:
+            act = names[0] if names else ""
+        try:
+            self.cmb_key.configure(values=names or ["（尚未保存 Key）"])
+            self.var_keyname.set(act or (names[0] if names else ""))
+            self.btn_key_del.configure(state="normal" if act else "disabled")
+        except Exception:
+            pass
+        self._refresh_cli_key_combos()
+
+    def _refresh_cli_key_combos(self) -> None:
+        """三个 CLI 接入页各自按格式偏好挑一把 Key。"""
+        rec = self._record_for(self._active_site) or {}
+        names = [k["name"] for k in site_keys(rec)]
+        for cmb_name, var_name, fmt in (("cmb_cc_key", "var_cc_key", "anthropic"),
+                                        ("cmb_codex_key", "var_codex_key", "openai"),
+                                        ("cmb_grok_key", "var_grok_key", "")):
+            cmb = getattr(self, cmb_name, None)
+            var = getattr(self, var_name, None)
+            if cmb is None or var is None:
+                continue
+            try:
+                cmb.configure(values=names or ["（用主界面的 Key）"])
+                k = pick_site_key(rec, fmt) if fmt else (
+                    find_site_key(rec, str(rec.get("active_key") or "")) or pick_site_key(rec))
+                var.set(k["name"] if k else (names[0] if names else "（用主界面的 Key）"))
+            except Exception:
+                pass
+
+    def _on_key_change(self, _evt=None) -> None:
+        """切换这个站点里的哪把 Key。"""
+        rec = self._record_for(self._active_site)
+        if rec is None:
+            return
+        self._stash_current_fields()          # 先把输入框内容存回旧的那把
+        name = self.var_keyname.get()
+        k = find_site_key(rec, name)
+        if k is None:
+            return
+        rec["active_key"] = name
+        rec["key"] = k.get("key", "")
+        self.var_key.set(k.get("key", ""))
+        self._invalidate_results()
+        self._save_config()
+        fmt = KEY_FORMAT_LABEL.get(str(k.get("format") or "auto"), "")
+        self._set_status(f"已切到 Key「{name}」（{fmt}）")
+
+    def _key_value_for(self, var, prefer_format: str) -> str:
+        """取某把 Key 的值：先按名字找，再按格式偏好找，最后退回主界面输入框。"""
+        rec = self._record_for(self._active_site) or {}
+        k = find_site_key(rec, str(var.get() if var is not None else ""))
+        if k is None:
+            k = pick_site_key(rec, prefer_format)
+        return str((k or {}).get("key") or "").strip() or self.var_key.get().strip()
+
+    def _key_dialog(self, title: str, init_name: str = "", init_format: str = "auto"):
+        """保存/编辑一把具名 Key 的小对话框，返回 dict 或 None。"""
+        tk, ttk = self.tk, self.ttk
+        dlg = tk.Toplevel(self.root)
+        dlg.title(title)
+        dlg.transient(self.root)
+        dlg.resizable(False, False)
+        dlg.grab_set()
+        out = {"value": None}
+        body = ttk.Frame(dlg)
+        body.pack(fill="both", expand=True, padx=14, pady=12)
+        v_name = tk.StringVar(value=init_name)
+        v_fmt = tk.StringVar(value=KEY_FORMAT_LABEL.get(init_format, KEY_FORMAT_LABEL["auto"]))
+        ttk.Label(body, text="名称").grid(row=0, column=0, sticky="w", pady=4)
+        ttk.Entry(body, textvariable=v_name, width=28, font=self.mono_font).grid(
+            row=0, column=1, sticky="we", padx=(8, 0), pady=4)
+        ttk.Label(body, text="格式").grid(row=1, column=0, sticky="w", pady=4)
+        ttk.Combobox(body, textvariable=v_fmt, state="readonly", width=26,
+                     values=[KEY_FORMAT_LABEL[f] for f in KEY_FORMATS]).grid(
+            row=1, column=1, sticky="w", padx=(8, 0), pady=4)
+        ttk.Label(body, text="格式只用于「这个 CLI 页默认用哪把 Key」，不会限制实际调用。",
+                  style="Hint.TLabel", wraplength=380).grid(row=2, column=1, sticky="w")
+        err = ttk.Label(body, text="", foreground=COLORS["risk"])
+        err.grid(row=3, column=1, sticky="w")
+
+        def ok(_e=None):
+            name = v_name.get().strip()
+            if not name:
+                err.configure(text="请填写名称")
+                return
+            fmt = next((f for f in KEY_FORMATS
+                        if KEY_FORMAT_LABEL[f] == v_fmt.get()), "auto")
+            out["value"] = {"name": name, "format": fmt}
+            dlg.destroy()
+
+        bar = ttk.Frame(body)
+        bar.grid(row=4, column=0, columnspan=2, sticky="e", pady=(10, 0))
+        ttk.Button(bar, text="确定", command=ok).pack(side="left", padx=4)
+        ttk.Button(bar, text="取消", command=dlg.destroy).pack(side="left")
+        dlg.bind("<Return>", ok)
+        dlg.bind("<Escape>", lambda e: dlg.destroy())
+        self.root.wait_window(dlg)
+        return out["value"]
+
+    def add_site_key(self):
+        """把输入框里当前的 Key 存成这个站点的一把具名 Key。"""
+        from tkinter import messagebox
+        rec = self._record_for(self._active_site)
+        val = self.var_key.get().strip()
+        if not val:
+            self._set_status("请先在 API Key 框里填入要保存的 Key")
+            return
+        if rec is None:
+            return
+        names = [k["name"] for k in site_keys(rec)]
+        data = self._key_dialog("保存为具名 Key", f"Key{len(names) + 1}" if names else "默认")
+        if not data:
+            return
+        existed = find_site_key(rec, data["name"]) is not None
+        if existed and not messagebox.askyesno("覆盖 Key",
+                                               f"已存在名为「{data['name']}」的 Key，覆盖它？"):
+            return
+        upsert_site_key(rec, data["name"], val, data["format"])
+        self._refresh_key_combo()
+        self._save_config()
+        self._set_status(f"已{'更新' if existed else '保存'} Key「{data['name']}」"
+                         f"（{KEY_FORMAT_LABEL.get(data['format'], '')}）")
+
+    def delete_site_key(self):
+        from tkinter import messagebox
+        rec = self._record_for(self._active_site)
+        name = self.var_keyname.get()
+        if rec is None or not name or find_site_key(rec, name) is None:
+            self._set_status("没有选中的具名 Key")
+            return
+        if not messagebox.askyesno("删除 Key", f"删除这个站点的 Key「{name}」？"):
+            return
+        remove_site_key(rec, name)
+        self.var_key.set(str(rec.get("key") or ""))
+        self._refresh_key_combo()
+        self._invalidate_results()
+        self._save_config()
+        self._set_status(f"已删除 Key「{name}」")
+
+    def _refresh_site_combo(self) -> None:
+        self.cmb_site.configure(values=[ADHOC_SITE] + [s["name"] for s in self.sites])
+        is_real = self._current_record() is not None
+        self.btn_edit_site.configure(state="normal" if is_real else "disabled")
+        self.btn_del_site.configure(state="normal" if is_real else "disabled")
+
+    def _invalidate_results(self) -> None:
+        """站点/Key 变了：上一次拉到的模型列表与测试结果作废。"""
+        self.site_result = None
+        self.last_result = None
+        self.cc_state = {}
+        self.codex_state = {}
+        self.grok_state = {}
+        self._site_signature = ""
+        self.btn_gen.configure(state="disabled")
+        self.lbl_picked.configure(text="（未选择）")
+        self.tv_ov.delete(*self.tv_ov.get_children())
+        self.tv_models.delete(*self.tv_models.get_children())
+        self.lbl_models.configure(text="（尚未获取列表）")
+        self._refresh_cc_gate()               # 站点一变，三个接入门禁立刻关上
+        self._refresh_codex_gate()
+        self._refresh_grok_gate()
+        try:
+            self.nb.select(0)
+        except Exception:
+            pass
+
+    def _select_site(self, name: str) -> None:
+        self.var_site.set(name)
+        self._on_site_change()
+
+    def _on_site_change(self, _evt=None) -> None:
+        """切换站点：先把旧站点输入框内容存回去，再装载新站点的地址/Key/模型。"""
+        self._stash_current_fields()
+        name = self.var_site.get()
+        rec = self._record_for(name)
+        if rec is None:
+            self.var_site.set(ADHOC_SITE)
+            name, rec = ADHOC_SITE, self.adhoc
+        self._active_site = name
+        self._apply_record(rec)
+        self._invalidate_results()
+        self._refresh_site_combo()
+        self._save_config()
+        if name == ADHOC_SITE:
+            self._set_status("已切到「自定义（临时）」：这一格的地址/Key 也会各自记住")
+        elif not self.var_remember.get() and not rec.get("key"):
+            self._set_status(f"已切换到「{name}」：未勾选「记住 Key」，请粘贴 Key 后再测试")
+        else:
+            self._set_status(f"已切换到「{name}」")
+
+    def _add_site_record(self, name: str, url: str, key: str = "", model: str = "",
+                         select: bool = True) -> bool:
+        name = (name or "").strip()
+        if not name or name == ADHOC_SITE or self._site_index(name) >= 0:
+            return False
+        self.sites.append({"name": name, "url": (url or "").strip(),
+                           "key": (key or "").strip(), "model": (model or "").strip()})
+        self._refresh_site_combo()
+        if select:
+            self._select_site(name)
+        return True
+
+    def _update_site_record(self, old_name: str, name: str, url: str, key: str,
+                            model: str) -> bool:
+        i = self._site_index(old_name)
+        if i < 0:
+            return False
+        name = (name or "").strip()
+        if not name or name == ADHOC_SITE:
+            return False
+        if name != old_name and self._site_index(name) >= 0:
+            return False
+        was_active = self._active_site == old_name
+        self.sites[i] = {"name": name, "url": (url or "").strip(),
+                         "key": (key or "").strip(), "model": (model or "").strip()}
+        self._refresh_site_combo()
+        if was_active:
+            self._active_site = name
+            self.var_site.set(name)
+            self._apply_record(self.sites[i])
+            self._invalidate_results()
+        return True
+
+    def _delete_site_record(self, name: str) -> bool:
+        i = self._site_index(name)
+        if i < 0:
+            return False
+        was_active = self._active_site == name
+        self.sites.pop(i)
+        self._refresh_site_combo()
+        if was_active:
+            self._select_site(ADHOC_SITE)
+        return True
+
+    def _site_dialog(self, title: str, initial: dict):
+        """弹出添加/编辑站点对话框，返回 dict 或 None。"""
+        tk, ttk = self.tk, self.ttk
+        dlg = tk.Toplevel(self.root)
+        dlg.title(title)
+        dlg.transient(self.root)
+        dlg.resizable(False, False)
+        dlg.grab_set()
+        out = {"value": None}
+
+        body = ttk.Frame(dlg)
+        body.pack(fill="both", expand=True, padx=14, pady=12)
+        v_name = tk.StringVar(value=initial.get("name", "") or "")
+        v_url = tk.StringVar(value=initial.get("url", "") or "")
+        v_key = tk.StringVar(value=initial.get("key", "") or "")
+        v_model = tk.StringVar(value=initial.get("model", "") or "")
+
+        def add_row(r, label, var, width=54, show=None):
+            ttk.Label(body, text=label).grid(row=r, column=0, sticky="w", pady=4)
+            ent = ttk.Entry(body, textvariable=var, width=width, font=self.mono_font, show=show)
+            ent.grid(row=r, column=1, sticky="we", padx=(8, 0), pady=4)
+            return ent
+
+        e_name = add_row(0, "站点名称", v_name, 30)
+        ttk.Label(body, text="常用预设").grid(row=1, column=0, sticky="w", pady=4)
+        v_preset = tk.StringVar(value=QUICK_PRESETS[0][0])
+        cmb = ttk.Combobox(body, textvariable=v_preset, values=[n for n, _ in QUICK_PRESETS],
+                           state="readonly", width=30)
+        cmb.grid(row=1, column=1, sticky="w", padx=(8, 0), pady=4)
+
+        def apply_preset(_e=None):
+            for n, u in QUICK_PRESETS:
+                if n == v_preset.get() and u:
+                    v_url.set(u)
+                    if not v_name.get().strip():
+                        v_name.set(n)
+                    break
+        cmb.bind("<<ComboboxSelected>>", apply_preset)
+
+        add_row(2, "API 地址", v_url)
+        add_row(3, "API Key", v_key, show="*")
+        add_row(4, "默认模型", v_model, 30)
+        ttk.Label(body, text="（默认模型可留空，之后在模型列表里挑也行）",
+                  style="Hint.TLabel").grid(row=4, column=2, sticky="w", padx=(6, 0))
+        hint = ("已勾选「记住 Key」：Key 会加密保存到本机，切换站点自动带出。"
+                if self.var_remember.get() else
+                "注意：当前未勾选「记住 Key」，这里填的 Key 不会写盘（只在本次运行内有效）。")
+        ttk.Label(body, text=hint, style="Hint.TLabel", wraplength=430).grid(
+            row=5, column=1, sticky="w", pady=(2, 0))
+        err = ttk.Label(body, text="", foreground=COLORS["risk"])
+        err.grid(row=6, column=1, sticky="w")
+
+        def ok(_e=None):
+            name = v_name.get().strip()
+            url = v_url.get().strip()
+            if not name:
+                err.configure(text="请填写站点名称")
+                return
+            if name == ADHOC_SITE:
+                err.configure(text="这个名称被内置项占用了，换一个")
+                return
+            if not url:
+                err.configure(text="请填写 API 地址")
+                return
+            if name != initial.get("name") and self._site_index(name) >= 0:
+                err.configure(text=f"站点名「{name}」已存在")
+                return
+            out["value"] = {"name": name, "url": url, "key": v_key.get().strip(),
+                            "model": v_model.get().strip()}
+            dlg.destroy()
+
+        bar = ttk.Frame(body)
+        bar.grid(row=7, column=0, columnspan=2, sticky="e", pady=(10, 0))
+        ttk.Button(bar, text="确定", command=ok).pack(side="left", padx=4)
+        ttk.Button(bar, text="取消", command=dlg.destroy).pack(side="left")
+        dlg.bind("<Return>", ok)
+        dlg.bind("<Escape>", lambda e: dlg.destroy())
+        e_name.focus_set()
+        self.root.wait_window(dlg)
+        return out["value"]
+
+    def add_site(self):
+        init = {"name": "", "url": self.var_url.get().strip(),
+                "key": self.var_key.get().strip(), "model": self.var_model.get().strip()}
+        data = self._site_dialog("添加站点", init)
+        if not data:
+            return
+        if self._add_site_record(data["name"], data["url"], data["key"], data["model"]):
+            self._save_config()
+            self._set_status(f"已添加站点「{data['name']}」，可用它做第 ① 步")
+
+    def edit_site(self):
+        rec = self._current_record()
+        if rec is None:
+            self._set_status("请先在下拉里选择一个已保存的站点（「自定义」不能编辑）")
+            return
+        self._stash_current_fields()
+        old_name = rec["name"]
+        data = self._site_dialog(f"编辑站点 - {old_name}", dict(rec))
+        if not data:
+            return
+        if self._update_site_record(old_name, data["name"], data["url"], data["key"],
+                                    data["model"]):
+            self._save_config()
+            self._set_status(f"已更新站点「{data['name']}」")
+
+    def delete_site(self):
+        from tkinter import messagebox
+        rec = self._current_record()
+        if rec is None:
+            self._set_status("「自定义（临时）」不能删除，请先选中一个已保存的站点")
+            return
+        if not messagebox.askyesno("删除站点", f"确定删除站点「{rec['name']}」？"):
+            return
+        name = rec["name"]
+        if self._delete_site_record(name):
+            self._save_config()
+            self._set_status(f"已删除站点「{name}」")
+
+    def import_sites_to_batch(self):
+        """把所有已保存的站点导入批量测试框；一个站点有多把 Key 时，每把各占一行。"""
+        self._stash_current_fields()
+        lines = []
+        for s in self.sites:
+            ks = site_keys(s)
+            if not ks:
+                continue
+            for k in ks:
+                parts = [s.get("url", ""), k.get("key", ""), s.get("model", "")]
+                while parts and not parts[-1]:
+                    parts.pop()
+                if parts and parts[0]:
+                    if len(ks) > 1 and k.get("name"):
+                        lines.append(f"# {s.get('name', '')} / {k['name']}")
+                    lines.append(" | ".join(parts))
+        if self.var_url.get().strip() and self._active_site == ADHOC_SITE:
+            parts = [self.var_url.get().strip(), self.var_key.get().strip(),
+                     self.var_model.get().strip()]
+            while parts and not parts[-1]:
+                parts.pop()
+            lines.insert(0, " | ".join(parts))
+        if not lines:
+            self._set_status("站点列表是空的，先点「＋ 添加站点」")
+            return
+        self.txt_batch.delete("1.0", "end")
+        self.txt_batch.insert("1.0", "\n".join(lines) + "\n")
+        self._save_config()
+        self._set_status(f"已把 {len(lines)} 个站点导入批量列表")
+
+    def _log(self, msg: str):
+        self.q.put(("log", msg))
+
+    def _log_clear(self):
+        self.txt_log.configure(state="normal")
+        self.txt_log.delete("1.0", "end")
+        self.txt_log.configure(state="disabled")
+
+    def _log_append(self, msg: str):
+        self.txt_log.configure(state="normal")
+        ts = time.strftime("%H:%M:%S")
+        self.txt_log.insert("end", f"{ts}  {msg}\n")
+        if int(self.txt_log.index("end-1c").split(".")[0]) > 4000:
+            self.txt_log.delete("1.0", "500.0")
+        self.txt_log.see("end")
+        self.txt_log.configure(state="disabled")
+
+    def _set_status(self, text: str):
+        self.lbl_status.configure(text=text)
+
+    def copy_log(self):
+        self.root.clipboard_clear()
+        self.root.clipboard_append(self.txt_log.get("1.0", "end-1c"))
+        self._set_status("日志已复制")
+
+    def copy_verdict(self):
+        if not self.last_result:
+            self._set_status("还没有测试结果")
+            return
+        res = self.last_result
+        lines = [f"地址: {res.get('base')}", f"结论: {res.get('verdict')}",
+                 f"协议: {res.get('protocol_label')}", f"模型数: {res.get('model_count', 0)}",
+                 f"请求模型: {res.get('used_model')}", f"返回模型: {res.get('returned_model')}",
+                 f"首字延迟: {res.get('first_token_ms')} ms", f"指纹: {res.get('fingerprint')}"]
+        lines += [f"[{lvl}] {t}" for lvl, t in
+                  (res.get("warnings", []) + res.get("gen_warnings", []))]
+        self.root.clipboard_clear()
+        self.root.clipboard_append("\n".join(lines))
+        self._set_status("结论已复制到剪贴板")
+
+    def copy_models(self):
+        ids = [self.tv_models.set(i, "id") for i in self.tv_models.get_children()]
+        if not ids:
+            self._set_status("模型列表为空")
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append("\n".join(ids))
+        self._set_status(f"已复制 {len(ids)} 个模型名")
+
+    # ---------------- 配置持久化 ----------------
+    # 保存位置：~/.api_probe.json（config_version 4）
+    #   明文：各站点 名称/地址/默认模型、各把 Key 的名称与格式、超时、各开关、窗口大小
+    #   加密：各站点每一把 Key 的值、以及批量列表 —— 只有勾选「记住 Key」才写盘，用 DPAPI 加密
+    #   v3 → v4：单 Key 结构迁移成 key 列表（原名「默认」）
+    def _load_config(self):
+        cfg: dict = {}
+        try:
+            if CONFIG_PATH.exists():
+                data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    cfg = data
+        except Exception:
+            cfg = {}
+        # 上下文长度（K）先预填：即使还没有 ~/.api_probe.json，也要从未接入的 CLI 配置里
+        # 读当前值 —— 否则第一次用的人看到空框，一接入反而把手工设的窗口删掉。
+        for key, var, reader in (
+                ("cc_context_k", self.var_cc_ctx, read_claude_context_tokens),
+                ("codex_context_k", self.var_codex_ctx, read_codex_context_tokens),
+                ("grok_context_k", self.var_grok_ctx, read_grok_context_tokens)):
+            try:
+                var.set(str(cfg.get(key) or "") if key in cfg
+                        else format_context_k(reader()))
+            except Exception:
+                pass
+        if not cfg:
+            return
+        try:
+            self.var_timeout.set(str(cfg.get("timeout", int(DEFAULT_TIMEOUT))))
+            self.var_verify.set(bool(cfg.get("verify_tls", True)))
+            self.var_deep.set(bool(cfg.get("deep_check", True)))
+            self.var_only_main.set(bool(cfg.get("only_mainstream", False)))
+            self.var_workers.set(str(cfg.get("workers", 2)))
+            # v1.9.1 早期版本存过 proxy_mode（auto/direct/custom），现在只看 proxy_url：
+            # 有地址就是“额外代理”，没有就是“系统代理 ∥ 直连”；旧的 direct 偏好不再保留
+            self.var_proxy_url.set(str(cfg.get("proxy_url") or ""))
+            geo = str(cfg.get("geometry") or "")
+            if re.fullmatch(r"\d+x\d+([+-]\d+[+-]\d+)?", geo):
+                self.root.geometry(geo)
+        except Exception:
+            pass
+        self._apply_net()
+        remember = bool(cfg.get("remember_key", False))
+        self.var_remember.set(remember)
+
+        # 站点列表
+        self.sites = []
+        for s in cfg.get("sites") or []:
+            if not isinstance(s, dict):
+                continue
+            name = str(s.get("name") or "").strip()
+            if not name or name == ADHOC_SITE:
+                continue
+            keys: list[dict] = []
+            for k in s.get("keys") or []:
+                if not isinstance(k, dict):
+                    continue
+                kname = str(k.get("name") or "").strip()
+                if not kname:
+                    continue
+                kval = ""
+                if remember and k.get("key"):
+                    kval = decode_secret(str(k["key"]), bool(k.get("key_encrypted", False)))
+                keys.append({"name": kname, "format": str(k.get("format") or "auto"),
+                             "key": kval})
+            if not keys and s.get("key"):        # v3 及更早：单 Key 结构
+                keys = [{"name": "默认", "format": "auto",
+                         "key": decode_secret(str(s["key"]),
+                                              bool(s.get("key_encrypted", False)))
+                         if remember else ""}]
+            act = str(s.get("active_key") or "")
+            if act not in [k["name"] for k in keys]:
+                act = keys[0]["name"] if keys else ""
+            self.sites.append({"name": name, "url": str(s.get("url") or ""),
+                               "model": str(s.get("model") or ""),
+                               "keys": keys, "active_key": act,
+                               "key": (find_site_key({"keys": keys}, act) or {}).get("key", "")})
+        # 「自定义（临时）」那一格
+        ad = cfg.get("adhoc") if isinstance(cfg.get("adhoc"), dict) else {}
+        ad_keys: list[dict] = []
+        for k in ad.get("keys") or []:
+            if not isinstance(k, dict):
+                continue
+            kname = str(k.get("name") or "").strip()
+            if not kname:
+                continue
+            kval = ""
+            if remember and k.get("key"):
+                kval = decode_secret(str(k["key"]), bool(k.get("key_encrypted", False)))
+            ad_keys.append({"name": kname, "format": str(k.get("format") or "auto"), "key": kval})
+        adhoc_key = ""
+        if remember:
+            blob = str(ad.get("key") or "") or str(cfg.get("key") or "")
+            enc = bool(ad.get("key_encrypted", cfg.get("key_encrypted", False)))
+            adhoc_key = decode_secret(blob, enc)
+        if not ad_keys and adhoc_key:
+            ad_keys = [{"name": "默认", "format": "auto", "key": adhoc_key}]
+        ad_act = str(ad.get("active_key") or "")
+        if ad_act not in [k["name"] for k in ad_keys]:
+            ad_act = ad_keys[0]["name"] if ad_keys else ""
+        self.adhoc = {"name": ADHOC_SITE,
+                      "url": str(ad.get("url") or cfg.get("url") or ""),
+                      "model": str(ad.get("model") or cfg.get("model") or ""),
+                      "keys": ad_keys, "active_key": ad_act,
+                      "key": (find_site_key({"keys": ad_keys}, ad_act) or {}).get("key", "")
+                             or adhoc_key}
+        # v1/v2 -> v3 迁移：老配置只有一个 url，把它变成一个站点，免得用户以为丢了
+        if not self.sites and int(cfg.get("config_version") or 1) < 3 and self.adhoc["url"]:
+            self.sites.append({"name": "默认站点", "url": self.adhoc["url"],
+                               "model": self.adhoc["model"],
+                               "keys": list(self.adhoc.get("keys") or []),
+                               "active_key": self.adhoc.get("active_key", ""),
+                               "key": self.adhoc.get("key", "")})
+        # 当前选中的站点
+        names = [ADHOC_SITE] + [s["name"] for s in self.sites]
+        cur = str(cfg.get("current_site") or "")
+        if cur not in names:
+            cur = self.sites[0]["name"] if self.sites else ADHOC_SITE
+        self._active_site = cur
+        self.var_site.set(cur)
+        self._refresh_site_combo()
+        self._apply_record(self._record_for(cur) or self.adhoc)
+
+        if remember:
+            batch = decode_secret(str(cfg.get("batch_text") or ""),
+                                  bool(cfg.get("batch_encrypted", False)))
+            if batch:
+                self.txt_batch.delete("1.0", "end")
+                self.txt_batch.insert("1.0", batch)
+
+    def _save_config(self):
+        try:
+            self._stash_current_fields()
+            remember = bool(self.var_remember.get())
+            sites_out = []
+            for s in self.sites:
+                rec = {"name": s.get("name", ""), "url": s.get("url", ""),
+                       "model": s.get("model", "")}
+                keys_out = []
+                for k in site_keys(s):
+                    ko = {"name": k.get("name", ""), "format": k.get("format") or "auto"}
+                    if remember and k.get("key"):
+                        ko["key"], ko["key_encrypted"] = encode_secret(k["key"])
+                    keys_out.append(ko)
+                rec["keys"] = keys_out
+                rec["active_key"] = s.get("active_key") or (keys_out[0]["name"] if keys_out else "")
+                sites_out.append(rec)
+            adhoc_out = {"url": self.adhoc.get("url", ""), "model": self.adhoc.get("model", "")}
+            ad_keys_out = []
+            for k in site_keys(self.adhoc):
+                ko = {"name": k.get("name", ""), "format": k.get("format") or "auto"}
+                if remember and k.get("key"):
+                    ko["key"], ko["key_encrypted"] = encode_secret(k["key"])
+                ad_keys_out.append(ko)
+            adhoc_out["keys"] = ad_keys_out
+            adhoc_out["active_key"] = (self.adhoc.get("active_key")
+                                       or (ad_keys_out[0]["name"] if ad_keys_out else ""))
+            if remember and self.adhoc.get("key"):
+                adhoc_out["key"], adhoc_out["key_encrypted"] = encode_secret(self.adhoc["key"])
+            batch_blob, batch_enc = ("", True)
+            if remember:
+                batch_blob, batch_enc = encode_secret(
+                    self.txt_batch.get("1.0", "end-1c").strip())
+            cfg = {
+                "config_version": 4,
+                "current_site": self.var_site.get(),
+                "sites": sites_out,
+                "adhoc": adhoc_out,
+                "timeout": self._timeout(),
+                "verify_tls": bool(self.var_verify.get()),
+                "proxy_mode": self._proxy_mode(),
+                "proxy_url": self.var_proxy_url.get().strip(),
+                "deep_check": bool(self.var_deep.get()),
+                "only_mainstream": bool(self.var_only_main.get()),
+                "workers": self._workers(),
+                # 三个接入页的上下文长度（K，原样存字符串；空 = 不写）
+                "cc_context_k": self.var_cc_ctx.get().strip(),
+                "codex_context_k": self.var_codex_ctx.get().strip(),
+                "grok_context_k": self.var_grok_ctx.get().strip(),
+                "remember_key": remember,
+                "batch_text": batch_blob,
+                "batch_encrypted": batch_enc,
+            }
+            # 顶层再冗余一份「当前站点」，方便人肉查看，也让旧版本仍能读到地址
+            cfg["url"] = self.var_url.get().strip()
+            cfg["model"] = self.var_model.get().strip()
+            if remember:
+                cfg["key"], cfg["key_encrypted"] = encode_secret(self.var_key.get().strip())
+            else:
+                cfg["key"], cfg["key_encrypted"] = "", True
+            try:
+                if self.root.winfo_viewable():
+                    cfg["geometry"] = self.root.geometry()
+            except Exception:
+                pass
+            _atomic_write_text(CONFIG_PATH, json.dumps(cfg, ensure_ascii=False, indent=2),
+                               encoding="utf-8")
+        except Exception:
+            pass
+
+    def _schedule_save(self, delay: int = 1200):
+        """改动后延迟写盘，避免每敲一个键就写一次文件。"""
+        try:
+            if self._save_job:
+                self.root.after_cancel(self._save_job)
+            self._save_job = self.root.after(delay, self._save_now)
+        except Exception:
+            self._save_job = None
+
+    def _bind_ctx_save(self, widget) -> None:
+        """上下文长度改完就落盘 —— 它不在站点记录里，不绑定的话关了窗口就丢。"""
+        widget.bind("<KeyRelease>", lambda e: self._schedule_save(600))
+        widget.bind("<FocusOut>", lambda e: self._schedule_save(200))
+
+    def _save_now(self):
+        self._save_job = None
+        self._save_config()
+
+    def _on_remember_toggle(self):
+        self._save_config()          # 立即生效：取消勾选会同时清掉文件里的 Key
+        if self.var_remember.get():
+            extra = "" if dpapi_available() else "（本机不支持加密，将以明文保存）"
+            self._set_status(f"已记住 Key，保存在 {CONFIG_PATH}{extra}")
+        else:
+            self._set_status(f"已取消记住，配置文件里的 Key 已清空（{CONFIG_PATH}）")
+
+    def _clear_all_saved_keys(self):
+        """清空所有站点（含自定义格）已保存的 Key，并把文件里的 Key 抹掉。"""
+        for s in self.sites:
+            s["key"] = ""
+        self.adhoc["key"] = ""
+        self.var_key.set("")
+        self._save_config()
+
+    def clear_saved_key(self):
+        from tkinter import messagebox
+        n = sum(1 for s in self.sites if s.get("key")) + (1 if self.adhoc.get("key") else 0)
+        if not messagebox.askyesno("清除已存 Key",
+                                   f"将清空 {n} 处已保存的 Key（站点列表与当前输入框），确定？"):
+            return
+        self._clear_all_saved_keys()
+        self._set_status(f"已清空保存的 Key：{CONFIG_PATH}")
+
+    def _on_close(self):
+        self.stop_event.set()
+        self._save_config()
+        self.root.destroy()
+
+    def _timeout(self) -> float:
+        try:
+            return max(3.0, float(self.var_timeout.get()))
+        except Exception:
+            return DEFAULT_TIMEOUT
+
+    def _workers(self) -> int:
+        try:
+            return max(1, min(8, int(self.var_workers.get())))
+        except Exception:
+            return 2
+
+    # ---------------- 网络出口 ----------------
+    def _proxy_mode(self) -> str:
+        """界面只区分两种：填了额外代理就走它，没填就让系统代理 ∥ 直连 竞速。"""
+        return "custom" if normalize_proxy_url(self.var_proxy_url.get()) else "auto"
+
+    def _apply_net(self) -> None:
+        """把界面上的出口设置应用到所有请求。"""
+        try:
+            apply_net_config(self._proxy_mode(), self.var_proxy_url.get())
+        except Exception:
+            pass
+
+    def _on_proxy_change(self):
+        self._apply_net()
+        url = normalize_proxy_url(self.var_proxy_url.get())
+        if url:
+            self._set_status(f"额外代理已启用：{url}（与直连并行，先回来的算数）")
+        else:
+            self._set_status("额外代理已清空：系统代理 ∥ 直连 并行")
+        self._schedule_save(200)
+
+    # ---------------- 第 1 步：拉取模型列表 ----------------
+    def fetch_models(self):
+        if self.busy:
+            self._set_status("正在测试中，请稍候…")
+            return
+        url = self.var_url.get().strip()
+        if not url:
+            self._set_status("请先填写 API 地址")
+            return
+        key = self.var_key.get().strip()
+        self.stop_event.clear()
+        self._save_config()
+        self._log_clear()
+        self._set_status("第 1 步：正在拉取模型列表…")
+        self.busy = True
+        self.btn_list.configure(state="disabled")
+        self.btn_gen.configure(state="disabled")
+        self.btn_batch.configure(state="disabled")
+        self.btn_stop.configure(state="normal")
+        self.tv_ov.delete(*self.tv_ov.get_children())
+        self.tv_models.delete(*self.tv_models.get_children())
+        self.site_result = None
+        self.last_result = None
+        self.lbl_picked.configure(text="（未选择）")
+        self.lbl_summary.configure(text=f"正在拉取 {url} 的模型列表 …")
+        self._log_append(f"=== 第 1 步：获取模型列表 {url} （Key: {mask_key(key)}） ===")
+        # 注意：Tk 变量只能在主线程读，先取好值再交给 worker 线程
+        timeout, verify = self._timeout(), bool(self.var_verify.get())
+
+        def work():
+            try:
+                res = probe_site(url, key, timeout=timeout, verify=verify, log=self._log,
+                                 stop_event=self.stop_event)
+                self.q.put(("site_done", res))
+            except Exception as e:  # noqa: BLE001
+                self.q.put(("fatal", f"{type(e).__name__}: {e}"))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    # ---------------- 第 2 步：用人工选中的模型发测试 ----------------
+    def run_generation(self):
+        if self.busy:
+            self._set_status("正在测试中，请稍候…")
+            return
+        if not self.site_result:
+            self._set_status("请先点「① 获取模型列表」")
+            return
+        model = self.var_model.get().strip()
+        if not model:
+            self._set_status("请先在「模型列表」里选一个模型（或在上方「指定模型」里手写一个）")
+            self.nb.select(1)
+            return
+        site = self.site_result
+        key = self.var_key.get().strip()
+        self.stop_event.clear()
+        self.busy = True
+        self.btn_list.configure(state="disabled")
+        self.btn_gen.configure(state="disabled")
+        self.btn_batch.configure(state="disabled")
+        self.btn_stop.configure(state="normal")
+        self._set_status(f"第 2 步：正在用 {model} 发测试…")
+        self._log_append(f"=== 第 2 步：生成测试，模型 = {model} ===")
+        # Tk 变量只在主线程读
+        timeout = self._timeout()
+        verify = bool(self.var_verify.get())
+        deep = bool(self.var_deep.get())
+
+        def work():
+            try:
+                res = probe_generate(site, key, model, timeout=timeout, verify=verify,
+                                     deep=deep, log=self._log, stop_event=self.stop_event)
+                self.q.put(("gen_done", res))
+            except Exception as e:  # noqa: BLE001
+                self.q.put(("fatal", f"{type(e).__name__}: {e}"))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def stop(self):
+        self.stop_event.set()
+        self._set_status("正在停止…")
+        self._log_append("用户请求停止")
+
+    # ---------------- 批量测试 ----------------
+    def start_batch(self):
+        if self.busy:
+            self._set_status("正在测试中，请稍候…")
+            return
+        items = parse_batch_lines(self.txt_batch.get("1.0", "end"))
+        if not items:
+            self._set_status("批量输入为空")
+            return
+        self.stop_event.clear()
+        self._clear_batch()
+        self.busy = True
+        self.btn_batch.configure(state="disabled")
+        self.btn_list.configure(state="disabled")
+        self.btn_gen.configure(state="disabled")
+        self.btn_stop.configure(state="normal")
+        self._log_append(f"=== 批量测试开始，共 {len(items)} 个站点 ===")
+        workers = self._workers()
+        self._save_config()                       # 顺手把批量列表存下来
+        # Tk 变量只在主线程读
+        timeout = self._timeout()
+        verify = bool(self.var_verify.get())
+        deep = bool(self.var_deep.get())
+
+        def work():
+            done = 0
+            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+                futs = {ex.submit(probe, it["url"], it["key"], it["model"], timeout,
+                                  verify, deep, self._log, self.stop_event): it for it in items}
+                for fut in concurrent.futures.as_completed(futs):
+                    it = futs[fut]
+                    try:
+                        res = fut.result()
+                    except Exception as e:  # noqa: BLE001
+                        res = {"input": it["url"], "base": it["url"], "verdict":
+                               f"异常: {type(e).__name__}: {e}", "verdict_level": "error",
+                               "ok": False, "models": [], "warnings": []}
+                    done += 1
+                    self.q.put(("batch_row", (res, done, len(items))))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _clear_batch(self):
+        self.tv_batch.delete(*self.tv_batch.get_children())
+        self.batch_rows = []
+
+    # ---------------- 事件泵 ----------------
+    def _pump(self):
+        try:
+            while True:
+                kind, data = self.q.get_nowait()
+                if kind == "log":
+                    self._log_append(str(data))
+                elif kind == "site_done":
+                    self._render_site(data)
+                elif kind == "gen_done":
+                    self._render_generation(data)
+                elif kind == "cc_log":
+                    self._cc_log_append(str(data))
+                elif kind == "cc_check_done":
+                    self._render_cc_check(data)
+                elif kind == "cc_install_done":
+                    self._finish_cc_install(data)
+                elif kind == "codex_log":
+                    self._codex_log_append(str(data))
+                elif kind == "codex_check_done":
+                    self._render_codex_check(data)
+                elif kind == "codex_install_done":
+                    self._finish_codex_install(data)
+                elif kind == "grok_log":
+                    self._grok_log_append(str(data))
+                elif kind == "grok_check_done":
+                    self._render_grok_check(data)
+                elif kind == "grok_install_done":
+                    self._finish_grok_install(data)
+                elif kind == "flow_done":
+                    self._render_flow(data)
+                elif kind == "batch_row":
+                    res, done, total = data
+                    self._append_batch_row(res, done, total)
+                elif kind == "batch_done":
+                    self._finish_batch()
+                elif kind == "fatal":
+                    self._log_append(f"致命错误: {data}")
+                    self._set_status("出错，详见日志")
+                    self._finish_busy()
+        except queue.Empty:
+            pass
+        self.root.after(80, self._pump)
+
+    def _finish_busy(self):
+        self.busy = False
+        self.btn_list.configure(state="normal")
+        self.btn_batch.configure(state="normal")
+        self.btn_gen.configure(state="normal" if self.site_result else "disabled")
+        self.btn_stop.configure(state="disabled")
+        self._set_action_busy(False)
+
+    # ---------------- 渲染 ----------------
+    def _render_site(self, res: dict):
+        """第 1 步完成：把站点信息铺开，并把推荐模型高亮出来，等人工确认。"""
+        self.site_result = res
+        self.last_result = res
+        self._site_signature = self._signature()
+        self._render_overview(res)
+        self._refresh_models()
+        n = len(res.get("models") or [])
+        self.lbl_models.configure(text=f"共 {n} 个模型")
+        auto = choose_default_model(res.get("models") or [], self.var_model.get().strip())
+        if auto:
+            self._select_model_in_tree(auto)
+        if res.get("ok_site"):
+            self.nb.select(1)
+            self._set_status("第 1 步完成 —— 请选择模型")
+            self.lbl_summary.configure(
+                text=f"第 1 步完成：{n} 个模型（已定位到推荐模型 {auto}）。"
+                     "点「② 对选中模型发测试」或双击某行直接测。")
+        else:
+            self.nb.select(0)
+            self._set_status("第 1 步结束，详见概览")
+            self.lbl_summary.configure(
+                text=f"{res.get('verdict', '')}（可手工在上方「指定模型」填模型名后做第 2 步）")
+        self._log_append(f"=== 第 1 步完成：{res.get('verdict', '')} ===")
+        self._finish_busy()
+        try:
+            self.cc_refresh_context()          # 顺手把候选模型喂给三个 CLI 接入页
+            self.codex_refresh_context()
+            self.grok_refresh_context()
+        except Exception:
+            pass
+
+    def _render_generation(self, res: dict):
+        """第 2 步完成：刷新概览并切回概览页看结论。"""
+        self.site_result = res
+        self.last_result = res
+        self._render_overview(res)
+        self.nb.select(0)
+        self._set_status("第 2 步完成")
+        self.lbl_summary.configure(text=f"{res.get('base', '')} → {res.get('verdict', '')}")
+        self._log_append(f"=== 第 2 步完成：{res.get('verdict', '')} ===")
+        self._finish_busy()
+
+    def _render_overview(self, res: dict):
+        tv = self.tv_ov
+        tv.delete(*tv.get_children())
+
+        def add(item, value, level="info", head=False):
+            tv.insert("", "end", values=(item, value), tags=("head",) if head else (level,))
+
+        add("结论", res.get("verdict", ""), res.get("verdict_level", "info"))
+
+        add("── 第 1 步：站点与模型列表 ──", "", head=True)
+        add("地址（归一化）", res.get("base", ""), "muted")
+        add("协议族", res.get("protocol_label", "未识别"))
+        add("站点指纹", res.get("fingerprint") or "未识别（非 New API/one-api 系或已隐藏）")
+        add("模型数量", str(res.get("model_count", len(res.get("models") or []))))
+        add("模型列表耗时", f"{res.get('models_ms')} ms" if res.get("models_ms") else "-")
+        for lvl, text in res.get("warnings", []):
+            add(LEVEL_LABEL.get(lvl, "·"), text, lvl)
+
+        add("── 第 2 步：生成测试 ──", "", head=True)
+        if not res.get("used_model") and not res.get("gen_error"):
+            add("状态", "尚未执行 —— 在「模型列表」里选一个模型，再点「② 对选中模型发测试」", "muted")
+        else:
+            add("请求模型", res.get("used_model") or "-")
+            got = res.get("returned_model") or "-"
+            same = (res.get("used_model") and res.get("returned_model")
+                    and norm_model(res["used_model"]) == norm_model(res["returned_model"]))
+            add("返回模型", got, "ok" if same else ("risk" if res.get("returned_model") else "muted"))
+            add("首字延迟", f"{res['first_token_ms']:.0f} ms"
+                if res.get("first_token_ms") is not None else "-")
+            lvl_f, txt_f = evaluate_fluency(res.get("first_token_ms"),
+                                            bool(res.get("stream_ok")))
+            add("流畅度", txt_f, lvl_f)
+            add("生成总耗时", f"{res.get('gen_ms')} ms" if res.get("gen_ms") else "-")
+            usage = res.get("usage")
+            if isinstance(usage, dict):
+                add("usage（token）", json.dumps(usage, ensure_ascii=False)[:200])
+            else:
+                add("usage（token）", "未返回", "warn")
+            add("HTTP 状态", str(res.get("http_status") or "-"))
+            if res.get("sample_text"):
+                add("返回内容片段", res["sample_text"].replace("\n", " ")[:160])
+            if res.get("gen_error"):
+                add("生成错误", res["gen_error"], "error")
+            for lvl, text in res.get("gen_warnings", []):
+                add(LEVEL_LABEL.get(lvl, "·"), text, lvl)
+
+    def _refresh_models(self):
+        models = (self.site_result or self.last_result or {}).get("models") or []
+        kw = self.var_filter.get().strip().lower()
+        only_main = bool(self.var_only_main.get())
+        main_set = set(MAINSTREAM_MODELS)
+        tv = self.tv_models
+        tv.delete(*tv.get_children())
+        n = 0
+        for i, m in enumerate(models, 1):
+            mid = m.get("id", "")
+            nm = norm_model(mid)
+            marks = []
+            if nm in main_set:
+                marks.append("主流")
+            low = mid.lower()
+            if any(x in low for x in ("embed", "rerank")):
+                marks.append("向量/重排")
+            elif any(x in low for x in ("tts", "whisper", "audio", "speech")):
+                marks.append("语音")
+            elif any(x in low for x in ("image", "dall-e", "flux", "sd", "video", "sora", "mj")):
+                marks.append("图像/视频")
+            elif any(x in low for x in ("moderation",)):
+                marks.append("审核")
+            if only_main and "主流" not in marks:
+                continue
+            if kw and kw not in mid.lower() and not any(kw in mk.lower() for mk in marks):
+                continue
+            n += 1
+            m["_mark"] = "、".join(marks)
+            tv.insert("", "end", values=(n, mid, m["_mark"], m.get("owner", "")
+                                         or m.get("display", "")))
+        self.lbl_models.configure(text=f"显示 {n} / 共 {len(models)} 个模型")
+
+    def _select_model_in_tree(self, model_id: str) -> None:
+        """在模型列表里定位并选中某个模型（仅高亮，不会自动发测试）。"""
+        for iid in self.tv_models.get_children():
+            if self.tv_models.set(iid, "id") == model_id:
+                self.tv_models.selection_set(iid)
+                self.tv_models.focus(iid)
+                self.tv_models.see(iid)
+                self.var_model.set(model_id)
+                self.lbl_picked.configure(text=model_id)
+                return
+
+    def _on_model_select(self, _evt=None):
+        sel = self.tv_models.selection()
+        if not sel:
+            return
+        mid = self.tv_models.set(sel[0], "id")
+        self.var_model.set(mid)
+        self.lbl_picked.configure(text=mid)
+        if self.site_result and not self.busy:
+            self._set_status(f"已选中 {mid} —— 点「② 对选中模型发测试」或双击该行直接测")
+
+    def _signature(self) -> str:
+        return f"{self.var_url.get().strip()}|{self.var_key.get().strip()}"
+
+    def _on_conn_changed(self, _evt=None):
+        """输入框里的地址/Key 被改动后：结果作废 + 择机落盘。"""
+        self._schedule_save()
+        if self.busy:
+            return
+        if self.site_result and self._signature() != self._site_signature:
+            self._invalidate_results()
+            self._set_status("地址/Key 已变更：请重新点「① 获取模型列表」")
+
+    def _on_model_dclick(self, _evt):
+        sel = self.tv_models.selection()
+        if not sel:
+            return
+        self._on_model_select()
+        self.run_generation()
+
+    def _append_batch_row(self, res: dict, done: int, total: int):
+        row = result_to_row(res)
+        self.batch_rows.append(row)
+        req, got = res.get("used_model", ""), res.get("returned_model", "")
+        arrow = f"{req} → {got}" if (req or got) else ""
+        marks = " ; ".join(x for lvl, x in res.get("warnings", []) if lvl in ("risk", "warn", "error"))
+        self.tv_batch.insert("", "end", tags=(res.get("verdict_level", "info"),), values=(
+            res.get("base") or res.get("input", ""),
+            res.get("protocol_label", ""),
+            res.get("http_status", ""),
+            res.get("models_ms", ""),
+            round(res["first_token_ms"], 1) if res.get("first_token_ms") is not None else "",
+            res.get("model_count", len(res.get("models") or [])),
+            arrow,
+            res.get("fingerprint", ""),
+            res.get("verdict", "") + (f" ｜ {marks}" if marks else ""),
+        ))
+        self._set_status(f"批量进度 {done}/{total}")
+        self.lbl_summary.configure(text=f"批量测试中… {done}/{total}")
+        if done >= total:
+            self._log_append(f"=== 批量测试完成，共 {total} 个 ===")
+            self._set_status(f"批量完成：{total} 个")
+            self._finish_busy()
+
+    def _finish_batch(self):
+        self._finish_busy()
+
+    def _on_batch_dclick(self, _evt):
+        sel = self.tv_batch.selection()
+        if not sel:
+            return
+        vals = self.tv_batch.item(sel[0], "values")
+        if vals:
+            self.var_url.set(vals[0])
+            self.nb.select(0)
+            self._set_status("已把该地址填入上方输入框，可点「开始测试」看详情")
+
+    # ---------------- 导出 ----------------
+    def export_last(self, kind: str):
+        from tkinter import filedialog, messagebox
+        if not self.last_result:
+            self._set_status("还没有测试结果")
+            return
+        res = self.last_result
+        default = f"api_probe_{time.strftime('%Y%m%d_%H%M%S')}.{kind}"
+        path = filedialog.asksaveasfilename(title="导出测试结果", defaultextension=f".{kind}",
+                                            initialfile=default)
+        if not path:
+            return
+        try:
+            if kind == "json":
+                export_json(res, path)
+            else:
+                export_csv([result_to_row(res)], path)
+            self._set_status(f"已导出：{path}")
+            messagebox.showinfo("导出成功", f"已导出到：\n{path}")
+        except Exception as e:  # noqa: BLE001
+            messagebox.showerror("导出失败", str(e))
+
+    def export_batch(self, kind: str):
+        from tkinter import filedialog, messagebox
+        if not self.batch_rows:
+            self._set_status("批量结果为空")
+            return
+        default = f"api_batch_{time.strftime('%Y%m%d_%H%M%S')}.{kind}"
+        path = filedialog.asksaveasfilename(title="导出批量结果", defaultextension=f".{kind}",
+                                            initialfile=default)
+        if not path:
+            return
+        try:
+            if kind == "json":
+                export_json(self.batch_rows, path)
+            else:
+                export_csv(self.batch_rows, path)
+            self._set_status(f"已导出：{path}")
+            messagebox.showinfo("导出成功", f"已导出到：\n{path}")
+        except Exception as e:  # noqa: BLE001
+            messagebox.showerror("导出失败", str(e))
+
+    def export_models(self):
+        from tkinter import filedialog, messagebox
+        models = (self.last_result or {}).get("models") or []
+        if not models:
+            self._set_status("模型列表为空")
+            return
+        path = filedialog.asksaveasfilename(title="导出模型列表", defaultextension=".csv",
+                                            initialfile=f"models_{time.strftime('%Y%m%d_%H%M%S')}.csv")
+        if not path:
+            return
+        try:
+            export_csv([{"模型ID": m.get("id", ""), "标记": m.get("_mark", ""),
+                         "归属": m.get("owner", "")} for m in models], path)
+            messagebox.showinfo("导出成功", f"已导出 {len(models)} 个模型到：\n{path}")
+        except Exception as e:  # noqa: BLE001
+            messagebox.showerror("导出失败", str(e))
+
+
+def enable_dpi_awareness():
+    if sys.platform != "win32":
+        return
+    try:
+        from ctypes import windll
+        try:
+            windll.shcore.SetProcessDpiAwareness(1)
+        except Exception:
+            windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
+
+
+def run_gui() -> int:
+    import tkinter as tk
+    enable_dpi_awareness()
+    root = tk.Tk()
+    ProbeApp(root)
+    root.mainloop()
+    return 0
+
+
+# =====================================================================
+# 十一、自检（本地 mock 服务器，不访问外网）
+# =====================================================================
+
+def _mock_server(mode: str):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.0"
+
+        def log_message(self, *a):  # 静音
+            pass
+
+        def _send(self, code, obj=None, raw=None, ctype="application/json", extra=None):
+            body = raw if raw is not None else json.dumps(obj, ensure_ascii=False).encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            for k, v in (extra or {}).items():
+                self.send_header(k, v)
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _path(self):
+            return urllib.parse.urlsplit(self.path)
+
+        def do_GET(self):  # noqa: N802
+            u = self._path()
+            path, q = u.path, urllib.parse.parse_qs(u.query)
+            mode_ = self.server.mode  # type: ignore[attr-defined]
+            auth = self.headers.get("Authorization") or ""
+            xkey = self.headers.get("x-goog-api-key") or ""
+            if path == "/api/status":
+                return self._send(200, {"success": True, "data": {
+                    "version": "v0.8.12.3", "system_name": "MockRelay",
+                    "quota_per_unit": 500000, "display_in_currency": True}})
+            if path == "/":
+                return self._send(200, raw=b"<!doctype html><title>MockRelay - New API</title>",
+                                  ctype="text/html; charset=utf-8")
+            if mode_ == "badkey":
+                return self._send(401, {"error": {"message": "无效的令牌 (request id: mock-1)",
+                                                  "type": "new_api_error"}})
+            if path in ("/v1/models", "/models"):
+                if mode_ == "gemini":
+                    # 真 Gemini 原生接口没有 /v1/models，这里如实 404，
+                    # 用来验证「OpenAI 探测失败后会自动切到 Gemini 协议」
+                    return self._send(404, {"error": {"message": "not found"}})
+                if not auth.startswith("Bearer "):
+                    return self._send(401, {"error": {"message": "未提供令牌", "type": "one_api_error"}})
+                if mode_ == "anthropic":
+                    # 模拟一个「同时支持 OpenAI 协议与 Anthropic Messages 协议」的中转站
+                    return self._send(200, {"object": "list", "data": [
+                        {"id": "claude-fable-5-1", "object": "model", "owned_by": "anthropic"},
+                        {"id": "claude-haiku-4-5-20251001", "object": "model", "owned_by": "anthropic"},
+                        {"id": "claude-opus-5-5", "object": "model", "owned_by": "anthropic"},
+                        {"id": "claude-sonnet-5-5", "object": "model", "owned_by": "anthropic"}]})
+                return self._send(200, {"object": "list", "data": [
+                    {"id": "gpt-4o", "object": "model", "owned_by": "openai"},
+                    {"id": "gpt-4o-mini-2024-07-18", "object": "model", "owned_by": "openai"},
+                    {"id": "claude-sonnet-4-5-20250929", "object": "model", "owned_by": "anthropic"},
+                    {"id": "deepseek-chat", "object": "model", "owned_by": "deepseek"},
+                    {"id": "text-embedding-3-small", "object": "model", "owned_by": "openai"}]})
+            if path == "/v1beta/models":
+                if xkey != "sk-mock" and q.get("key", [""])[0] != "sk-mock":
+                    return self._send(403, {"error": {"message": "API key not valid"}})
+                return self._send(200, {"models": [
+                    {"name": "models/gemini-2.5-pro", "displayName": "Gemini 2.5 Pro"},
+                    {"name": "models/gemini-2.5-flash", "displayName": "Gemini 2.5 Flash"}]})
+            return self._send(404, {"error": {"message": "not found"}})
+
+        def do_POST(self):  # noqa: N802
+            u = self._path()
+            path = u.path
+            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                payload = json.loads(self.rfile.read(length) or b"{}")
+            except Exception:
+                payload = {}
+            if path == "/v1/responses":
+                # 模拟 Responses API（Codex 的首选 wire_api）
+                mode_ = getattr(self.server, "mode", "")
+                if mode_ == "chatonly":
+                    return self._send(404, {"error": {"message": "not found"}})
+                auth_hdr = self.headers.get("Authorization") or ""
+                if mode_ == "badkey" or not auth_hdr.lower().startswith("bearer sk-mock"):
+                    return self._send(401, {"error": {"message": "无效的令牌 (request id: mock-1)",
+                                                      "type": "new_api_error"}})
+                model = str((payload or {}).get("model") or "gpt-4o")
+                return self._send(200, {
+                    "id": "resp_mock", "object": "response", "status": "completed",
+                    "model": model,
+                    "output": [{"type": "message", "role": "assistant",
+                                "content": [{"type": "output_text", "text": "PONG"}]}],
+                    "usage": {"input_tokens": 9, "output_tokens": 1, "total_tokens": 10}})
+            if path == "/v1/chat/completions":
+                mode_ = getattr(self.server, "mode", "")
+                auth_hdr = self.headers.get("Authorization") or ""
+                if mode_ == "badkey" or not auth_hdr.lower().startswith("bearer sk-mock"):
+                    return self._send(401, {"error": {"message": "无效的令牌 (request id: mock-1)",
+                                                      "type": "new_api_error"}})
+                model = (payload or {}).get("model", "gpt-4o")
+                # 故意返回一个不同的模型名，用于验证「掺水/映射」告警
+                fake = "gpt-4o-mini" if model != "gpt-4o-mini" else "gpt-4o"
+                if payload.get("stream"):
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/event-stream")
+                    self.end_headers()
+                    chunks = [
+                        {"id": "chatcmpl-mock", "object": "chat.completion.chunk", "model": fake,
+                         "choices": [{"index": 0, "delta": {"role": "assistant", "content": "OK"},
+                                      "finish_reason": None}]},
+                        {"id": "chatcmpl-mock", "object": "chat.completion.chunk", "model": fake,
+                         "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                         "usage": {"prompt_tokens": 9, "completion_tokens": 1, "total_tokens": 10}},
+                    ]
+                    for c in chunks:
+                        self.wfile.write(f"data: {json.dumps(c)}\n\n".encode())
+                    self.wfile.write(b"data: [DONE]\n\n")
+                    return
+                return self._send(200, {"id": "chatcmpl-mock", "object": "chat.completion",
+                                        "model": fake,
+                                        "choices": [{"index": 0, "finish_reason": "stop",
+                                                     "message": {"role": "assistant", "content": "OK"}}],
+                                        "usage": {"prompt_tokens": 9, "completion_tokens": 1,
+                                                  "total_tokens": 10}})
+            if path == "/v1/messages":
+                mode_ = self.server.mode  # type: ignore[attr-defined]
+                if mode_ == "openaionly":
+                    # 只提供 OpenAI 协议的中转站：路径级 404，不带模型信息
+                    return self._send(404, {"error": {"message": "not found"}})
+                auth_hdr = self.headers.get("Authorization") or ""
+                xkey = self.headers.get("x-api-key") or ""
+                if mode_ == "xapikey":
+                    ok_auth = (xkey == "sk-mock")           # 该站只认 x-api-key
+                else:
+                    ok_auth = (xkey == "sk-mock"
+                               or auth_hdr.lower().startswith("bearer sk-mock"))
+                if not ok_auth:
+                    return self._send(401, {"type": "error", "error": {
+                        "type": "authentication_error", "message": "invalid x-api-key"}})
+                model = str((payload or {}).get("model") or "")
+                if model == "bad-model" or (mode_ == "modelmissing" and not model.startswith("claude-")):
+                    # 认证已通过，只是模型 id 不在该 key 的可用集合里（指南 §4 的经典 404）
+                    return self._send(404, {"type": "error", "error": {
+                        "type": "not_found_error",
+                        "message": f'Model "{model}" is not supported by any configured '
+                                   f'account in this group'}})
+                if payload.get("stream"):
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/event-stream")
+                    self.end_headers()
+                    evs = [
+                        ("message_start", {"type": "message_start", "message": {
+                            "id": "msg_mock", "model": "claude-sonnet-4-5", "usage": {"input_tokens": 8}}}),
+                        ("content_block_delta", {"type": "content_block_delta",
+                                                 "delta": {"type": "text_delta", "text": "PONG"}}),
+                        ("message_delta", {"type": "message_delta",
+                                           "usage": {"output_tokens": 1}}),
+                    ]
+                    for name, obj in evs:
+                        self.wfile.write(f"event: {name}\ndata: {json.dumps(obj)}\n\n".encode())
+                    return
+                return self._send(200, {"id": "msg_mock", "type": "message", "role": "assistant",
+                                        "model": "claude-sonnet-4-5",
+                                        "content": [{"type": "text", "text": "PONG"}],
+                                        "usage": {"input_tokens": 8, "output_tokens": 1}})
+            return self._send(404, {"error": {"message": "not found"}})
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    srv.mode = mode  # type: ignore[attr-defined]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv, f"http://127.0.0.1:{srv.server_address[1]}"
+
+
+def selftest() -> int:
+    ok_count, fail_count = 0, 0
+
+    def check(name, cond, extra=""):
+        nonlocal ok_count, fail_count
+        if cond:
+            ok_count += 1
+            print(f"  [PASS] {name}")
+        else:
+            fail_count += 1
+            print(f"  [FAIL] {name} {extra}")
+
+    print(f"{APP_NAME} v{APP_VERSION} 自检\n")
+
+    print("[1] URL 归一化")
+    cases = [
+        ("api.openai.com", "https://api.openai.com"),
+        ("https://x.com/v1/chat/completions", "https://x.com"),
+        ("https://x.com/v1/", "https://x.com"),
+        ("https://openrouter.ai/api/v1", "https://openrouter.ai/api"),
+        ("https://x.com/v1beta/models", "https://x.com"),
+        ("https://x.com/proxy/v1/messages", "https://x.com/proxy"),
+        ("http://127.0.0.1:3000/v1", "http://127.0.0.1:3000"),
+    ]
+    for raw, want in cases:
+        got = normalize_base(raw)
+        check(f"normalize_base({raw!r}) == {want!r}", got == want, f"-> {got!r}")
+
+    print("\n[2] 模型名归一化")
+    mcases = [("gpt-4o-2024-08-06", "gpt-4o"), ("claude-sonnet-4-5-20250929", "claude-sonnet-4-5"),
+              ("openai/gpt-4o", "gpt-4o"), ("models/gemini-2.5-pro", "gemini-2-5-pro"),
+              ("deepseek-chat", "deepseek-chat")]
+    for raw, want in mcases:
+        got = norm_model(raw)
+        check(f"norm_model({raw!r}) == {want!r}", got == want, f"-> {got!r}")
+
+    print("\n[2b] 默认模型挑选（回归：不要选 :batch / embedding）")
+    fake = [{"id": x} for x in ["openai/gpt-4o:batch", "openai/gpt-4o",
+                                "text-embedding-3-large", "openai/gpt-4o-mini"]]
+    picked = choose_default_model(fake)
+    check("避开 :batch 与 embedding", picked == "openai/gpt-4o", f"-> {picked}")
+    picked2 = choose_default_model(fake, "gpt-4o-mini")
+    check("用户指定模型优先命中", picked2 == "openai/gpt-4o-mini", f"-> {picked2}")
+    check("用户指定的模型不在列表时原样保留",
+          choose_default_model(fake, "my-custom-model") == "my-custom-model")
+
+    print("\n[3] 批量行解析")
+    items = parse_batch_lines("https://a.com | sk-1 | gpt-4o\n#注释\nhttps://b.com,sk-2\n\nhttps://c.com")
+    check("解析出 3 条", len(items) == 3, f"-> {items}")
+    check("第一条含模型", items and items[0]["model"] == "gpt-4o", f"-> {items[0] if items else None}")
+    check("第三条只有 URL", items and items[2]["key"] == "")
+
+    print("\n[4] mock 站点：OpenAI 兼容 + 掺水告警")
+    srv, base = _mock_server("openai")
+    try:
+        res = probe(base, "sk-mock", timeout=10, deep=True)
+        check("识别为 OpenAI 兼容", res["protocol"] == "openai", f"-> {res['protocol']}")
+        check("模型数 == 5", res["model_count"] == 5, f"-> {res['model_count']}")
+        check("识别为可用", res["ok"] is True, f"-> {res['verdict']}")
+        check("流式拿到首字", res["first_token_ms"] is not None)
+        check("返回模型被解析", res["returned_model"] == "gpt-4o-mini", f"-> {res['returned_model']}")
+        check("触发模型不一致告警", any(lvl == "risk" for lvl, _ in res["gen_warnings"]),
+              f"-> {res['gen_warnings']}")
+        check("指纹识别 MockRelay", "MockRelay" in (res["fingerprint"] or ""), f"-> {res['fingerprint']}")
+        check("usage 被解析", isinstance(res["usage"], dict) and res["usage"].get("total_tokens") == 10,
+              f"-> {res['usage']}")
+    finally:
+        srv.shutdown()
+
+    print("\n[4b] 两段式：先拉列表 → 人工选模型 → 再生成测试")
+    srv, base = _mock_server("openai")
+    try:
+        site = probe_site(base, "sk-mock", timeout=10)
+        check("第 1 步识别协议", site["protocol"] == "openai", f"-> {site['protocol']}")
+        check("第 1 步拿到 5 个模型", site["model_count"] == 5, f"-> {site['model_count']}")
+        check("第 1 步判定站点可达", site["ok_site"] is True)
+        check("第 1 步不发生成请求", site["ok"] is False and site["first_token_ms"] is None)
+        pick = "claude-sonnet-4-5-20250929"          # 模拟人工从列表里挑一个
+        gen = probe_generate(site, "sk-mock", pick, timeout=10, deep=True)
+        check("第 2 步用人工选定的模型", gen["used_model"] == pick, f"-> {gen['used_model']}")
+        check("第 2 步拿到首字延迟", gen["first_token_ms"] is not None)
+        check("第 2 步判定可用", gen["ok"] is True, f"-> {gen['verdict']}")
+        gen2 = probe_generate(site, "sk-mock", "gpt-4o", timeout=10, deep=False)
+        check("换模型重测仍是可用", gen2["used_model"] == "gpt-4o" and gen2["ok"] is True)
+        check("换模型重测不累积旧结论",
+              len([1 for lvl, _ in gen2["gen_warnings"] if lvl == "risk"]) == 1,
+              f"-> {gen2['gen_warnings']}")
+        check("第 1 步结论仍在（未被覆盖）",
+              "第 1 步完成" in (gen2.get("verdict") or "") or bool(gen2.get("models")),
+              f"-> {gen2.get('verdict')}")
+    finally:
+        srv.shutdown()
+
+    print("\n[5] mock 站点：Gemini 协议")
+    srv, base = _mock_server("gemini")
+    try:
+        res = probe(base, "sk-mock", timeout=10, deep=False)
+        check("识别为 Gemini", res["protocol"] == "gemini", f"-> {res['protocol']}")
+        check("模型数 == 2", res["model_count"] == 2, f"-> {res['model_count']}")
+    finally:
+        srv.shutdown()
+
+    print("\n[6] mock 站点：Key 无效")
+    srv, base = _mock_server("badkey")
+    try:
+        res = probe(base, "sk-bad", timeout=10)
+        check("判定为不可用", res["ok"] is False)
+        check("错误信息包含『无效的令牌』",
+              "无效的令牌" in json.dumps(res["warnings"], ensure_ascii=False),
+              f"-> {res['warnings']}")
+    finally:
+        srv.shutdown()
+
+    print("\n[7] 不可达地址（应优雅失败，不抛异常）")
+    res = probe("http://127.0.0.1:9/v1", "sk-x", timeout=3)
+    check("返回结论而非异常", bool(res["verdict"]), f"-> {res['verdict']}")
+    check("ok 为 False", res["ok"] is False)
+
+    print("\n[8] 导出 CSV / JSON")
+    import tempfile
+    srv, base = _mock_server("openai")
+    try:
+        res = probe(base, "sk-mock", timeout=10, deep=False)
+        with tempfile.TemporaryDirectory() as td:
+            pj = os.path.join(td, "r.json")
+            pc = os.path.join(td, "r.csv")
+            export_json(res, pj)
+            export_csv([result_to_row(res)], pc)
+            data = json.loads(Path(pj).read_text(encoding="utf-8"))
+            check("JSON 可回读且结论一致", data.get("verdict") == res["verdict"],
+                  f"-> {data.get('verdict')!r}")
+            txt = Path(pc).read_text(encoding="utf-8-sig")
+            head, _, rest = txt.partition("\n")
+            check("CSV 表头含关键列", "结论" in head and "首字延迟ms" in head, f"-> {head[:80]}")
+            check("CSV 含站点地址", "127.0.0.1" in rest)
+    finally:
+        srv.shutdown()
+
+    print("\n[9] 敏感信息保存（本机加密）")
+    avail = dpapi_available()
+    print(f"  本机加密能力（Windows DPAPI）: {'可用' if avail else '不可用'}")
+    secret = "sk-test-abcdef1234567890"
+    blob, enc = encode_secret(secret)
+    check("编码结果非空", bool(blob))
+    check("加密标记与实际能力一致", enc is avail, f"-> enc={enc} avail={avail}")
+    check("能原样解回来", decode_secret(blob, enc) == secret,
+          f"-> {decode_secret(blob, enc)!r}")
+    if avail:
+        check("存盘内容里没有明文 Key", secret not in blob, f"-> {blob[:36]}...")
+    check("空值不炸", encode_secret("")[0] == "" and decode_secret("", True) == "")
+    check("坏数据不炸（返回空串）", decode_secret("!!!not-base64!!!", True) == "")
+    check("向后兼容旧的明文配置",
+          decode_secret("sk-plain-old", False) == "sk-plain-old")
+
+    print("\n[10] Claude Code 接入")
+    check("ANTHROPIC_BASE_URL 不带 /v1 后缀",
+          claude_base_for_gateway("https://gw.example.com/v1/") == "https://gw.example.com")
+    hb = claude_auth_headers("bearer", "sk-x")
+    hx = claude_auth_headers("x-api-key", "sk-x")
+    check("bearer 只出 Authorization",
+          hb.get("Authorization") == "Bearer sk-x" and "x-api-key" not in hb)
+    check("x-api-key 只出 x-api-key",
+          hx.get("x-api-key") == "sk-x" and "Authorization" not in hx)
+    check("两种都带 anthropic-version", hb.get("anthropic-version") == "2023-06-01")
+
+    srv, base = _mock_server("anthropic")
+    try:
+        chk = check_anthropic_channel(base, "sk-mock", "claude-sonnet-5-5", timeout=10)
+        check("支持 Anthropic 协议的站检测通过", chk["ok"] is True, f"-> {chk['verdict']}")
+        check("认证方式识别为 bearer", chk["auth_style"] == "bearer")
+        check("非流式拿到 PONG", "PONG" in chk["reply"], f"-> {chk['reply']!r}")
+        check("流式也通过", chk["stream_ok"] is True, f"-> {chk.get('stream_error')}")
+        check("端点拼的是 /v1/messages", chk["url"].endswith("/v1/messages"))
+        bad = check_anthropic_channel(base, "sk-mock", "bad-model", timeout=10)
+        check("模型不可用时判为 model_not_found", bad["model_not_found"] is True,
+              f"-> {bad['verdict']}")
+        check("模型不可用时是警告级（认证其实是通的）", bad["verdict_level"] == "warn")
+    finally:
+        srv.shutdown()
+
+    srv, base = _mock_server("xapikey")
+    try:
+        chk2 = check_anthropic_channel(base, "sk-mock", "claude-sonnet-5-5", timeout=10)
+        check("只认 x-api-key 的站会自动改用该头",
+              chk2["ok"] is True and chk2["auth_style"] == "x-api-key",
+              f"-> {chk2['auth_style']} {chk2['verdict']}")
+    finally:
+        srv.shutdown()
+
+    srv, base = _mock_server("openaionly")
+    try:
+        chk3 = check_anthropic_channel(base, "sk-mock", "gpt-4o", timeout=10)
+        check("纯 OpenAI 站被识别为无法直连",
+              chk3["ok"] is False and chk3["path_issue"] is True, f"-> {chk3['verdict']}")
+    finally:
+        srv.shutdown()
+
+    srv, base = _mock_server("badkey")
+    try:
+        chk4 = check_anthropic_channel(base, "sk-bad", "claude-sonnet-5-5", timeout=10)
+        check("Key 无效时报「鉴权失败」而不是「协议不支持」",
+              chk4["ok"] is False and chk4["verdict_level"] == "warn"
+              and "鉴权失败" in chk4["verdict"], f"-> {chk4['verdict']}")
+    finally:
+        srv.shutdown()
+
+    sample = [{"id": x} for x in ["claude-fable-5-1", "claude-haiku-4-5-20251001",
+                                  "claude-opus-5-5", "claude-sonnet-5-5", "gpt-4o"]]
+
+    lv1, tx1 = evaluate_fluency(620, True)
+    lv2, tx2 = evaluate_fluency(4200, True)
+    lv3, tx3 = evaluate_fluency(None, False)
+    check("流畅度：快 → ok", lv1 == "ok" and "流畅" in tx1, f"-> {tx1}")
+    check("流畅度：慢 → warn", lv2 == "warn" and "偏慢" in tx2, f"-> {tx2}")
+    check("流畅度：没拿到首字 → warn", lv3 == "warn", f"-> {tx3}")
+
+    srv, base = _mock_server("anthropic")
+    try:
+        pipe = run_full_pipeline(base, "sk-mock", timeout=10, deep=False)
+        check("全流程：拿到 4 个模型", (pipe["site"] or {}).get("model_count") == 4,
+              f"-> {(pipe['site'] or {}).get('model_count')}")
+        check("全流程：生成测试通过", (pipe["gen"] or {}).get("ok") is True,
+              f"-> {(pipe['gen'] or {}).get('verdict')}")
+        check("全流程：Anthropic 通道通过", (pipe["channel"] or {}).get("ok") is True,
+              f"-> {(pipe['channel'] or {}).get('verdict')}")
+        check("全流程：给出模型映射", pipe["model_map"].get("sonnet") == "claude-sonnet-5-5",
+              f"-> {pipe['model_map']}")
+        check("全流程：四步都记录了", len(pipe["steps"]) == 4, f"-> {pipe['steps']}")
+        check("全流程：结论为通过", pipe["ok"] is True, f"-> {pipe['verdict']}")
+        check("全流程：带上了流畅度", bool(pipe["fluency"]), f"-> {pipe['fluency']}")
+    finally:
+        srv.shutdown()
+
+    srv, base = _mock_server("openaionly")
+    try:
+        pipe2 = run_full_pipeline(base, "sk-mock", timeout=10, deep=False)
+        check("纯 OpenAI 协议时 Claude Code 通道判为不可用",
+              (pipe2["channel"] or {}).get("ok") is False, f"-> {pipe2['channel'].get('verdict')}")
+        check("但 Codex 通道可用，全流程仍通过", pipe2["ok"] is True, f"-> {pipe2['verdict']}")
+        check("给出了正确的 wire_api",
+              (pipe2["channel_openai"] or {}).get("wire_api") == "responses",
+              f"-> {(pipe2['channel_openai'] or {}).get('wire_api')}")
+        check("此时模型测试本身是通过的", (pipe2["gen"] or {}).get("ok") is True)
+    finally:
+        srv.shutdown()
+
+    mm = suggest_claude_model_map(sample)
+    check("sonnet 映射到 claude-sonnet-5-5", mm.get("sonnet") == "claude-sonnet-5-5", f"-> {mm}")
+    check("opus 映射到 claude-opus-5-5", mm.get("opus") == "claude-opus-5-5")
+    check("haiku 映射到 claude-haiku-4-5-20251001",
+          mm.get("haiku") == "claude-haiku-4-5-20251001")
+    check("fable 映射到 claude-fable-5-1", mm.get("fable") == "claude-fable-5-1")
+    check("默认模型回落到 sonnet", mm.get("default") == "claude-sonnet-5-5")
+
+    e1 = build_claude_env("https://gw.example.com/v1", "sk-x", "bearer", mm)
+    e2 = build_claude_env("https://gw.example.com", "sk-x", "x-api-key", mm)
+    check("bearer → 只有 AUTH_TOKEN",
+          "ANTHROPIC_AUTH_TOKEN" in e1 and "ANTHROPIC_API_KEY" not in e1)
+    check("x-api-key → 只有 API_KEY",
+          "ANTHROPIC_API_KEY" in e2 and "ANTHROPIC_AUTH_TOKEN" not in e2)
+    check("BASE_URL 已去掉 /v1", e1["ANTHROPIC_BASE_URL"] == "https://gw.example.com")
+    check("别名映射都写进去了",
+          e1.get("ANTHROPIC_DEFAULT_OPUS_MODEL") == "claude-opus-5-5"
+          and e1.get("ANTHROPIC_MODEL") == "claude-sonnet-5-5")
+    e_ctx = build_claude_env("https://gw.example.com/v1", "sk-x", "bearer", mm,
+                             context_window=262144)
+    check("传 context_window 时写 CLAUDE_CODE_MAX_CONTEXT_TOKENS",
+          e_ctx.get("CLAUDE_CODE_MAX_CONTEXT_TOKENS") == "262144", f"-> {e_ctx}")
+    check("不传 context_window 时没有这个键",
+          "CLAUDE_CODE_MAX_CONTEXT_TOKENS" not in e1)
+    mixed_ctx = merge_claude_settings(
+        {"env": {"CLAUDE_CODE_MAX_CONTEXT_TOKENS": "999", "FOO": "bar"}}, dict(e1))
+    check("清空上下文时旧值也被清掉",
+          "CLAUDE_CODE_MAX_CONTEXT_TOKENS" not in mixed_ctx["env"]
+          and mixed_ctx["env"].get("FOO") == "bar", f"-> {mixed_ctx['env']}")
+    kept_ctx = merge_claude_settings(
+        {"env": {"CLAUDE_CODE_MAX_CONTEXT_TOKENS": "999"}}, dict(e_ctx))
+    check("写入上下文时替换旧值",
+          kept_ctx["env"].get("CLAUDE_CODE_MAX_CONTEXT_TOKENS") == "262144")
+
+    old_settings = {"env": {"ANTHROPIC_AUTH_TOKEN": "old-token", "FOO": "bar"},
+                    "permissions": {"allow": ["Bash"]}}
+    merged = merge_claude_settings(old_settings, dict(e2))
+    check("合并时清掉旧 AUTH_TOKEN（不会两个 key 变量并存）",
+          "ANTHROPIC_AUTH_TOKEN" not in merged["env"])
+    check("合并后写入 API_KEY", merged["env"].get("ANTHROPIC_API_KEY") == "sk-x")
+    check("保留无关的 env 键", merged["env"].get("FOO") == "bar")
+    check("保留非 env 的顶层配置", merged.get("permissions") == {"allow": ["Bash"]})
+
+    with tempfile.TemporaryDirectory() as td:
+        sp = Path(td) / "settings.json"
+        r1 = install_claude_settings(dict(e1), sp)
+        check("首次写配置成功", r1["ok"] and sp.exists(), f"-> {r1.get('error')}")
+        check("原本没有文件时不产生备份", r1["backup"] == "")
+        r2 = install_claude_settings(dict(e2), sp)
+        check("二次写入会先备份", r2["ok"] and Path(r2["backup"]).exists(), f"-> {r2['backup']}")
+        saved = json.loads(sp.read_text(encoding="utf-8"))
+        check("落盘后只有一个 key 变量",
+              ("ANTHROPIC_AUTH_TOKEN" in saved["env"]) != ("ANTHROPIC_API_KEY" in saved["env"]))
+        sp.write_text("{ 这不是 json", encoding="utf-8")
+        r3 = install_claude_settings(dict(e1), sp)
+        check("坏配置拒绝覆盖", r3["ok"] is False and "无法解析" in r3["error"], f"-> {r3['error']}")
+        check("坏配置内容原样保留", sp.read_text(encoding="utf-8") == "{ 这不是 json")
+
+        lp = Path(td) / "start-claude.bat"
+        lr = write_claude_launcher(dict(e_ctx), lp)
+        body = lp.read_bytes() if lp.exists() else b""
+        check("启动脚本生成成功", lr["ok"] and bool(body), f"-> {lr.get('error')}")
+        check("启动脚本是纯 ASCII", all(b < 128 for b in body))
+        check("启动脚本用 CRLF", b"\r\n" in body and b"\n\n" not in body.replace(b"\r\n", b"\n"))
+        check("启动脚本含环境变量与 claude 调用",
+              b"ANTHROPIC_BASE_URL=https://gw.example.com" in body and b"claude %*" in body)
+        check("启动脚本含上下文长度",
+              b'CLAUDE_CODE_MAX_CONTEXT_TOKENS=262144' in body, f"-> {body[:300]!r}")
+        badlaunch = write_claude_launcher({"ANTHROPIC_MODEL": "中文模型名"},
+                                          Path(td) / "x.bat")
+        check("非 ASCII 值拒绝写 .bat",
+              badlaunch["ok"] is False and "非 ASCII" in badlaunch["error"])
+
+        iso = write_isolated_claude_config(dict(e1), Path(td) / "iso")
+        check("隔离配置目录生成成功", iso["ok"] and Path(iso["path"]).exists(),
+              f"-> {iso.get('error')}")
+        check("能找到备份文件", len(find_claude_backups(sp)) >= 1)
+
+        stub_dir = Path(td) / "stub"
+        stub_dir.mkdir()
+        stub = stub_dir / "claude.cmd"
+        stub.write_text('@echo off\r\necho {"is_error":false,"result":"PONG",'
+                        '"terminal_reason":"completed","api_error_status":null,'
+                        '"modelUsage":{"claude-sonnet-5-5":{}}}\r\n', encoding="ascii")
+        vr = verify_claude_cli(dict(e1), cli_path=str(stub), timeout=30)
+        check("能解析 CLI 的 JSON 并判定成功", vr["ok"] is True,
+              f"-> {vr.get('error')} {vr.get('raw')!r}")
+        check("拿到 result 与 terminal_reason",
+              vr["result"] == "PONG" and vr["terminal_reason"] == "completed")
+        check("验证跑在隔离配置目录里", "api_probe_cc_" in vr["config_dir"])
+        stub.write_text('@echo off\r\necho {"is_error":true,"result":"","api_error_status":404}\r\n',
+                        encoding="ascii")
+        vr2 = verify_claude_cli(dict(e1), cli_path=str(stub), timeout=30)
+        check("CLI 报错时判定为失败", vr2["ok"] is False and vr2["status"] == "404",
+              f"-> {vr2}")
+        missing = verify_claude_cli(dict(e1), cli_path=str(Path(td) / "nope.exe"), timeout=5)
+        check("找不到 CLI 时优雅失败",
+              missing["ok"] is False and "没找到" in missing["error"], f"-> {missing['error']}")
+
+    print("\n[11] Codex（OpenAI 格式）接入")
+    check("Codex base_url 自动补 /v1",
+          codex_base_url_for_gateway("https://gw.example.com") == "https://gw.example.com/v1")
+    check("Codex base_url 不会重复 /v1",
+          codex_base_url_for_gateway("https://gw.example.com/v1/") == "https://gw.example.com/v1")
+    check("Codex base_url 能从完整端点还原",
+          codex_base_url_for_gateway("https://gw.example.com/v1/chat/completions")
+          == "https://gw.example.com/v1")
+
+    srv, base = _mock_server("openai")
+    try:
+        oc = check_openai_channel(base, "sk-mock", "gpt-4o", timeout=10)
+        check("支持 Responses API 的站优先用 responses", oc["wire_api"] == "responses",
+              f"-> {oc['wire_api']} {oc['verdict']}")
+        check("OpenAI 通道检测通过", oc["ok"] is True, f"-> {oc['verdict']}")
+        check("拿到了返回文本", "PONG" in oc["reply"], f"-> {oc['reply']!r}")
+        check("base_url 带 /v1", oc["base_url"].endswith("/v1"))
+    finally:
+        srv.shutdown()
+
+    srv, base = _mock_server("chatonly")
+    try:
+        oc2 = check_openai_channel(base, "sk-mock", "gpt-4o", timeout=10)
+        check("只支持 chat 的站自动回落到 chat", oc2["wire_api"] == "chat",
+              f"-> {oc2['wire_api']} {oc2['verdict']}")
+    finally:
+        srv.shutdown()
+
+    srv, base = _mock_server("badkey")
+    try:
+        oc3 = check_openai_channel(base, "sk-bad", "gpt-4o", timeout=10)
+        check("Key 无效时报鉴权失败而不是协议不支持",
+              oc3["ok"] is False and "鉴权失败" in oc3["verdict"], f"-> {oc3['verdict']}")
+    finally:
+        srv.shutdown()
+
+    check("Codex 默认模型优先挑 gpt-5 系",
+          suggest_codex_model([{"id": x} for x in
+                               ["gpt-4o-mini", "text-embedding-3-small", "gpt-5.1-codex",
+                                "gpt-4o", "o3-mini"]]) == "gpt-5.1-codex")
+    check("没有 gpt-5 时退到 gpt-4o 而不是 embedding",
+          suggest_codex_model([{"id": "text-embedding-3-small"}, {"id": "gpt-4o"}]) == "gpt-4o")
+
+    existing_toml = ('model = "old-model"\nmodel_provider = "old_prov"\n'
+                     'approval_policy = "never"\n\n'
+                     '[model_providers.hermes]\nbase_url = "https://x/v1"\n\n'
+                     '[desktop]\ntheme = "dark"\n')
+    merged = merge_codex_config(existing_toml, "gpt-5.1-codex", "https://gw.example.com/v1",
+                                "CODEX_API_KEY", "我的站点", "responses")
+    check("合并后旧的顶层 model 被替换", 'model = "old-model"' not in merged)
+    check("合并后其它顶层键保留", 'approval_policy = "never"' in merged)
+    check("合并后别的 provider 表保留", "[model_providers.hermes]" in merged)
+    check("合并后其它表保留", "[desktop]" in merged)
+    check("写入了自己的 provider 表", f"[model_providers.{CODEX_PROVIDER_ID}]" in merged)
+    check("env_key 与 wire_api 写对",
+          'env_key = "CODEX_API_KEY"' in merged and 'wire_api = "responses"' in merged)
+    check("顶层键排在所有表之前（TOML 硬要求）", merged.index("model =") < merged.index("["))
+    merged2 = merge_codex_config(merged, "gpt-5.1-codex", "https://gw.example.com/v1",
+                                 "CODEX_API_KEY", "我的站点", "responses")
+    check("重复执行不产生重复块",
+          merged2.count(f"[model_providers.{CODEX_PROVIDER_ID}]") == 1)
+
+    # 上下文长度：顶层键（Codex 的 ConfigToml），必须替换旧值而不是并排写两份
+    ctx_existing = ('model_context_window = 999\nmodel = "old"\n\n'
+                    '[desktop]\ntheme = "dark"\n')
+    mctx = merge_codex_config(ctx_existing, "gpt-5.1-codex", "https://gw.example.com/v1",
+                              "CODEX_API_KEY", "我的站点", "responses",
+                              context_window=262144)
+    check("旧的 model_context_window 被替换且只出现一次",
+          mctx.count("model_context_window") == 1 and "model_context_window = 262144" in mctx,
+          f"-> {mctx}")
+    check("model_context_window 排在所有表之前（TOML 硬要求）",
+          mctx.index("model_context_window") < mctx.index("["))
+    mzero = merge_codex_config(ctx_existing, "gpt-5.1-codex", "https://gw.example.com/v1",
+                               "CODEX_API_KEY", "我的站点", "responses", context_window=0)
+    check("上下文留空时删掉旧键", "model_context_window" not in mzero, f"-> {mzero}")
+    try:
+        import tomllib
+        check("带上下文的合并结果是合法 TOML 且值正确",
+              tomllib.loads(mctx).get("model_context_window") == 262144
+              and tomllib.loads(mctx).get("model") == "gpt-5.1-codex")
+    except ImportError:
+        check("（Python<3.11 无 tomllib，跳过上下文 TOML 校验）", True)
+
+    with tempfile.TemporaryDirectory() as td:
+        ccp = Path(td) / "config.toml"
+        ccp.write_text('model_context_window = 999\nmodel = "old"\n', encoding="utf-8")
+        rc = install_codex_config("gpt-5.1-codex", "https://gw.example.com/v1", "CODEX_API_KEY",
+                                  "我的站点", "responses", path=ccp, context_window=262144)
+        check("写 config.toml 时带上上下文", rc["ok"], f"-> {rc.get('error')}")
+        check("记录了旧的上下文值", rc["old_context"] == 999, f"-> {rc.get('old_context')}")
+        try:
+            import tomllib
+            check("落盘后的 model_context_window 正确",
+                  tomllib.loads(ccp.read_text(encoding="utf-8")).get("model_context_window")
+                  == 262144)
+        except ImportError:
+            check("（无 tomllib，跳过落盘上下文校验）", True)
+
+    # 关键回归：用户/旧版工具留下的同名 provider 表可能没有标记块，
+    # 若只按标记删除就会写出重复键，整个 config.toml 解析失败。
+    legacy_toml = ('model = "legacy-model"\nmodel_provider = "api_probe"\n\n'
+                   '[model_providers.api_probe]\nname = "legacy"\n'
+                   'base_url = "https://old.example.com/v1"\n'
+                   'env_key = "OLD_KEY"\nwire_api = "responses"\n\n'
+                   '[desktop]\ntheme = "dark"\n')
+    merged3 = merge_codex_config(legacy_toml, "gpt-5.1-codex", "https://gw.example.com/v1",
+                                 "CODEX_API_KEY", "我的站点", "responses")
+    check("无标记的同名旧 provider 表不会变成重复键",
+          merged3.count(f"[model_providers.{CODEX_PROVIDER_ID}]") == 1)
+    check("旧 provider 表的内容被彻底替换",
+          "https://old.example.com/v1" not in merged3 and "OLD_KEY" not in merged3)
+    check("替换同名表时不影响其它表", "[desktop]" in merged3)
+    merged4 = merge_codex_config('[model_providers.api_probe] # 手工加的注释\n'
+                                 'base_url = "https://old/v1"\n',
+                                 "gpt-5.1-codex", "https://gw.example.com/v1",
+                                 "CODEX_API_KEY", "我的站点", "responses")
+    check("表头带行尾注释也能被识别并替换",
+          merged4.count(f"[model_providers.{CODEX_PROVIDER_ID}]") == 1
+          and "https://old/v1" not in merged4)
+    try:
+        import tomllib
+        for label, txt in (("旧版无标记表", merged3), ("带注释表头", merged4)):
+            parsed3 = tomllib.loads(txt)
+            check(f"合并结果合法且 provider 正确（{label}）",
+                  parsed3.get("model_provider") == CODEX_PROVIDER_ID
+                  and parsed3["model_providers"][CODEX_PROVIDER_ID]["base_url"]
+                  == "https://gw.example.com/v1")
+    except ImportError:
+        check("（Python<3.11 无 tomllib，跳过 TOML 解析校验）", True)
+
+    # [[数组表]] 不是普通表：表内的 model 是数据，不能被当成顶层键删掉；
+    # 删除同名 provider 表时也不能顺手把后面的数组表一起吃掉。
+    array_toml = ('model = "top"\n\n[[profiles]]\nname = "p1"\nmodel = "gpt-4o"\n\n'
+                  '[[profiles]]\nname = "p2"\nmodel = "o3"\n\n'
+                  '[model_providers.api_probe]\nbase_url = "https://old/v1"\n\n'
+                  '[desktop]\ntheme = "dark"\n')
+    merged5 = merge_codex_config(array_toml, "gpt-5.1-codex", "https://gw.example.com/v1",
+                                 "CODEX_API_KEY", "我的站点", "responses")
+    try:
+        import tomllib
+        parsed5 = tomllib.loads(merged5)
+        check("[[数组表]] 内的 model 键不被误删",
+              [p.get("model") for p in parsed5.get("profiles", [])] == ["gpt-4o", "o3"])
+        check("[[数组表]] 与后面的普通表都被保留",
+              "[desktop]" in merged5 and merged5.count("[[profiles]]") == 2)
+    except ImportError:
+        check("（Python<3.11 无 tomllib，跳过数组表校验）", True)
+    stripped = _strip_provider_table('[model_providers.api_probe]\nbase_url = "https://old/v1"\n\n'
+                                     '[[profiles]]\nname = "p1"\n\n[desktop]\ntheme = "dark"\n',
+                                     "api_probe")
+    check("删同名表时不会吃掉紧跟的 [[数组表]]",
+          "[[profiles]]" in stripped and "[desktop]" in stripped
+          and "https://old/v1" not in stripped)
+
+    # 网关返回的模型名是外部输入：必须能安全落成 TOML 字符串，且不能注入别的键。
+    weirds = ['gpt"x', 'a"\nsandbox_mode = "danger-full-access', "a\\b", "中文 模型"]
+    for w in weirds:
+        txt = merge_codex_config('approval_policy = "never"\n', w, "https://gw/v1",
+                                 "CODEX_API_KEY")
+        try:
+            import tomllib
+            parsed6 = tomllib.loads(txt)
+            ok = (parsed6.get("model") == w
+                  and parsed6.get("sandbox_mode") is None
+                  and parsed6.get("approval_policy") == "never")
+        except ImportError:
+            ok = True
+        except Exception:
+            ok = False
+        check(f"模型名 {w!r} 能原样回读且不注入其它键", ok)
+
+    with tempfile.TemporaryDirectory() as td:
+        ep = Path(td) / ".env"
+        ep.write_text("OTHER=1\n", encoding="utf-8")
+        r = install_codex_env_key("CODEX_API_KEY", "sk-a b#c", path=ep)
+        check("含 # 的 Key 会被加引号，值不会被当注释截断",
+              r["ok"] and r["quoted"] is True
+              and 'CODEX_API_KEY="sk-a b#c"' in ep.read_text(encoding="utf-8"))
+        r2 = install_codex_env_key("CODEX_API_KEY", "sk-normal-123", path=ep)
+        check("普通 Key 保持不加引号", r2["ok"] and r2["quoted"] is False
+              and "CODEX_API_KEY=sk-normal-123" in ep.read_text(encoding="utf-8"))
+    try:
+        import tomllib
+        parsed = tomllib.loads(merged2)
+        check("合并结果是合法 TOML，且值正确",
+              parsed.get("model") == "gpt-5.1-codex"
+              and parsed["model_providers"][CODEX_PROVIDER_ID]["wire_api"] == "responses"
+              and parsed.get("approval_policy") == "never")
+    except ImportError:
+        check("（Python<3.11 无 tomllib，跳过 TOML 解析校验）", True)
+
+    with tempfile.TemporaryDirectory() as td:
+        cp = Path(td) / "config.toml"
+        cp.write_text(existing_toml, encoding="utf-8")
+        r = install_codex_config("gpt-5.1-codex", "https://gw.example.com/v1", "CODEX_API_KEY",
+                                 "我的站点", "responses", path=cp)
+        check("写 config.toml 成功", r["ok"] and cp.exists(), f"-> {r.get('error')}")
+        check("记录下旧的 model/provider",
+              r["old_model"] == "old-model" and r["old_provider"] == "old_prov", f"-> {r}")
+        check("产生备份", bool(r["backup"]) and Path(r["backup"]).exists())
+        cp.write_text("这不是合法 toml [[[", encoding="utf-8")
+        bad = install_codex_config("m", "https://gw/v1", "K", "n", "responses", path=cp)
+        check("坏 TOML 拒绝覆盖", bad["ok"] is False and "合法 TOML" in bad["error"],
+              f"-> {bad['error']}")
+        check("坏文件内容原样保留", cp.read_text(encoding="utf-8") == "这不是合法 toml [[[")
+
+        # 备份唯一性：时间戳只到秒，同秒两次安装不能共用同一个备份文件名
+        with tempfile.TemporaryDirectory() as td2:
+            c2 = Path(td2) / "config.toml"
+            c2.write_text('model = "old"\n', encoding="utf-8")
+            b1 = install_codex_config("m1", "https://gw/v1", "K", "n", "responses",
+                                      path=c2)["backup"]
+            b2 = install_codex_config("m2", "https://gw/v1", "K", "n", "responses",
+                                      path=c2)["backup"]
+            check("同秒两次安装产生两个不同备份，且都还在",
+                  b1 != b2 and Path(b1).exists() and Path(b2).exists(),
+                  f"-> {Path(b1).name} / {Path(b2).name}")
+
+        # BOM：带 UTF-8 BOM 的配置不该被误判成非法 TOML
+        with tempfile.TemporaryDirectory() as td2:
+            c2 = Path(td2) / "config.toml"
+            c2.write_bytes(b'\xef\xbb\xbfmodel = "old"\n')
+            rb = install_codex_config("gpt-5", "https://gw/v1", "K", "n", "responses",
+                                      path=c2)
+            body = c2.read_bytes()
+            try:
+                import tomllib
+                okb = rb["ok"] and tomllib.loads(body.decode("utf-8"))["model"] == "gpt-5"
+            except ImportError:
+                okb = rb["ok"]
+            check("带 BOM 的 config 能正常写入，且写回后不带 BOM",
+                  okb and not body.startswith(b"\xef\xbb\xbf"), f"-> {rb['error']}")
+
+        # 原子写：替换那一步失败时，原文件必须完好，且不留临时残渣
+        with tempfile.TemporaryDirectory() as td2:
+            c2 = Path(td2) / "config.toml"
+            c2.write_text('model = "keepme"\n', encoding="utf-8")
+            orig_replace = os.replace
+
+            def _boom(*a, **k):
+                raise OSError("模拟断电/文件被占用")
+
+            os.replace = _boom
+            try:
+                res = install_codex_config("m", "https://gw/v1", "K", "n", "responses",
+                                           path=c2)
+            finally:
+                os.replace = orig_replace
+            left = [q.name for q in Path(td2).iterdir() if ".tmp-" in q.name]
+            check("写盘失败时原文件完好、不留临时文件",
+                  res["ok"] is False
+                  and c2.read_text(encoding="utf-8") == 'model = "keepme"\n'
+                  and not left, f"-> 残留 {left}")
+
+        lp = Path(td) / "start-codex.bat"
+        lr = write_codex_launcher("CODEX_API_KEY", "sk-x", lp, r"C:\tools\codex.exe")
+        body = lp.read_bytes() if lp.exists() else b""
+        check("Codex 启动脚本生成成功", lr["ok"] and bool(body), f"-> {lr.get('error')}")
+        check("启动脚本纯 ASCII", all(b < 128 for b in body))
+        check("启动脚本用 CRLF", b"\r\n" in body)
+        check("启动脚本设了 Key 变量并调用 codex",
+              b'set "CODEX_API_KEY=sk-x"' in body and b"codex.exe" in body)
+        badl = write_codex_launcher("CODEX_API_KEY", "中文Key", Path(td) / "x.bat")
+        check("非 ASCII Key 拒绝写 .bat", badl["ok"] is False and "非 ASCII" in badl["error"])
+
+        ep = Path(td) / ".env"
+        ep.write_text("OTHER=1\nCODEX_API_KEY=sk-old\n", encoding="utf-8")
+        er = install_codex_env_key("CODEX_API_KEY", "sk-new", path=ep)
+        envtxt = ep.read_text(encoding="utf-8")
+        check("写 .env 成功", er["ok"], f"-> {er.get('error')}")
+        check(".env 里同名变量被替换", "CODEX_API_KEY=sk-new" in envtxt
+              and "sk-old" not in envtxt)
+        check(".env 里其它变量保留", "OTHER=1" in envtxt)
+
+        stub_dir = Path(td) / "cstub"
+        stub_dir.mkdir()
+        stub = stub_dir / "codex.cmd"
+        stub.write_text("@echo off\r\necho PONG\r\n", encoding="ascii")
+        vr = verify_codex_cli("gpt-5.1-codex", "https://gw.example.com/v1", "CODEX_API_KEY",
+                              "sk-mock", cli_path=str(stub), timeout=60)
+        check("Codex 端到端验证能识别 PONG", vr["ok"] is True,
+              f"-> {vr.get('error')} {vr.get('result')!r}")
+        check("验证跑在隔离 CODEX_HOME 里", "api_probe_codex_" in vr["config_home"])
+        stub.write_text("@echo off\r\necho nothing useful\r\n", encoding="ascii")
+        vr2 = verify_codex_cli("m", "https://x/v1", "K", "sk-mock", cli_path=str(stub), timeout=60)
+        check("没有 PONG 时判失败", vr2["ok"] is False)
+        missing = verify_codex_cli("m", "https://x/v1", "K", "sk", 
+                                   cli_path=str(Path(td) / "nope.exe"), timeout=5)
+        check("找不到 codex 时优雅失败",
+              missing["ok"] is False and "没找到" in missing["error"], f"-> {missing['error']}")
+
+    print("\n[12] 一个站点多把 Key（可能是不同格式）")
+    old_rec = {"key": "sk-single"}
+    ks0 = site_keys(old_rec)
+    check("老的单 Key 结构读成「默认」", len(ks0) == 1 and ks0[0]["name"] == "默认",
+          f"-> {ks0}")
+    rec = {"keys": [{"name": "oa", "format": "openai", "key": "sk-oa"},
+                    {"name": "an", "format": "anthropic", "key": "sk-an"}],
+           "active_key": "an", "key": "sk-an"}
+    check("多 Key 全部读出", [k["name"] for k in site_keys(rec)] == ["oa", "an"])
+    check("按名字找 Key", (find_site_key(rec, "oa") or {}).get("key") == "sk-oa")
+    check("按格式挑：anthropic → an", pick_site_key(rec, "anthropic")["name"] == "an")
+    check("按格式挑：openai → oa", pick_site_key(rec, "openai")["name"] == "oa")
+    check("格式都不匹配时退回当前选中的", pick_site_key(rec, "gemini")["name"] == "an")
+    upsert_site_key(rec, "third", "sk-3", "auto")
+    check("新增 Key 并自动设为当前",
+          len(site_keys(rec)) == 3 and rec["active_key"] == "third" and rec["key"] == "sk-3")
+    upsert_site_key(rec, "third", "sk-3b", "openai")
+    check("同名视为更新而非新增",
+          len(site_keys(rec)) == 3 and find_site_key(rec, "third")["key"] == "sk-3b")
+    check("删除 Key", remove_site_key(rec, "oa") is True and len(site_keys(rec)) == 2)
+    remove_site_key(rec, "third")
+    check("删掉当前 Key 后自动切到剩下那把",
+          rec["active_key"] == "an" and rec["key"] == "sk-an", f"-> {rec['active_key']}")
+    check("删不存在的返回 False", remove_site_key(rec, "nope") is False)
+
+    print("\n[12b] 上下文长度（K）")
+    check("空值 = 不写入", parse_context_k("") == (0, ""))
+    check("200 → 200000", parse_context_k("200") == (200000, ""))
+    check("262.144 → 262144", parse_context_k("262.144") == (262144, ""))
+    check("末尾带 K 也认", parse_context_k("200K") == (200000, ""))
+    check("非法值报错且不写", parse_context_k("abc")[0] == 0 and bool(parse_context_k("abc")[1]))
+    check("0 / 负数报错", bool(parse_context_k("0")[1]) and bool(parse_context_k("-1")[1]))
+    check("超过 10000K 报错（多半是把 token 数填进来了）",
+          bool(parse_context_k("20000")[1]))
+    check("format_context_k(262144) == '262.144'", format_context_k(262144) == "262.144")
+    check("format_context_k(200000) == '200'", format_context_k(200000) == "200")
+    check("format_context_k(0) 为空", format_context_k(0) == "")
+    check("凭据判定不误伤上下文键",
+          is_secret_env_key("CLAUDE_CODE_MAX_CONTEXT_TOKENS") is False
+          and is_secret_env_key("ANTHROPIC_AUTH_TOKEN") is True
+          and is_secret_env_key("ANTHROPIC_API_KEY") is True)
+
+    with tempfile.TemporaryDirectory() as td:
+        cp = Path(td) / "config.toml"
+        cp.write_text('model_context_window = 262144\nmodel = "x"\n', encoding="utf-8")
+        check("读 Codex 顶层 model_context_window",
+              read_codex_context_tokens(cp) == 262144, f"-> {read_codex_context_tokens(cp)}")
+        gp = Path(td) / "grok.toml"
+        gp.write_text('[model.api_probe]\ncontext_window = 128000\n', encoding="utf-8")
+        check("读 Grok 表内 context_window",
+              read_grok_context_tokens(gp) == 128000, f"-> {read_grok_context_tokens(gp)}")
+        sp = Path(td) / "settings.json"
+        sp.write_text('{"env": {"CLAUDE_CODE_MAX_CONTEXT_TOKENS": "200000"}}',
+                      encoding="utf-8")
+        check("读 Claude settings.json 的 env",
+              read_claude_context_tokens(sp) == 200000, f"-> {read_claude_context_tokens(sp)}")
+
+    print("\n[13] Codex 桌面版（共用 config.toml，Key 走用户级环境变量）")
+    TEST_ENV = "API_PROBE_SELFTEST_ENV"
+    try:
+        old = read_user_env_var(TEST_ENV)
+        r = set_user_env_var(TEST_ENV, "sk-selftest-value")
+        check("能写用户级环境变量", r["ok"] and r["persisted"], f"-> {r}")
+        check("写完能读回来", read_user_env_var(TEST_ENV) == "sk-selftest-value",
+              f"-> {read_user_env_var(TEST_ENV)!r}")
+        check("当前进程也能立刻看到（便于验证）",
+              os.environ.get(TEST_ENV) == "sk-selftest-value")
+        if old:
+            set_user_env_var(TEST_ENV, old)
+    finally:
+        delete_user_env_var(TEST_ENV)
+    check("测试变量已清理干净", read_user_env_var(TEST_ENV) == "")
+    check("删不存在的变量不报错", delete_user_env_var("API_PROBE_NOT_EXIST_XYZ") is False)
+    check("codex_desktop_installed 返回布尔", isinstance(codex_desktop_installed(), bool),
+          f"-> {codex_desktop_installed()}")
+    badlaunch = launch_codex_desktop(str(Path(tempfile.gettempdir()) / "nope-codex.exe"))
+    check("拉起桌面版失败时优雅返回", badlaunch["ok"] is False and bool(badlaunch["error"]),
+          f"-> {badlaunch}")
+    check("空 env_key 不写环境变量", set_user_env_var("", "x")["ok"] is False)
+
+    print("\n[14] Grok Build 接入")
+    check("Grok base_url 自动补 /v1",
+          grok_base_url_for_gateway("https://gw.example.com") == "https://gw.example.com/v1")
+    check("Grok base_url 不重复 /v1",
+          grok_base_url_for_gateway("https://gw.example.com/v1/") == "https://gw.example.com/v1")
+    check("协议选择：chat 优先（Grok 默认且最兼容）",
+          backend_from_channels(True, "chat") == "chat_completions")
+    check("协议选择：只有 responses 时用 responses",
+          backend_from_channels(True, "responses") == "responses")
+    check("协议选择：只有 Anthropic 时用 messages",
+          backend_from_channels(True, "") == "messages")
+    check("协议选择：全不通时兜底 chat_completions",
+          backend_from_channels(False, "") == "chat_completions")
+    check("Grok 模型挑选优先 grok 系",
+          suggest_grok_model([{"id": x} for x in
+                              ["gpt-4o", "text-embedding-3-small", "grok-4.5", "grok-3"]])
+          == "grok-4.5")
+    check("没有 grok 时退到通用聊天模型",
+          suggest_grok_model([{"id": "text-embedding-3-small"}, {"id": "gpt-5"}]) == "gpt-5")
+
+    blk = render_grok_model_block("api_probe", "grok-4.5", "https://gw.example.com/v1",
+                                  "responses", "我的站点", env_key="GROK_API_KEY",
+                                  context_window=128000)
+    check("模型表里有 model/base_url/api_backend",
+          'model = "grok-4.5"' in blk and 'base_url = "https://gw.example.com/v1"' in blk
+          and 'api_backend = "responses"' in blk)
+    check("模型表用 env_key 而不是明文 key",
+          'env_key = "GROK_API_KEY"' in blk and "api_key" not in blk)
+    check("context_window 写进去了", "context_window = 128000" in blk)
+    blk0 = render_grok_model_block("api_probe", "m", "https://gw/v1", context_window=0)
+    check("上下文留空时不写 context_window", "context_window" not in blk0, f"-> {blk0}")
+    blk2 = render_grok_model_block("api_probe", "m", "https://gw/v1", "messages",
+                                   extra_headers={"x-api-key": "sk-x"})
+    check("messages 协议能带 extra_headers",
+          'extra_headers = { "x-api-key" = "sk-x" }' in blk2)
+    blk3 = render_grok_model_block("api_probe", "m", "https://gw/v1", api_key="sk-inline")
+    check("不传 env_key 时退回内联 api_key", 'api_key = "sk-inline"' in blk3)
+    check("TOML 字符串会转义", "\\\\" in _toml_str("a\\b") and '\\"' in _toml_str('a"b'))
+
+    existing_grok = ('[cli]\ninstaller = "internal"\n\n'
+                     '[models]\ndefault = "grok-4.5"\nallowed_models = ["grok-4.5"]\n\n'
+                     '[model.grok-4.6]\ntemperature = 0.5\n')
+    mg = merge_grok_config(existing_grok, "api_probe", "grok-4.5", "https://gw.example.com/v1",
+                           "responses", "我的站点", "GROK_API_KEY", "", 128000, None, True)
+    check("合并后保留了用户的 [cli] 段", "[cli]" in mg and 'installer = "internal"' in mg)
+    check("合并后保留了用户其它 model 表", "[model.grok-4.6]" in mg and "temperature = 0.5" in mg)
+    check("合并后 default 被改成我们的模型", 'default = "api_probe"' in mg)
+    check("合并后没有重复的 default 行", mg.count("default =") == 1)
+    check("合并后 [models] 里的其它字段还在", 'allowed_models = ["grok-4.5"]' in mg)
+    check("合并后有自己的 model 表", "[model.api_probe]" in mg)
+    mg2 = merge_grok_config(mg, "api_probe", "grok-4.5", "https://gw.example.com/v1",
+                            "responses", "我的站点", "GROK_API_KEY", "", 128000, None, True)
+    check("重复执行不产生重复表", mg2.count("[model.api_probe]") == 1)
+
+    # 旧版/手工写过的 [model.api_probe] 可能没有标记；只按标记删会追加出重复表
+    unmarked_grok = ('[cli]\ninstaller = "internal"\n\n'
+                     '[model.api_probe]\nmodel = "old-model"\ncontext_window = 999\n\n'
+                     '[model.other]\ntemperature = 0.2\n\n'
+                     '[ui]\nyolo = false\n')
+    mg3 = merge_grok_config(unmarked_grok, "api_probe", "grok-4.5", "https://gw.example.com/v1",
+                            "responses", "我的站点", "GROK_API_KEY", "", 200000, None, True)
+    check("无标记的同名 model 表不会变成重复表",
+          mg3.count("[model.api_probe]") == 1, f"-> {mg3}")
+    check("无标记表的旧值被替换",
+          "999" not in mg3 and "context_window = 200000" in mg3)
+    check("替换同名表时保留其它 model 表与 [ui]",
+          "[model.other]" in mg3 and "[ui]" in mg3)
+    try:
+        import tomllib
+        parsed_u = tomllib.loads(mg3)
+        check("无标记表替换后仍是合法 TOML",
+              parsed_u["model"]["api_probe"]["model"] == "grok-4.5"
+              and parsed_u["model"]["other"]["temperature"] == 0.2
+              and parsed_u["ui"]["yolo"] is False)
+    except ImportError:
+        check("（Python<3.11 无 tomllib，跳过无标记表校验）", True)
+
+    try:
+        import tomllib
+        parsed = tomllib.loads(mg2)
+        check("合并结果是合法 TOML 且值正确",
+              parsed["model"]["api_probe"]["api_backend"] == "responses"
+              and parsed["models"]["default"] == "api_probe"
+              and parsed["cli"]["installer"] == "internal")
+    except ImportError:
+        check("（Python<3.11 无 tomllib，跳过解析校验）", True)
+
+    with tempfile.TemporaryDirectory() as td:
+        gp = Path(td) / "config.toml"
+        gp.write_text(existing_grok, encoding="utf-8")
+        r = install_grok_config("api_probe", "grok-4.5", "https://gw.example.com/v1",
+                                "responses", "我的站点", "GROK_API_KEY", "", 128000,
+                                None, True, path=gp)
+        check("写 config.toml 成功", r["ok"] and gp.exists(), f"-> {r.get('error')}")
+        check("记录了旧的 default", r["old_default"] == "grok-4.5", f"-> {r['old_default']!r}")
+        check("产生了备份", bool(r["backup"]) and Path(r["backup"]).exists())
+        gp.write_text("这不是 toml [[[", encoding="utf-8")
+        bad = install_grok_config("api_probe", "m", "https://gw/v1", path=gp)
+        check("坏 TOML 拒绝覆盖", bad["ok"] is False and "合法 TOML" in bad["error"],
+              f"-> {bad['error']}")
+        check("坏文件内容原样保留", gp.read_text(encoding="utf-8") == "这不是 toml [[[")
+
+        lp = Path(td) / "start-grok.bat"
+        lr = write_grok_launcher("GROK_API_KEY", "sk-x", lp, r"C:\g\grok.exe", r"C:\g")
+        body = lp.read_bytes() if lp.exists() else b""
+        check("Grok 启动脚本生成成功", lr["ok"] and bool(body), f"-> {lr.get('error')}")
+        check("启动脚本纯 ASCII", all(b < 128 for b in body))
+        check("启动脚本用 CRLF", b"\r\n" in body)
+        check("启动脚本设了 Key 与 GROK_HOME",
+              b'set "GROK_API_KEY=sk-x"' in body and b"GROK_HOME" in body)
+        badl = write_grok_launcher("GROK_API_KEY", "中文", Path(td) / "x.bat")
+        check("非 ASCII 拒绝写 .bat", badl["ok"] is False and "非 ASCII" in badl["error"])
+
+        stub_dir = Path(td) / "gstub"
+        stub_dir.mkdir()
+        stub = stub_dir / "grok.cmd"
+        stub.write_text('@echo off\r\necho {"result":"PONG","is_error":false}\r\n',
+                        encoding="ascii")
+        vr = verify_grok_cli("api_probe", "GROK_API_KEY", "sk-x", cli_path=str(stub),
+                             timeout=60)
+        check("Grok 端到端能解析 result 并识别 PONG", vr["ok"] is True,
+              f"-> {vr.get('error')} {vr.get('result')!r}")
+        stub.write_text('@echo off\r\necho {"result":"nope","is_error":true}\r\n',
+                        encoding="ascii")
+        vr2 = verify_grok_cli("api_probe", "GROK_API_KEY", "sk-x", cli_path=str(stub),
+                              timeout=60)
+        check("is_error=true 时判失败", vr2["ok"] is False and bool(vr2["error"]),
+              f"-> {vr2['error']!r}")
+        missing = verify_grok_cli("api_probe", "K", "sk", cli_path=str(Path(td) / "no.exe"),
+                                  timeout=5)
+        check("找不到 grok 时优雅失败",
+              missing["ok"] is False and "没找到" in missing["error"], f"-> {missing['error']}")
+        check("能找到备份文件", len(find_grok_backups(gp)) >= 1)
+
+    print("\n[15] 线程安全：worker 里不得访问 Tk（回归）")
+    if getattr(sys, "frozen", False):
+        # 打包成 exe 后没有 .py 源码（只有归档里的 pyc），本项只在源码模式执行
+        check("（打包版没有源码文件，跳过 AST 审计；源码模式下已覆盖）", True)
+    else:
+        def _audit_worker_tk() -> list:
+            """扫源码：找出 work()/worker 里对 Tk 对象的访问，返回 [(行号, 属性)]。"""
+            import ast as _ast
+            _src = Path(__file__).read_text(encoding="utf-8")
+            _tree = _ast.parse(_src)
+            _tk_attrs = set()
+            for _node in _ast.walk(_tree):
+                if isinstance(_node, _ast.Assign) and isinstance(_node.value, _ast.Call):
+                    _fn = _node.value.func
+                    if (isinstance(_fn, _ast.Attribute) and isinstance(_fn.value, _ast.Name)
+                            and _fn.value.id in ("tk", "ttk")):
+                        for _t in _node.targets:
+                            if (isinstance(_t, _ast.Attribute)
+                                    and isinstance(_t.value, _ast.Name)
+                                    and _t.value.id == "self"):
+                                _tk_attrs.add(_t.attr)
+
+            class _Audit(_ast.NodeVisitor):
+                def __init__(self):
+                    self.stack = []
+                    self.hits = []
+
+                def visit_FunctionDef(self, node):
+                    self.stack.append(node.name)
+                    self.generic_visit(node)
+                    self.stack.pop()
+
+                def visit_Call(self, node):
+                    f = node.func
+                    if (isinstance(f, _ast.Attribute)
+                            and isinstance(f.value, _ast.Attribute)
+                            and isinstance(f.value.value, _ast.Name)
+                            and f.value.value.id == "self"
+                            and f.value.attr in _tk_attrs
+                            and any(n in ("work", "worker", "_worker") for n in self.stack)):
+                        self.hits.append((node.lineno, f.value.attr))
+                    self.generic_visit(node)
+
+            _a = _Audit()
+            _a.visit(_tree)
+            return _a.hits
+
+        try:
+            _hits = _audit_worker_tk()
+            check("worker 线程里没有 Tk 访问（否则会 RuntimeError 崩线程）",
+                  not _hits, f"-> 行 {[h[0] for h in _hits]}")
+        except Exception as e:  # noqa: BLE001
+            check(f"（无法做 AST 审计：{e}）", False)
+
+    print("\n[16] 网络出口：代理 / 直连（回归：系统代理挂了不能拖死整条链路）")
+    check("直连的 proxy_map 是空 dict", proxy_map("direct") == {})
+    check("跟随系统代理的 proxy_map 是 None（交给 urllib 读系统设置）",
+          proxy_map("auto") is None)
+    pm = proxy_map("custom", "127.0.0.1:7897")
+    check("自定义代理会自动补 http:// 并同时用于 http/https",
+          pm == {"http": "http://127.0.0.1:7897", "https": "http://127.0.0.1:7897"}, f"-> {pm}")
+    check("自定义代理留空时退回直连", proxy_map("custom", "") == {})
+    apply_net_config("auto")
+    check("auto 模式的尝试顺序：系统代理 → 直连",
+          _transport_chain("example.com") == [("auto", None), ("direct", {})])
+    _TRANSPORT_PREF["example.com"] = "direct"
+    check("记住某 host 直连可用后，后续请求先直连",
+          _transport_chain("example.com")[0][0] == "direct")
+    _TRANSPORT_PREF.clear()
+    apply_net_config("direct")
+    check("direct 模式只有一条路", _transport_chain("example.com") == [("direct", {})])
+    apply_net_config("auto")
+
+    # 用假 opener 验证「两条出口并行，谁先回来用谁」——不依赖外网
+    class _FakeResp:
+        status, reason, headers = 200, "OK", {}
+
+        def __init__(self):
+            self.closed = False
+
+        def read(self, n=-1):
+            return b'{"data":[]}'
+
+        def close(self):
+            self.closed = True
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    real_build = build_opener
+    seen: list = []
+    slow_made: list = []
+
+    def fake_build(verify, proxy=None):
+        seen.append(proxy)
+
+        class _Opener:
+            def open(self, req, timeout=None):
+                if proxy:                      # 代理那条：慢半拍但最终也能成
+                    time.sleep(0.5)
+                    resp = _FakeResp()
+                    slow_made.append(resp)
+                    return resp
+                return _FakeResp()             # 直连那条：立刻回
+
+        return _Opener()
+
+    globals()["build_opener"] = fake_build
+    try:
+        NET_FALLBACKS.clear()
+        _TRANSPORT_PREF.clear()
+        apply_net_config("custom", "127.0.0.1:9")
+        t0 = time.perf_counter()
+        r = http_request("GET", "https://relay.example.com/v1/models", timeout=5)
+        elapsed = time.perf_counter() - t0
+        check("先回来的那条立刻返回，不等慢的那条", elapsed < 0.3, f"-> {elapsed:.2f}s")
+        check("用的是先回来的直连", r.ok and r.via == "direct", f"-> {r.via} {r.error}")
+        check("两条出口是同时开跑的", len(seen) == 2, f"-> {seen}")
+        time.sleep(0.8)
+        check("慢一步（也成功了）的那条被静默关掉，不占连接",
+              bool(slow_made) and slow_made[0].closed, f"-> {len(slow_made)} 条")
+        check("出口选择被记下来，可以提示用户", bool(NET_FALLBACKS), f"-> {NET_FALLBACKS}")
+        seen.clear()
+        http_request("GET", "https://relay.example.com/v1/models", timeout=5)
+        check("记住出口后不再重复竞速（只开一条）", len(seen) == 1, f"-> {len(seen)} 条")
+        check("后续请求首选就是胜出的出口",
+              _transport_chain("relay.example.com")[0][0] == "direct",
+              f"-> {_transport_chain('relay.example.com')}")
+    finally:
+        globals()["build_opener"] = real_build
+        apply_net_config("auto")
+        _TRANSPORT_PREF.clear()
+        NET_FALLBACKS.clear()
+
+    # 另一条路彻底不通时也不能报错
+    def broken_build(verify, proxy=None):
+        class _Opener:
+            def open(self, req, timeout=None):
+                if proxy:
+                    raise urllib.error.URLError(socket.timeout("timed out"))
+                return _FakeResp()
+
+        return _Opener()
+
+    globals()["build_opener"] = broken_build
+    try:
+        NET_FALLBACKS.clear()
+        _TRANSPORT_PREF.clear()
+        apply_net_config("custom", "127.0.0.1:9")
+        r = http_request("GET", "https://relay2.example.com/v1/models", timeout=5)
+        check("代理直接报错时，直连照样把结果带回来", r.ok and r.via == "direct",
+              f"-> {r.status} {r.error}")
+    finally:
+        globals()["build_opener"] = real_build
+        apply_net_config("auto")
+        _TRANSPORT_PREF.clear()
+        NET_FALLBACKS.clear()
+
+    srv, base = _mock_server("openai")
+    try:
+        apply_net_config("custom", "127.0.0.1:9")
+        site = probe_site(base, "sk-mock", timeout=8)
+        check("自定义代理连不上时，第 1 步照样拿到 5 个模型", site["model_count"] == 5,
+              f"-> {site['model_count']} {site['verdict']}")
+        check("第 1 步不会把网络问题误判成 Key 问题", "Key" not in site["verdict"],
+              f"-> {site['verdict']}")
+    finally:
+        srv.shutdown()
+        apply_net_config("auto")
+        _TRANSPORT_PREF.clear()
+        NET_FALLBACKS.clear()
+
+    # 整个站都连不上时，不该把 7 条路径逐条等满超时（用户会以为卡死）
+    def dead_build(verify, proxy=None):
+        class _DeadOpener:
+            def open(self, req, timeout=None):
+                raise urllib.error.URLError(socket.timeout("timed out"))
+
+        return _DeadOpener()
+
+    globals()["build_opener"] = dead_build
+    try:
+        apply_net_config("direct")
+        dead = probe_site("https://unreachable.example.com", "sk-x", timeout=3)
+        check("连不上时只探 2 条路径就收手", len(dead["attempts"]) <= 2,
+              f"-> {len(dead['attempts'])} 次")
+        check("结论写的是连不上，而不是 Key 无效",
+              dead["verdict"].startswith("连不上站点"), f"-> {dead['verdict']}")
+        check("结论里给出下一步（换出口）", "出口" in dead["verdict"], f"-> {dead['verdict']}")
+    finally:
+        globals()["build_opener"] = real_build
+        apply_net_config("auto")
+        _TRANSPORT_PREF.clear()
+        NET_FALLBACKS.clear()
+
+    print(f"\n结果：{ok_count} 通过 / {fail_count} 失败")
+    return 1 if fail_count else 0
+
+
+def uitest() -> int:
+    """界面自检：构建控件 + 用本地 mock 跑一遍「拉列表 → 人工挑模型 → 发测试」的完整流程，
+    再验证配置持久化（URL 明文、Key 加密、重启恢复）。
+
+    注意：整个过程把 CONFIG_PATH 指向临时目录，绝不碰用户真实的 ~/.api_probe.json。
+    """
+    import tkinter as tk
+    import tempfile
+    global CONFIG_PATH, CLAUDE_SETTINGS_PATH, CLAUDE_OUTPUT_DIR
+    global CODEX_HOME, CODEX_CONFIG_PATH, CODEX_ENV_PATH
+    global GROK_HOME, GROK_CONFIG_PATH
+
+    real_config_path = CONFIG_PATH
+    CONFIG_PATH = Path(tempfile.mkdtemp(prefix="api_probe_cfg_")) / "cfg.json"
+    # Claude Code 相关的路径同样重定向到临时目录：测试绝不碰用户真实的 ~/.claude
+    real_claude_settings = CLAUDE_SETTINGS_PATH
+    real_claude_outdir = CLAUDE_OUTPUT_DIR
+    CLAUDE_SETTINGS_PATH = (Path(tempfile.mkdtemp(prefix="api_probe_claude_"))
+                            / ".claude" / "settings.json")
+    CLAUDE_OUTPUT_DIR = Path(tempfile.mkdtemp(prefix="api_probe_ccout_"))
+    # Codex 同理：绝不碰用户真实的 ~/.codex（那里有他的 provider 配置与 Key）
+    real_codex_home = CODEX_HOME
+    real_codex_config = CODEX_CONFIG_PATH
+    real_codex_env = CODEX_ENV_PATH
+    _codex_home_tmp = Path(tempfile.mkdtemp(prefix="api_probe_codexhome_"))
+    CODEX_HOME = _codex_home_tmp
+    CODEX_CONFIG_PATH = _codex_home_tmp / "config.toml"
+    CODEX_ENV_PATH = _codex_home_tmp / ".env"
+    # Grok 同理：绝不碰用户真实的 ~/.grok
+    real_grok_home = GROK_HOME
+    real_grok_config = GROK_CONFIG_PATH
+    _grok_home_tmp = Path(tempfile.mkdtemp(prefix="api_probe_grokhome_"))
+    GROK_HOME = _grok_home_tmp
+    GROK_CONFIG_PATH = _grok_home_tmp / "config.toml"
+
+    enable_dpi_awareness()
+    fails = []
+
+    def check(name, cond, extra=""):
+        if cond:
+            print(f"  [PASS] {name}")
+        else:
+            fails.append(name)
+            print(f"  [FAIL] {name} {extra}")
+
+    def wait_until(pred, root, timeout=20.0):
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            root.update()
+            if pred():
+                return True
+            time.sleep(0.05)
+        root.update()
+        return pred()
+
+    srv, base = _mock_server("openai")
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        app = ProbeApp(root)
+        root.update()
+        check("界面构建成功", True)
+
+        # ---- 出口：没有下拉框了，只有一个可选的额外代理 ----
+        check("出口不再是一排下拉框", not hasattr(app, "cmb_proxy"))
+        check("额外代理留空 → 系统代理 ∥ 直连", app._proxy_mode() == "auto")
+        app.var_proxy_url.set("127.0.0.1:7897")
+        app._apply_net()
+        check("填了额外代理 → 立刻生效", NET["proxy_mode"] == "custom"
+              and NET["proxy_url"] == "http://127.0.0.1:7897",
+              f"-> {NET}")
+        app.var_proxy_url.set("")
+        app._apply_net()
+        check("清空后回到并行模式", NET["proxy_mode"] == "auto", f"-> {NET}")
+
+        # ---- 第 1 步：拉模型列表 ----
+        app.var_url.set(base)
+        app.var_key.set("sk-mock")
+        app.var_deep.set(False)
+        app.fetch_models()
+        check("第 1 步进入忙碌态", app.busy is True)
+        ok = wait_until(lambda: app.site_result is not None and not app.busy, root)
+        check("第 1 步完成且回到空闲", ok)
+        check("第 1 步拿到 5 个模型",
+              (app.site_result or {}).get("model_count") == 5,
+              f"-> {(app.site_result or {}).get('model_count')}")
+        check("第 1 步没有发生成请求",
+              (app.site_result or {}).get("first_token_ms") is None)
+        check("模型列表已填进表格", len(app.tv_models.get_children()) == 5,
+              f"-> {len(app.tv_models.get_children())} 行")
+        check("第 2 步按钮已启用", str(app.btn_gen["state"]) == "normal",
+              f"-> {app.btn_gen['state']}")
+        check("自动切到模型列表页", app.nb.index(app.nb.select()) == 1)
+
+        # ---- 人工挑一个模型（模拟点击列表里的另一行）----
+        pick = "deepseek-chat"
+        app._select_model_in_tree(pick)
+        root.update()
+        check("选中后写入指定模型框", app.var_model.get() == pick, f"-> {app.var_model.get()}")
+        check("界面显示当前选中", pick in app.lbl_picked.cget("text"))
+
+        # ---- 第 2 步：发测试 ----
+        app.run_generation()
+        ok = wait_until(lambda: not app.busy, root)
+        check("第 2 步完成", ok)
+        res = app.last_result or {}
+        check("测试用的正是人工选的那个模型", res.get("used_model") == pick,
+              f"-> {res.get('used_model')}")
+        check("第 2 步拿到首字延迟", res.get("first_token_ms") is not None)
+        check("第 2 步判定可用", res.get("ok") is True, f"-> {res.get('verdict')}")
+        check("第 1 步信息仍保留", res.get("model_count") == 5)
+
+        items = [app.tv_ov.set(i, "item") for i in app.tv_ov.get_children()]
+        check("概览含第 1 步分区", any("第 1 步" in i for i in items))
+        check("概览含第 2 步分区", any("第 2 步" in i for i in items))
+        check("概览记录了请求/返回模型",
+              any(i == "请求模型" for i in items) and any(i == "返回模型" for i in items))
+        check("测试完切回概览页", app.nb.index(app.nb.select()) == 0)
+
+        # ---- 换一个模型重测：不应污染第 1 步信息 ----
+        app.var_model.set("gpt-4o")
+        app.run_generation()
+        wait_until(lambda: not app.busy, root)
+        res2 = app.last_result or {}
+        check("换模型重测 ok", res2.get("used_model") == "gpt-4o" and res2.get("ok") is True)
+        check("重测后模型列表仍在", res2.get("model_count") == 5)
+
+        # ---- 改地址应让第 1 步结果作废 ----
+        app.var_url.set(base + "/other")
+        app._on_conn_changed()
+        check("地址变更后第 2 步按钮被禁用", str(app.btn_gen["state"]) == "disabled",
+              f"-> {app.btn_gen['state']}")
+        check("地址变更后结果已清空", app.site_result is None)
+
+        # ---- 配置持久化：URL 明文存、Key 加密存、重启后能恢复 ----
+        try:
+            app.var_url.set(base)
+            app.var_key.set("sk-mock-secret-123456")
+            app.var_model.set("gpt-4o")
+            app.var_remember.set(True)
+            app.txt_batch.delete("1.0", "end")
+            app.txt_batch.insert("1.0", "https://a.example | sk-batch-key | gpt-4o\n")
+            app._save_config()
+            check("配置已写入磁盘", CONFIG_PATH.exists(), f"-> {CONFIG_PATH}")
+            raw = CONFIG_PATH.read_text(encoding="utf-8")
+            saved = json.loads(raw)
+            check("URL 明文保存", saved.get("url") == base, f"-> {saved.get('url')}")
+            check("配置文件里找不到明文 Key", "sk-mock-secret-123456" not in raw)
+            check("配置文件里找不到批量明文 Key", "sk-batch-key" not in raw)
+            check("加密标记与实际能力一致",
+                  bool(saved.get("key_encrypted")) is dpapi_available())
+
+            root2 = tk.Tk()
+            root2.withdraw()
+            app2 = ProbeApp(root2)
+            check("重启后恢复 URL", app2.var_url.get() == base, f"-> {app2.var_url.get()}")
+            check("重启后恢复 Key", app2.var_key.get() == "sk-mock-secret-123456",
+                  f"-> {app2.var_key.get()!r}")
+            check("重启后恢复勾选与指定模型",
+                  bool(app2.var_remember.get()) and app2.var_model.get() == "gpt-4o")
+            check("重启后恢复批量列表",
+                  "sk-batch-key" in app2.txt_batch.get("1.0", "end-1c"))
+            check("重启后恢复界面开关（TLS 校验）", bool(app2.var_verify.get()) is True)
+
+            app2.var_remember.set(False)
+            app2._on_remember_toggle()
+            saved2 = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+            check("取消「记住 Key」后文件中的 Key 被清空", saved2.get("key") == "",
+                  f"-> {saved2.get('key')!r}")
+            root2.destroy()
+        finally:
+            pass
+
+        # ---- 站点管理：多个中转站互相切换（含用户反馈的「切回自定义不还原」）----
+        app.var_remember.set(True)
+        app.var_site.set(ADHOC_SITE)
+        app._active_site = ADHOC_SITE
+        app.var_url.set("https://my-own-relay.example/v1")   # 先在「自定义」格里放一个地址
+        app.var_key.set("sk-adhoc-key")
+        app.var_model.set("gpt-4o")
+        app._stash_current_fields()
+
+        ok_a = app._add_site_record("Kimi 官方", "https://api.moonshot.cn/v1",
+                                    "sk-kimi-123", "kimi-k2")
+        ok_b = app._add_site_record("中转站B", "https://relay.example.com",
+                                    "sk-siteb-456", "claude-sonnet-5-5")
+        check("能连续添加两个站点", ok_a and ok_b and len(app.sites) == 2,
+              f"-> a={ok_a} b={ok_b} n={len(app.sites)}")
+        check("重复名字不允许添加", app._add_site_record("Kimi 官方", "https://x.com") is False)
+        check("添加后自动选中新站点", app.var_site.get() == "中转站B", f"-> {app.var_site.get()}")
+        check("切换站点后地址跟着变", app.var_url.get() == "https://relay.example.com",
+              f"-> {app.var_url.get()}")
+        check("切换站点后 Key 跟着变", app.var_key.get() == "sk-siteb-456")
+        check("切换站点后默认模型跟着变", app.var_model.get() == "claude-sonnet-5-5")
+        check("下拉里是 自定义 + 2 个站点", len(list(app.cmb_site.cget("values"))) == 3,
+              f"-> {app.cmb_site.cget('values')}")
+
+        app._select_site("Kimi 官方")
+        check("切到 Kimi 站地址正确", app.var_url.get() == "https://api.moonshot.cn/v1",
+              f"-> {app.var_url.get()}")
+        check("切到 Kimi 站 Key 正确", app.var_key.get() == "sk-kimi-123")
+
+        # 用户报的 bug 场景：切到别的站点后，再切回「自定义」必须还原自定义那一格
+        app._select_site(ADHOC_SITE)
+        check("切回「自定义」还原自定义地址",
+              app.var_url.get() == "https://my-own-relay.example/v1", f"-> {app.var_url.get()}")
+        check("切回「自定义」还原自定义 Key", app.var_key.get() == "sk-adhoc-key")
+        check("切回「自定义」还原自定义模型", app.var_model.get() == "gpt-4o")
+
+        app._select_site("Kimi 官方")
+        app._select_site(ADHOC_SITE)
+        check("来回切换后自定义格还是原值",
+              app.var_url.get() == "https://my-own-relay.example/v1"
+              and app.var_key.get() == "sk-adhoc-key")
+
+        # 在站点里改了内容，切走再切回要保住
+        app._select_site("Kimi 官方")
+        app.var_url.set("https://api.moonshot.cn/v1/")
+        app._stash_current_fields()
+        app._select_site("中转站B")
+        app._select_site("Kimi 官方")
+        check("站点内的编辑会被记住", app.var_url.get() == "https://api.moonshot.cn/v1/",
+              f"-> {app.var_url.get()}")
+
+        # 落盘 + 加密 + 重启恢复
+        app._save_config()
+        raw3 = CONFIG_PATH.read_text(encoding="utf-8")
+        cfg3 = json.loads(raw3)
+        check("配置文件里存了两个站点",
+              [s["name"] for s in cfg3.get("sites", [])] == ["Kimi 官方", "中转站B"],
+              f"-> {[s['name'] for s in cfg3.get('sites', [])]}")
+        check("站点的默认模型也存了", cfg3["sites"][1].get("model") == "claude-sonnet-5-5")
+        check("站点地址明文保存", cfg3["sites"][1].get("url") == "https://relay.example.com")
+        check("站点 Key 不以明文出现",
+              "sk-kimi-123" not in raw3 and "sk-siteb-456" not in raw3)
+
+        root3 = tk.Tk()
+        root3.withdraw()
+        app3 = ProbeApp(root3)
+        check("重启后站点列表还在",
+              [s["name"] for s in app3.sites] == ["Kimi 官方", "中转站B"],
+              f"-> {[s['name'] for s in app3.sites]}")
+        check("重启后仍停在原来的站点", app3.var_site.get() == "Kimi 官方",
+              f"-> {app3.var_site.get()}")
+        check("重启后站点 Key 自动带出", app3.var_key.get() == "sk-kimi-123",
+              f"-> {app3.var_key.get()!r}")
+        app3._select_site(ADHOC_SITE)
+        check("重启后「自定义」格也还原",
+              app3.var_url.get() == "https://my-own-relay.example/v1",
+              f"-> {app3.var_url.get()}")
+        app3._select_site("中转站B")
+        check("重启后切站点 Key 正确", app3.var_key.get() == "sk-siteb-456")
+
+        app3.import_sites_to_batch()
+        bt = app3.txt_batch.get("1.0", "end-1c")
+        check("批量列表能一键导入所有站点",
+              "relay.example.com" in bt and "api.moonshot.cn" in bt, f"-> {bt!r}")
+        check("导入的批量行带上了 Key", "sk-siteb-456" in bt)
+
+        check("重命名站点",
+              app3._update_site_record("中转站B", "B-改名", "https://relay.example.com",
+                                       "sk-siteb-456", "claude-sonnet-5-5") is True)
+        check("重命名后下拉同步", "B-改名" in list(app3.cmb_site.cget("values")),
+              f"-> {app3.cmb_site.cget('values')}")
+
+        app3._select_site("Kimi 官方")
+        check("删除站点成功", app3._delete_site_record("Kimi 官方") is True)
+        check("删掉当前站点后回落到「自定义」", app3.var_site.get() == ADHOC_SITE,
+              f"-> {app3.var_site.get()}")
+        check("删除后只剩一个站点", len(app3.sites) == 1, f"-> {len(app3.sites)}")
+        root3.destroy()
+
+        # ---- Claude Code 接入页 ----
+        check("Claude Code 标签页已创建", app.tab_claude is not None)
+        check("Codex 标签页已创建", app.tab_codex is not None)
+        check("标签页总数为 7", len(app.nb.tabs()) == 7, f"-> {len(app.nb.tabs())}")
+        check("模型映射有五项", len(app.cc_model_vars) == 5, f"-> {list(app.cc_model_vars)}")
+
+        srv_cc, base_cc = _mock_server("anthropic")
+        try:
+            app.var_url.set(base_cc)
+            app.var_key.set("sk-mock")
+            app.fetch_models()
+            wait_until(lambda: app.site_result is not None and not app.busy, root)
+            check("Anthropic 站拿到 4 个模型", (app.site_result or {}).get("model_count") == 4,
+                  f"-> {(app.site_result or {}).get('model_count')}")
+            app.cc_refresh_context()
+            check("自动匹配到 sonnet",
+                  app.cc_model_vars["sonnet"][0].get().startswith("claude-sonnet"),
+                  f"-> {app.cc_model_vars['sonnet'][0].get()}")
+            check("候选下拉里带上了模型 id",
+                  "claude-opus-5-5" in list(app.cc_model_vars["opus"][1].cget("values")))
+
+            # 门禁：生成测试没过之前，接入按钮必须是禁用的
+            check("门禁：只拉了列表还不能接入", app.cc_ready()[0] is False,
+                  f"-> {app.cc_ready()[1]}")
+            check("接入按钮默认禁用", str(app.btn_cc_install["state"]) == "disabled")
+            app.var_model.set("claude-sonnet-5-5")
+            app.run_generation()
+            wait_until(lambda: not app.busy, root)
+            check("生成测试通过", (app.site_result or {}).get("ok") is True,
+                  f"-> {(app.site_result or {}).get('verdict')}")
+            check("门禁：还缺通道检测，仍不可接入", app.cc_ready()[0] is False,
+                  f"-> {app.cc_ready()[1]}")
+            check("接入按钮仍然禁用", str(app.btn_cc_install["state"]) == "disabled")
+
+            app.cc_check()
+            wait_until(lambda: not app.busy, root)
+            check("界面里的通道检测通过", (app.cc_state or {}).get("ok") is True,
+                  f"-> {(app.cc_state or {}).get('verdict')}")
+            check("门禁：两项都通过后解锁", app.cc_ready()[0] is True, f"-> {app.cc_ready()[1]}")
+            check("接入按钮已可点", str(app.btn_cc_install["state"]) == "normal",
+                  f"-> {app.btn_cc_install['state']}")
+            # 通道过了但 ② 没过（例如只代理 Anthropic 的站）：应当解锁并给出提示
+            saved_gen_ok = (app.site_result or {}).get("ok")
+            app.site_result["ok"] = False
+            r_ok, r_why = app.cc_ready()
+            check("通道通过而生成测试没过时：解锁 + 提示",
+                  r_ok is True and "注意" in r_why, f"-> {r_why}")
+            app.site_result["ok"] = saved_gen_ok
+            check("恢复后仍解锁", app.cc_ready()[0] is True)
+            check("检测结果渲染到表格", len(app.tv_cc.get_children()) >= 5,
+                  f"-> {len(app.tv_cc.get_children())}")
+            check("检测到流式可用", (app.cc_state or {}).get("stream_ok") is True)
+
+            app.var_cc_ctx.set("262.144")
+            _ctxt, _cerr = app._context_tokens(app.var_cc_ctx, "Claude Code")
+            check("Claude 上下文按 K 换算",
+                  _ctxt == 262144 and not _cerr, f"-> {_ctxt} {_cerr}")
+            env, _style = app.cc_build_env()
+            check("env 指向当前站点", env.get("ANTHROPIC_BASE_URL") == base_cc,
+                  f"-> {env.get('ANTHROPIC_BASE_URL')}")
+            check("env 带上了 Key", env.get("ANTHROPIC_AUTH_TOKEN") == "sk-mock")
+            check("env 里只有一个 key 变量",
+                  ("ANTHROPIC_AUTH_TOKEN" in env) != ("ANTHROPIC_API_KEY" in env))
+            check("Claude env 带上下文长度",
+                  env.get("CLAUDE_CODE_MAX_CONTEXT_TOKENS") == "262144")
+
+            app.cc_preview()
+            log_txt = app.txt_cc.get("1.0", "end-1c")
+            check("预览里 Key 已打码", "sk-mock" not in log_txt and "sk-***" in log_txt,
+                  f"-> {'sk-mock' in log_txt}")
+            check("预览里的上下文没被当成 Key 打码",
+                  '"CLAUDE_CODE_MAX_CONTEXT_TOKENS": "262144"' in log_txt,
+                  f"-> {log_txt[-600:]}")
+
+            app.cc_write_settings.set(True)
+            app.cc_write_launcher.set(True)
+            app.cc_write_isolated.set(True)
+            app.cc_run_verify.set(False)          # 测试里不真去调 claude CLI
+            app.cc_install()
+            wait_until(lambda: not app.busy, root, timeout=40)
+            check("一键接入写出了 settings.json", CLAUDE_SETTINGS_PATH.exists(),
+                  f"-> {CLAUDE_SETTINGS_PATH}")
+            saved_cc = json.loads(CLAUDE_SETTINGS_PATH.read_text(encoding="utf-8"))
+            check("写入的 BASE_URL 正确",
+                  saved_cc["env"]["ANTHROPIC_BASE_URL"] == base_cc,
+                  f"-> {saved_cc['env'].get('ANTHROPIC_BASE_URL')}")
+            check("写入的 sonnet 映射正确",
+                  str(saved_cc["env"].get("ANTHROPIC_DEFAULT_SONNET_MODEL", ""))
+                  .startswith("claude-sonnet"))
+            check("写入的上下文长度正确",
+                  saved_cc["env"].get("CLAUDE_CODE_MAX_CONTEXT_TOKENS") == "262144",
+                  f"-> {saved_cc['env'].get('CLAUDE_CODE_MAX_CONTEXT_TOKENS')}")
+            bats = list(CLAUDE_OUTPUT_DIR.rglob("*.bat"))
+            check("生成了启动脚本", len(bats) >= 2, f"-> {bats}")
+            check("启动脚本里带上下文长度",
+                  any(b"CLAUDE_CODE_MAX_CONTEXT_TOKENS=262144" in p.read_bytes()
+                      for p in bats), f"-> {bats}")
+            check("启动脚本是纯 ASCII",
+                  all(all(b < 128 for b in p.read_bytes()) for p in bats))
+            check("接入日志有输出", "一键接入完成" in app.txt_cc.get("1.0", "end-1c"))
+
+            # ---- Codex 页（同一站点：Anthropic mock 也实现了 /v1/responses）----
+            check("门禁：Codex 未检测通道时不能接入", app.codex_ready()[0] is False,
+                  f"-> {app.codex_ready()[1]}")
+            check("Codex 接入按钮默认禁用",
+                  str(app.btn_codex_install["state"]) == "disabled")
+            app.var_codex_model.set("claude-sonnet-5-5")
+            app.codex_check()
+            wait_until(lambda: not app.busy, root)
+            check("Codex 通道检测通过", (app.codex_state or {}).get("ok") is True,
+                  f"-> {(app.codex_state or {}).get('verdict')}")
+            check("检测出 wire_api", (app.codex_state or {}).get("wire_api") in ("responses", "chat"),
+                  f"-> {(app.codex_state or {}).get('wire_api')}")
+            check("检测结果渲染到 Codex 表格", len(app.tv_codex.get_children()) >= 5,
+                  f"-> {len(app.tv_codex.get_children())}")
+            check("门禁：生成测试 + 通道都过了，解锁",
+                  app.codex_ready()[0] is True, f"-> {app.codex_ready()[1]}")
+            check("Codex 接入按钮已可点",
+                  str(app.btn_codex_install["state"]) == "normal")
+
+            app.codex_write_config.set(True)
+            app.codex_write_env.set(True)
+            app.codex_write_launcher.set(True)
+            app.codex_run_verify.set(False)       # 测试里不真去调 codex CLI
+            app.var_codex_ctx.set("128")
+            app.codex_install()
+            wait_until(lambda: not app.busy, root, timeout=40)
+            check("写出了 config.toml", CODEX_CONFIG_PATH.exists(), f"-> {CODEX_CONFIG_PATH}")
+            ctxt = CODEX_CONFIG_PATH.read_text(encoding="utf-8")
+            check("config.toml 里有我们的 provider 表",
+                  f"[model_providers.{CODEX_PROVIDER_ID}]" in ctxt)
+            check("config.toml 的 base_url 带 /v1", "base_url" in ctxt and "/v1" in ctxt)
+            check("config.toml 里 wire_api 已写入", "wire_api" in ctxt)
+            check("config.toml 里写了上下文长度",
+                  "model_context_window = 128000" in ctxt, f"-> {ctxt[:300]}")
+            check("写出了 .env", CODEX_ENV_PATH.exists())
+            check(".env 里写进了 Key",
+                  "sk-mock" in CODEX_ENV_PATH.read_text(encoding="utf-8"))
+            cbats = [p for p in CLAUDE_OUTPUT_DIR.rglob("*.bat") if "codex" in p.name.lower()]
+            check("生成了 Codex 启动脚本", bool(cbats), f"-> {cbats}")
+            check("Codex 启动脚本是纯 ASCII",
+                  all(all(b < 128 for b in p.read_bytes()) for p in cbats))
+            check("Codex 日志有输出",
+                  "一键接入 Codex 完成" in app.txt_codex.get("1.0", "end-1c"))
+            check("测试全程用隔离的 CODEX_HOME",
+                  "api_probe_codexhome_" in str(CODEX_CONFIG_PATH), f"-> {CODEX_CONFIG_PATH}")
+
+            # ---- Codex 桌面版：Key 走用户级环境变量 ----
+            check("桌面版状态标签存在", app.lbl_codex_desktop is not None)
+            check("能识别桌面版是否安装（布尔）", isinstance(codex_desktop_installed(), bool))
+            tvar = "API_PROBE_UITEST_KEY"
+            delete_user_env_var(tvar)
+            old_envkey = app.var_codex_envkey.get()
+            app.var_codex_envkey.set(tvar)
+            app.codex_write_config.set(False)
+            app.codex_write_env.set(False)
+            app.codex_write_sysenv.set(True)
+            app.codex_write_launcher.set(False)
+            app.codex_run_verify.set(False)
+            app.codex_install()
+            wait_until(lambda: not app.busy, root, timeout=40)
+            check("一键接入写入了用户级环境变量",
+                  read_user_env_var(tvar) == "sk-mock", f"-> {read_user_env_var(tvar)!r}")
+            check("接入日志提示要重启桌面版",
+                  "重启" in app.txt_codex.get("1.0", "end-1c"))
+            delete_user_env_var(tvar)
+            check("测试用的环境变量已清理", read_user_env_var(tvar) == "")
+            app.var_codex_envkey.set(old_envkey)
+            app.codex_write_config.set(True)
+            app.codex_write_env.set(True)
+
+            # ---- 一个站点多把 Key（一 OpenAI 一 Anthropic），两个 CLI 页各挑各的 ----
+            app._add_site_record("多Key站", "https://multi.example.com")
+            check("新站点已选中", app.var_site.get() == "多Key站")
+            rec_mk = app._record_for("多Key站")
+            upsert_site_key(rec_mk, "OpenAI Key", "sk-oa-123", "openai")
+            upsert_site_key(rec_mk, "Anthropic Key", "sk-an-456", "anthropic")
+            rec_mk["active_key"] = "OpenAI Key"
+            rec_mk["key"] = "sk-oa-123"
+            app.var_key.set("sk-oa-123")
+            app._refresh_key_combo()
+            check("Key 下拉列出两把",
+                  list(app.cmb_key.cget("values")) == ["OpenAI Key", "Anthropic Key"],
+                  f"-> {list(app.cmb_key.cget('values'))}")
+            check("Claude 页默认挑 Anthropic 那把",
+                  app.var_cc_key.get() == "Anthropic Key", f"-> {app.var_cc_key.get()}")
+            check("Codex 页默认挑 OpenAI 那把",
+                  app.var_codex_key.get() == "OpenAI Key", f"-> {app.var_codex_key.get()}")
+            check("两页各取到正确的 Key 值",
+                  app._key_value_for(app.var_cc_key, "anthropic") == "sk-an-456"
+                  and app._key_value_for(app.var_codex_key, "openai") == "sk-oa-123")
+
+            app.var_keyname.set("Anthropic Key")
+            app._on_key_change()
+            check("切换 Key 后输入框跟着换", app.var_key.get() == "sk-an-456")
+            check("切换后 active_key 更新", rec_mk.get("active_key") == "Anthropic Key")
+
+            app.var_remember.set(True)
+            app.var_grok_ctx.set("200")       # Claude/Codex 的上下文前面已设过
+            app._save_config()
+            cfg_mk = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+            site_mk = next(s for s in cfg_mk["sites"] if s["name"] == "多Key站")
+            check("配置里存了两把 Key",
+                  [k["name"] for k in site_mk.get("keys", [])] == ["OpenAI Key", "Anthropic Key"],
+                  f"-> {site_mk.get('keys')}")
+            check("每把 Key 都带格式标签",
+                  [k.get("format") for k in site_mk["keys"]] == ["openai", "anthropic"])
+            check("记住了当前选中的是哪把", site_mk.get("active_key") == "Anthropic Key")
+            raw_mk = CONFIG_PATH.read_text(encoding="utf-8")
+            check("两把 Key 都不以明文出现",
+                  "sk-oa-123" not in raw_mk and "sk-an-456" not in raw_mk)
+            check("配置版本升到 v4", cfg_mk.get("config_version") == 4,
+                  f"-> {cfg_mk.get('config_version')}")
+
+            root4 = tk.Tk()
+            root4.withdraw()
+            app4 = ProbeApp(root4)
+            site4 = next((s for s in app4.sites if s["name"] == "多Key站"), None)
+            check("重启后两把 Key 都在",
+                  site4 is not None and [k["name"] for k in site_keys(site4)] ==
+                  ["OpenAI Key", "Anthropic Key"], f"-> {site4 and site_keys(site4)}")
+            check("重启后 Key 值能解密回来",
+                  (find_site_key(site4, "OpenAI Key") or {}).get("key") == "sk-oa-123"
+                  and (find_site_key(site4, "Anthropic Key") or {}).get("key") == "sk-an-456")
+            app4._select_site("多Key站")
+            check("重启后自动选中上次那把 Key",
+                  app4.var_keyname.get() == "Anthropic Key" and app4.var_key.get() == "sk-an-456",
+                  f"-> {app4.var_keyname.get()}")
+            check("重启后 CLI 页仍各自认领格式",
+                  app4.var_cc_key.get() == "Anthropic Key"
+                  and app4.var_codex_key.get() == "OpenAI Key")
+            check("重启后三个上下文长度都在",
+                  app4.var_cc_ctx.get() == "262.144"
+                  and app4.var_codex_ctx.get() == "128"
+                  and app4.var_grok_ctx.get() == "200",
+                  f"-> {app4.var_cc_ctx.get()!r} / {app4.var_codex_ctx.get()!r} / "
+                  f"{app4.var_grok_ctx.get()!r}")
+            root4.destroy()
+
+            # ---- Grok Build 页 ----
+            check("Grok 标签页已创建", app.tab_grok is not None)
+            check("门禁：还没探测协议时不能接入", app.grok_ready()[0] is False,
+                  f"-> {app.grok_ready()[1]}")
+            check("Grok 接入按钮默认禁用", str(app.btn_grok_install["state"]) == "disabled")
+            app._select_site("多Key站")
+            app.var_url.set(base_cc)          # mock 站：Anthropic + Responses + Chat 都实现了
+            app.var_key.set("sk-mock")
+            rec_gk = app._record_for("多Key站")
+            upsert_site_key(rec_gk, "Mock Key", "sk-mock", "auto")   # 让 Grok 页拿到可用的 Key
+            app._refresh_cli_key_combos()
+            app.var_grok_key.set("Mock Key")
+            app.grok_refresh_context()
+            check("Grok 页挑到了模型（候选里优先 claude 系）",
+                  bool(app.var_grok_model.get()), f"-> {app.var_grok_model.get()!r}")
+            check("base_url 自动补了 /v1", app.var_grok_base.get().endswith("/v1"),
+                  f"-> {app.var_grok_base.get()}")
+            check("Grok 页的 Key 下拉已填", app.var_grok_key.get() != "",
+                  f"-> {app.var_grok_key.get()!r}")
+            check("Grok 页取到的是这把 Key 的值",
+                  app._key_value_for(app.var_grok_key, "") == "sk-mock",
+                  f"-> {app._key_value_for(app.var_grok_key, '')!r}")
+
+            app.grok_check()
+            wait_until(lambda: not app.busy, root, timeout=90)
+            check("协议探测通过", (app.grok_state or {}).get("ok") is True,
+                  f"-> {(app.grok_state or {}).get('verdict')}")
+            check("优先选了 Chat Completions（Grok 默认协议）",
+                  (app.grok_state or {}).get("backend") == "chat_completions",
+                  f"-> {(app.grok_state or {}).get('backend')}")
+            check("探测结果渲染到表格", len(app.tv_grok.get_children()) >= 5,
+                  f"-> {len(app.tv_grok.get_children())}")
+            check("门禁解锁", app.grok_ready()[0] is True, f"-> {app.grok_ready()[1]}")
+            check("Grok 接入按钮已可点", str(app.btn_grok_install["state"]) == "normal")
+
+            # 一键接入：写临时 ~/.grok/config.toml + 测试用环境变量（不碰真实配置）
+            tvar2 = "API_PROBE_GROK_UITEST"
+            delete_user_env_var(tvar2)
+            old_grok_env = app.var_grok_envkey.get()
+            app.var_grok_envkey.set(tvar2)
+            app.grok_write_config.set(True)
+            app.grok_write_sysenv.set(True)
+            app.grok_write_inline.set(False)
+            app.grok_write_launcher.set(True)
+            app.grok_run_verify.set(False)     # 不真去调 grok CLI
+            app.var_grok_ctx.set("200")
+            grok_ok, grok_why = app.grok_ready()
+            check("一键接入前门禁通过（否则会弹窗阻塞测试）", grok_ok, f"-> {grok_why}")
+            if grok_ok:
+                app.grok_install()
+                wait_until(lambda: not app.busy, root, timeout=60)
+            check("写出了 ~/.grok/config.toml（临时目录）", GROK_CONFIG_PATH.exists(),
+                  f"-> {GROK_CONFIG_PATH}")
+            gtxt = GROK_CONFIG_PATH.read_text(encoding="utf-8")
+            check("配置里有 [model.api_probe]（不带引号）", "[model.api_probe]" in gtxt)
+            check("配置里写了 api_backend", "api_backend" in gtxt)
+            check("配置里用 env_key 而不是明文 key",
+                  f'env_key = "{tvar2}"' in gtxt and "sk-mock" not in gtxt)
+            check("配置里 base_url 带 /v1", "base_url" in gtxt and "/v1" in gtxt)
+            check("配置里写了上下文长度", "context_window = 200000" in gtxt,
+                  f"-> {gtxt[:300]}")
+            try:
+                import tomllib
+                check("写出来的 config.toml 是合法 TOML",
+                      tomllib.loads(gtxt)["model"]["api_probe"]["api_backend"]
+                      == "chat_completions")
+            except ImportError:
+                check("（无 tomllib，跳过 TOML 校验）", True)
+            check("写入了用户级环境变量（测试名）", read_user_env_var(tvar2) == "sk-mock",
+                  f"-> {read_user_env_var(tvar2)!r}")
+            gbats = [p for p in CLAUDE_OUTPUT_DIR.rglob("*.bat") if "grok" in p.name.lower()]
+            check("生成了 Grok 启动脚本", bool(gbats), f"-> {gbats}")
+            check("Grok 启动脚本纯 ASCII",
+                  all(all(b < 128 for b in p.read_bytes()) for p in gbats))
+            check("Grok 日志有输出",
+                  "一键接入 Grok 完成" in app.txt_grok.get("1.0", "end-1c"))
+            delete_user_env_var(tvar2)
+            check("测试用的 Grok 环境变量已清理", read_user_env_var(tvar2) == "")
+            app.var_grok_envkey.set(old_grok_env)
+            check("测试全程用隔离的 GROK_HOME",
+                  "api_probe_grokhome_" in str(GROK_CONFIG_PATH), f"-> {GROK_CONFIG_PATH}")
+        finally:
+            srv_cc.shutdown()
+    except Exception as e:  # noqa: BLE001
+        import traceback
+        traceback.print_exc()
+        fails.append(f"异常: {e}")
+    finally:
+        try:
+            root.destroy()
+        except Exception:
+            pass
+        srv.shutdown()
+        CONFIG_PATH = real_config_path
+        CLAUDE_SETTINGS_PATH = real_claude_settings
+        CLAUDE_OUTPUT_DIR = real_claude_outdir
+        CODEX_HOME = real_codex_home
+        CODEX_CONFIG_PATH = real_codex_config
+        CODEX_ENV_PATH = real_codex_env
+        GROK_HOME = real_grok_home
+        GROK_CONFIG_PATH = real_grok_config
+
+    if fails:
+        print(f"界面流程自检失败 {len(fails)} 项：{fails}")
+        return 1
+    print("  [PASS] 界面两段式流程全部通过")
+    return 0
+
+
+# =====================================================================
+# 十二、命令行
+# =====================================================================
+
+def cli_probe(args) -> int:
+    def log(msg):
+        if not args.json:
+            print(msg)
+
+    if args.list_only:
+        res = probe_site(args.url, args.key, timeout=args.timeout,
+                         verify=not args.no_verify, log=log)
+        if args.json:
+            print(json.dumps({"base": res["base"], "protocol": res["protocol_label"],
+                              "fingerprint": res["fingerprint"],
+                              "model_count": res["model_count"],
+                              "verdict": res["verdict"],
+                              "models": [m["id"] for m in res["models"]]},
+                             ensure_ascii=False, indent=2))
+        else:
+            print()
+            print(f"结论        : {res['verdict']}")
+            print(f"归一化地址  : {res['base']}")
+            print(f"协议族      : {res['protocol_label']}")
+            print(f"站点指纹    : {res['fingerprint'] or '-'}")
+            print(f"模型数量    : {res['model_count']}")
+            print("\n模型列表：")
+            for m in res["models"]:
+                print(f"  - {m['id']}" + (f"   [{m['owner']}]" if m.get("owner") else ""))
+            print("\n下一步：挑一个模型，加 --model 再跑一次即可做生成测试。")
+        return 0 if res.get("ok_site") else 2
+
+    if args.claude_check:
+        base = normalize_base(args.url)
+        chk = check_anthropic_channel(base, args.key, args.model or "", timeout=args.timeout,
+                                      verify=not args.no_verify, log=log)
+        if args.json:
+            print(json.dumps(chk, ensure_ascii=False, indent=2))
+            return 0 if chk["ok"] else 2
+        print()
+        print(f"结论        : {chk['verdict']}")
+        print(f"端点        : {chk['url']}")
+        print(f"认证方式    : {chk['auth_style'] or '-'}")
+        print(f"HTTP 状态   : {chk['status']}")
+        print(f"非流式耗时  : {chk['latency_ms'] or '-'} ms")
+        print(f"流式首字    : {chk['first_ms'] or '-'} ms")
+        print(f"返回内容    : {chk['reply'] or '-'}")
+        for t in chk.get("tried", []):
+            print(f"  尝试 {t.get('auth_style'):9} HTTP {t.get('status') or '-'}　{t.get('error') or ''}")
+        env = build_claude_env(base, args.key or "sk-xxx", chk["auth_style"] or "bearer",
+                               {}, args.model or "")
+        print("\n可写入 ~/.claude/settings.json 的 env（示意，Key 已替换）：")
+        print(json.dumps({"env": {k: (mask_key(v) if is_secret_env_key(k) else v)
+                                  for k, v in env.items()}}, ensure_ascii=False, indent=2))
+        return 0 if chk["ok"] else 2
+
+    if args.codex_check:
+        base = normalize_base(args.url)
+        chk = check_openai_channel(base, args.key, args.model or "", timeout=args.timeout,
+                                   verify=not args.no_verify, log=log)
+        if args.json:
+            print(json.dumps(chk, ensure_ascii=False, indent=2))
+            return 0 if chk["ok"] else 2
+        print()
+        print(f"结论           : {chk['verdict']}")
+        print(f"Codex base_url : {chk['base_url']}")
+        print(f"wire_api       : {chk['wire_api'] or '-'}")
+        print(f"HTTP 状态      : {chk['status']}")
+        print(f"耗时           : {chk['latency_ms'] or '-'} ms")
+        print(f"返回内容       : {chk['reply'] or '-'}")
+        for t in chk.get("tried", []):
+            print(f"  尝试 {t.get('wire_api'):10} HTTP {t.get('status') or '-'}　{t.get('error') or ''}")
+        print("\n可写进 ~/.codex/config.toml 的 provider 段（Key 不放配置里）：")
+        print(render_codex_provider_block(chk["base_url"] or "<BASE>/v1", "CODEX_API_KEY",
+                                          chk["wire_api"] or "responses", "API Probe"))
+        return 0 if chk["ok"] else 2
+
+    if args.grok_check:
+        base = normalize_base(args.url)
+        ach = check_anthropic_channel(base, args.key, args.model or "", timeout=args.timeout,
+                                      verify=not args.no_verify, log=log)
+        och = check_openai_channel(base, args.key, args.model or "", timeout=args.timeout,
+                                   verify=not args.no_verify, log=log, prefer="chat")
+        backend = backend_from_channels(bool(ach.get("ok")), och.get("wire_api") or "")
+        out = {"anthropic": ach, "openai": och,
+               "backend": backend, "ok": bool(ach.get("ok") or och.get("ok"))}
+        if args.json:
+            print(json.dumps(out, ensure_ascii=False, indent=2))
+            return 0 if out["ok"] else 2
+        print()
+        print(f"Anthropic Messages : {ach.get('verdict')}")
+        print(f"OpenAI 通道        : {och.get('verdict')}")
+        print(f"→ Grok api_backend : {backend}（{BACKEND_LABEL.get(backend, '')}）")
+        print(f"→ Grok base_url    : {grok_base_url_for_gateway(base)}")
+        print("\n可写进 ~/.grok/config.toml 的片段（Key 用 env_key，不落配置文件）：")
+        print(render_grok_model_block(GROK_MODEL_KEY, args.model or "<模型 id>",
+                                      grok_base_url_for_gateway(base), backend,
+                                      "API Probe", env_key=GROK_ENV_KEY_DEFAULT))
+        return 0 if out["ok"] else 2
+
+    res = probe(args.url, args.key, model=args.model or "", timeout=args.timeout,
+                verify=not args.no_verify, deep=not args.no_deep, log=log)
+    if args.json:
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+        return 0 if res.get("ok") else 2
+    print()
+    print(f"结论        : {res['verdict']}")
+    print(f"归一化地址  : {res['base']}")
+    print(f"协议族      : {res['protocol_label']}")
+    print(f"站点指纹    : {res['fingerprint'] or '-'}")
+    print(f"HTTP 状态   : {res['http_status']}")
+    print(f"模型数量    : {res.get('model_count', 0)}")
+    print(f"请求模型    : {res['used_model']}")
+    print(f"返回模型    : {res['returned_model'] or '-'}")
+    ft = res.get("first_token_ms")
+    print(f"首字延迟    : {ft:.0f} ms" if ft is not None else "首字延迟    : -")
+    print(f"usage       : {json.dumps(res['usage'], ensure_ascii=False) if res.get('usage') else '-'}")
+    if args.show_models and res.get("models"):
+        print("\n模型列表：")
+        for m in res["models"]:
+            print(f"  - {m['id']}" + (f"   [{m['owner']}]" if m.get("owner") else ""))
+    print("\n检查项：")
+    for lvl, text in res.get("warnings", []):
+        print(f"  [{lvl:5}] {text}")
+    return 0 if res.get("ok") else 2
+
+
+def _fix_console_encoding() -> None:
+    """让 Windows 控制台/管道输出中文不乱码。"""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+        except Exception:
+            pass
+
+
+def main(argv=None) -> int:
+    _fix_console_encoding()
+    ap = argparse.ArgumentParser(description=f"{APP_NAME} v{APP_VERSION}",
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--url", help="API 地址（可含 /v1 等后缀）")
+    ap.add_argument("--key", default="", help="API Key")
+    ap.add_argument("--model", default="", help="指定用于生成测试的模型")
+    ap.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT)
+    ap.add_argument("--no-verify", action="store_true", help="跳过 TLS 证书校验")
+    ap.add_argument("--no-deep", action="store_true", help="关闭深度检测（少发一次请求）")
+    ap.add_argument("--json", action="store_true", help="以 JSON 输出结果")
+    ap.add_argument("--show-models", action="store_true", help="打印完整模型列表")
+    ap.add_argument("--list-only", action="store_true",
+                    help="只做第 1 步：拉取模型列表后退出（不做生成测试）")
+    ap.add_argument("--claude-check", action="store_true",
+                    help="检测网关是否实现 Anthropic Messages 协议（Claude Code 直连的前提）")
+    ap.add_argument("--codex-check", action="store_true",
+                    help="检测网关的 OpenAI 通道（/v1/responses 与 /v1/chat/completions），判断 Codex 的 wire_api")
+    ap.add_argument("--grok-check", action="store_true",
+                    help="为 Grok Build 选协议：测三条通道并给出 api_backend 与配置片段")
+    ap.add_argument("--selftest", action="store_true", help="运行内置自检")
+    ap.add_argument("--uitest", action="store_true", help="运行图形界面构建自检")
+    ap.add_argument("--proxy", default="", metavar="URL",
+                    help="走指定代理（如 127.0.0.1:7897）；不给就跟随系统代理")
+    ap.add_argument("--direct", action="store_true", help="强制直连，不读系统代理")
+    args = ap.parse_args(argv)
+
+    if args.direct:
+        apply_net_config("direct")
+    elif args.proxy:
+        apply_net_config("custom", args.proxy)
+    else:
+        apply_net_config("auto")
+
+    if args.selftest:
+        return selftest()
+    if args.uitest:
+        return uitest()
+    if args.url:
+        return cli_probe(args)
+    try:
+        return run_gui()
+    except Exception as e:  # noqa: BLE001
+        print(f"无法启动图形界面：{e}\n可改用命令行：python api_probe.py --url URL --key KEY", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

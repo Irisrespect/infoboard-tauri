@@ -22,7 +22,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from .core import Client, HttpStatusError, human_speed, open_stream
+from .core import (
+    Client,
+    HttpStatusError,
+    ensure_dir,
+    fs_path,
+    human_speed,
+    open_stream,
+    path_exists,
+)
 
 MIN_CHUNK = 256 * 1024
 CHUNKS_PER_CONNECTION = 32
@@ -212,10 +220,12 @@ class Downloader:
             conns = 1
         self.task.connections = conns
 
-        self.task.path.parent.mkdir(parents=True, exist_ok=True)
+        # 深层目录 + 中文名很容易超过 MAX_PATH：走 ensure_dir/fs_path，
+        # 否则 Windows 上会报 WinError 206/3，看起来像"下载失败"
+        ensure_dir(self.task.path.parent)
         # 预分配：让各线程可以直接随机写自己的偏移
         if total > 0:
-            with open(self.task.path, "wb") as f:
+            with open(fs_path(self.task.path), "wb") as f:
                 f.truncate(total)
 
         if conns <= 1:
@@ -242,7 +252,7 @@ class Downloader:
         # 每个线程用自己的文件句柄：Windows 上不同句柄的文件指针互相独立，
         # 天然就是"随机写"，不需要锁
         try:
-            handle = open(self.task.path, "r+b")
+            handle = open(fs_path(self.task.path), "r+b")
         except OSError as e:
             self._fatal = self._fatal or f"打开文件失败：{e}"
             return
@@ -475,21 +485,33 @@ def parse_filename(disposition: str) -> str:
     return ""
 
 
+# 单个路径段（一个文件夹名/文件名）最多留多少个字符。
+# NTFS 的上限是 255 个 UTF-16 单元，但真正先炸的是整条路径的 MAX_PATH(260)：
+# 分享目录一深，光是把每层名字原样拼起来就超了。留 120 给后面的
+# 「名字 (n).扩展名」和后缀，够用了；太长的名字截断后仍然可读。
+MAX_COMPONENT = 120
+
+
 def safe_filename(name: str) -> str:
     """清洗文件名（与 Windows 兼容）"""
     cleaned = "".join("_" if c in '<>:"/\\|?*' or ord(c) < 32 else c for c in name)
     cleaned = cleaned.strip().rstrip(". ")
+    if len(cleaned) > MAX_COMPONENT:
+        stem, ext = os.path.splitext(cleaned)
+        if not stem or len(ext) > 16:      # 扩展名不像扩展名（或整段就是个长名字）
+            stem, ext = cleaned, ""
+        cleaned = stem[: MAX_COMPONENT - len(ext)] + ext
     return cleaned or "download.bin"
 
 
 def unique_path(directory: Path, name: str) -> Path:
     """重名时另存为 "x (1).ext"，不覆盖已有文件"""
     candidate = directory / name
-    if not candidate.exists():
+    if not path_exists(candidate):
         return candidate
     stem, ext = os.path.splitext(name)
     for i in range(1, 10000):
         p = directory / f"{stem} ({i}){ext}"
-        if not p.exists():
+        if not path_exists(p):
             return p
     return directory / f"{stem}-{int(time.time())}{ext}"

@@ -20,7 +20,10 @@
 
 from __future__ import annotations
 
+import re
 import sys
+import threading
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -29,7 +32,8 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from netdisk.adapters import REFERER, QuarkAdapter, quark_pwd_id  # noqa: E402
-from netdisk.core import QUARK_UA, NetdiskError  # noqa: E402
+from netdisk.core import QUARK_UA, FileEntry, NetdiskError, ShareCtx  # noqa: E402
+from netdisk.tree import flatten  # noqa: E402
 
 
 def safe_stdout() -> None:
@@ -273,9 +277,209 @@ def url_recognition() -> None:
     assert QuarkAdapter.match("https://quark.cn.evil.com/s/abc") is False
 
 
+# ── 目录展开：层数 / 分页 / 单点失败不连坐 ──
+
+
+class PagedClient:
+    """按 `_page` 返回不同页的假客户端（形状照真接口：metadata._total + 整页判断）
+
+    原来的 `list_dir` 只取第 1 页（`_page=1`, `_size=200`），
+    一个装 250 个文件的目录会**静默少下 50 个** —— 用户以为下完了。
+    """
+
+    def __init__(self, total: int, page_size: int = 200) -> None:
+        self.total = total
+        self.page_size = page_size
+        self.pages: list[int] = []
+        self.seen: list[dict[str, Any]] = []
+
+    def _payload(self, page: int) -> dict:
+        start = (page - 1) * self.page_size
+        count = max(0, min(self.page_size, self.total - start))
+        return {
+            "code": 0,
+            "data": {
+                "list": [
+                    {
+                        "fid": f"p{page}-{i}",
+                        "file_name": f"第{page}页-{i}.bin",
+                        "size": 1,
+                        "dir": False,
+                        "share_fid_token": "ft",
+                    }
+                    for i in range(count)
+                ],
+                "metadata": {
+                    "_total": self.total,
+                    "_page": page,
+                    "_size": self.page_size,
+                    "_count": count,
+                },
+            },
+        }
+
+    def get(self, url: str, headers: Any = None) -> FakeResp:
+        self.seen.append({"method": "GET", "url": url, "headers": headers})
+        page = int(re.search(r"_page=(\d+)", url).group(1))
+        self.pages.append(page)
+        assert page <= 10, f"翻页停不下来：请求到了第 {page} 页"
+        return FakeResp(200, self._payload(page))
+
+    def post_json(self, url: str, payload: Any, headers: Any = None) -> FakeResp:
+        self.seen.append({"method": "POST", "url": url, "body": payload, "headers": headers})
+        return FakeResp(200, {"code": 0, "data": {"stoken": "ST0KEN", "title": "分页分享"}})
+
+    def cookie_names(self) -> list[str]:
+        return []
+
+
+def paged_listing() -> None:
+    ad = QuarkAdapter()
+    ad.client = PagedClient(250)  # type: ignore[assignment]
+    _, entries, _ = ad.parse(SHARE_URL, "")
+    assert len(entries) == 250, f"只拿到 {len(entries)} 项（应该 250）"
+    assert ad.client.pages == [1, 2], ad.client.pages  # type: ignore[attr-defined]
+
+    # 正好一整页：不该再多要一页（多一次请求就是白等 200ms）
+    ad2 = QuarkAdapter()
+    ad2.client = PagedClient(200)  # type: ignore[assignment]
+    _, entries2, _ = ad2.parse(SHARE_URL, "")
+    assert len(entries2) == 200, len(entries2)
+    assert ad2.client.pages == [1], ad2.client.pages  # type: ignore[attr-defined]
+
+
+class FakeTreeAdapter:
+    """按 id 造一棵 N 层深的树（`dir0 → dir1 → …`，最深处放两个文件）
+
+    旧版 `App._walk()` 在 `depth >= 6` 直接 `raise`，于是夸克分享超过 6 层时
+    **一个文件都下不了**。这里按 10 层复现，确认现在能整棵展开。
+    """
+
+    def __init__(self, levels: int = 10, broken: str = "") -> None:
+        self.levels = levels
+        self.broken = broken
+        self.calls: list[str] = []
+
+    def list_dir(self, _ctx: ShareCtx, dir_id: str = "0") -> list[FileEntry]:
+        self.calls.append(dir_id)
+        if dir_id == self.broken:
+            raise NetdiskError("这个目录列不出来（模拟被删/风控）")
+        level = int(dir_id[3:]) if dir_id.startswith("dir") else 0
+        if level < self.levels:
+            return [FileEntry(id=f"dir{level + 1}", name=f"第{level + 1}层", is_dir=True)]
+        return [
+            FileEntry(id="fA", name="a.bin", size=1),
+            FileEntry(id="fB", name="b.bin", size=2),
+        ]
+
+
+def deep_tree_expand() -> None:
+    root = FileEntry(id="dir0", name="第0层", is_dir=True)
+    adapter = FakeTreeAdapter(levels=10)
+
+    files, notes = flatten(adapter, ShareCtx(None), [root])
+    assert not notes, notes
+    assert [f.name for f, _ in files] == ["a.bin", "b.bin"], files
+
+    # 落盘相对路径要保持原目录结构，一层都不能少
+    rel = files[0][1]
+    parts = rel.split("/")
+    assert len(parts) == 11, parts
+    assert parts[0] == "第0层" and parts[-1] == "第10层", parts
+
+    # 超过上限：只跳过那棵子树并留一条提示，不是整批失败
+    capped, capped_notes = flatten(adapter, ShareCtx(None), [root], max_depth=3)
+    assert capped == [], capped
+    assert capped_notes and "超过 3 层" in capped_notes[0], capped_notes
+
+
+def bad_subdir_isolated() -> None:
+    """一个子目录列不出来，不该把同级的其它文件一起废掉"""
+    root = FileEntry(id="dir0", name="根", is_dir=True)
+    adapter = FakeTreeAdapter(levels=0, broken="dir0")
+
+    files, notes = flatten(adapter, ShareCtx(None), [root])
+    assert files == [], files
+    assert notes and "列不出来" in notes[0], notes
+
+    class MixedAdapter(FakeTreeAdapter):
+        def list_dir(self, ctx: ShareCtx, dir_id: str = "0") -> list[FileEntry]:
+            if dir_id == "dir0":
+                return [
+                    FileEntry(id="ok", name="好的.bin", size=1),
+                    FileEntry(id="boom", name="坏的", is_dir=True),
+                ]
+            raise NetdiskError("坏的目录列不出来")
+
+    files2, notes2 = flatten(MixedAdapter(levels=0), ShareCtx(None), [root])
+    assert [f.name for f, _ in files2] == ["好的.bin"], files2
+    assert notes2 and "坏的" in notes2[0], notes2
+
+
+def parallel_expand() -> None:
+    """同层目录要并发列 —— 串行展开几百个目录要好几分钟（每次请求几百毫秒）
+
+    用 `sleep` 假装网络延迟：12 个目录 × 60ms，串行 ≈ 720ms；
+    并发 6 路应该在 200ms 上下。断言放到 450ms，留足 CI 抖动余量。
+    """
+    delay = 0.06
+    count = 12
+
+    class WideAdapter:
+        parallel_expand = True
+
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+            self.lock = threading.Lock()
+            self.active = 0
+            self.peak = 0
+
+        def list_dir(self, _ctx: ShareCtx, dir_id: str = "0") -> list[FileEntry]:
+            with self.lock:
+                self.calls.append(dir_id)
+                self.active += 1
+                self.peak = max(self.peak, self.active)
+            try:
+                time.sleep(delay)
+            finally:
+                with self.lock:
+                    self.active -= 1
+            if dir_id == "root":
+                return [
+                    FileEntry(id=f"d{i}", name=f"目录{i}", is_dir=True) for i in range(count)
+                ]
+            # 每个子目录一个文件：名字带上目录号，好断言顺序
+            return [FileEntry(id=f"f-{dir_id}", name=f"{dir_id}.bin", size=1)]
+
+    root = FileEntry(id="root", name="根", is_dir=True)
+    adapter = WideAdapter()
+
+    started = time.perf_counter()
+    files, notes = flatten(adapter, ShareCtx(None), [root], workers=6)
+    elapsed = time.perf_counter() - started
+
+    assert not notes, notes
+    # 6 + 12 个目录，结果必须一个不少，且顺序与接口返回顺序一致（并发不改变顺序）
+    assert [f.name for f, _ in files] == [f"d{i}.bin" for i in range(count)], files
+    assert [rel for _, rel in files] == [f"根/目录{i}" for i in range(count)], files
+    assert adapter.peak > 1, "没有真正并发（peak=1）"
+    assert elapsed < 0.45, f"展开太慢：{elapsed:.2f}s（串行约 {13 * delay:.2f}s）"
+
+    # workers=1：结果必须完全一样（只是慢），顺带保证单线程路径也没坏
+    slow = WideAdapter()
+    serial_files, serial_notes = flatten(slow, ShareCtx(None), [root], workers=1)
+    assert not serial_notes
+    assert [f.name for f, _ in serial_files] == [f.name for f, _ in files]
+    assert slow.peak == 1, slow.peak
+
+
 CASES = [
     Case("完整链路 parse→list_dir→resolve", full_chain),
     Case("子目录按 pdir_fid 请求", subdir_listing),
+    Case("目录超过 200 项要翻页（不静默少文件）", paged_listing),
+    Case("10 层目录整棵展开（旧版 6 层就报错）", deep_tree_expand),
+    Case("同层目录并发展开（顺序不变）", parallel_expand),
+    Case("单个子目录失败不连坐", bad_subdir_isolated),
     Case("分享不存在 → 人话提示", error_share_gone),
     Case("提取码错误（detail 步才暴露）", error_bad_passcode),
     Case("没有 stoken → 提示接口可能变了", error_no_stoken),

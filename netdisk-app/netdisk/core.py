@@ -7,6 +7,9 @@
 网盘接口也没有写文件能力），所以那份实现必须把传输和下载都放到 Rust 侧。
 独立软件没有这些限制，一切都可以在进程内直接做完 —— 也因此能自己处理
 "直链过期了自动换链"，不需要谁来轮询驱动。
+
+例外是**迅雷**：它的分享接口要求 `captcha_sign`，只能在网页上下文里发请求，
+所以那家走 `bridge_worker.py`（pywebview 子进程）。夸克仍然是纯标准库。
 """
 
 from __future__ import annotations
@@ -15,12 +18,15 @@ import gzip
 import http.cookiejar
 import io
 import json
+import os
 import socket
 import urllib.error
 import urllib.parse
 import urllib.request
 import zlib
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 # 默认浏览器 UA
@@ -37,6 +43,11 @@ QUARK_UA = (
     "(KHTML, like Gecko) quark-cloud-drive/3.14.2 Chrome/112.0.5615.165 "
     "Electron/24.1.3.8 Safari/537.36 Channel/pckk_other_ch"
 )
+
+# 迅雷直链用普通浏览器 UA 即可，但**必须带 Referer**（否则 CDN 判盗链 403）。
+# 这两个值会一起塞进下载任务的 headers 里，见 xunlei.download_headers()。
+XUNLEI_UA = DEFAULT_UA
+XUNLEI_REFERER = "https://pan.xunlei.com/"
 
 
 class NetdiskError(Exception):
@@ -300,3 +311,122 @@ class HttpStatusError(Exception):
         super().__init__(f"HTTP {status}")
         self.status = status
         self.url = url
+
+
+# ---------------------------------------------------------------------------
+# 落盘路径：Windows 长路径
+# ---------------------------------------------------------------------------
+# 分享里的深层目录（`课程/第 1 章/第 1 节/素材/配图/原图/xxx.png`）+ 中文文件名，
+# 十几层就能撞上 Win32 的 MAX_PATH=260。撞上之后 `mkdir` / `open` 报的是
+#   WinError 206 文件名或扩展名太长 / WinError 3 找不到路径
+# —— 看起来是"下载失败"，其实是路径被系统截断了。
+#
+# `\\?\` 前缀让 Win32 API 跳过长度检查（进程必须用宽字符 API，CPython 一直都是），
+# **不需要**改注册表里的 `LongPathsEnabled`，也不需要用户做任何设置。
+# 代价：这种路径必须是绝对路径、必须是反斜杠、且不能再有 `.` / `..` ——
+# 前缀会关掉路径归一化，所以下面统一先 `abspath`。
+#
+# 只在真的长的时候加前缀（而不是无脑全加）：短路径保持原样，
+# `explorer` 之类的 shell 调用看到的就是普通路径。
+LONG_PATH_THRESHOLD = 240
+
+
+def fs_path(path: "os.PathLike[str] | str") -> str:
+    r"""把路径换成"系统真的能用"的字符串形式（Windows 长路径自动加 `\\?\`）。"""
+    raw = os.fspath(path)
+    if os.name != "nt" or raw.startswith("\\\\?\\"):
+        return raw
+    if len(raw) < LONG_PATH_THRESHOLD:
+        return raw
+    absolute = os.path.abspath(raw)
+    if absolute.startswith("\\\\"):
+        # UNC：\\server\share\x → \\?\UNC\server\share\x
+        return "\\\\?\\UNC" + absolute[1:]
+    return "\\\\?\\" + absolute
+
+
+def ensure_dir(path: "os.PathLike[str] | str") -> str:
+    """建目录（含父级），长路径也能建。返回它转成系统形式后的字符串。"""
+    target = fs_path(path)
+    os.makedirs(target, exist_ok=True)
+    return target
+
+
+def path_exists(path: "os.PathLike[str] | str") -> bool:
+    return os.path.exists(fs_path(path))
+
+
+# ---------------------------------------------------------------------------
+# 版本号
+# ---------------------------------------------------------------------------
+# 唯一事实源是程序目录下的 `VERSION` 文件（纯文本一行）。为什么不写死在代码里：
+#
+# 1. 宿主（Rust）要靠它判断"插件包自带的程序"和"随安装包的程序"哪个版本，
+#    读文件比启动一次 Python 便宜得多；
+# 2. 打包脚本（`scripts/pack-plugin.mjs`）会把 `VERSION` 和插件 manifest 里声明的
+#    `companion.version` 比对，不一致直接拒绝出包 —— 版本号想撒谎都难。
+VERSION_FILE = Path(__file__).resolve().parent.parent / "VERSION"
+_UNKNOWN_VERSION = "0.0.0"
+
+
+def app_version() -> str:
+    """程序版本（读不到就返回 0.0.0，绝不因为版本文件丢了就起不来）"""
+    try:
+        text = VERSION_FILE.read_text("utf-8").strip()
+    except OSError:
+        return _UNKNOWN_VERSION
+    return text or _UNKNOWN_VERSION
+
+
+# ---------------------------------------------------------------------------
+# 时间：各种形状的"过期时间"
+# ---------------------------------------------------------------------------
+def epoch_seconds(value: Any) -> float:
+    """把"过期时间"的任何写法换成 epoch 秒；认不出来返回 0（= 不知道）。
+
+    三种形态都真实出现过：
+
+    - **数字**：续期接口给 `expires_in`，我们自己是 `time.time() + expires_in` 算出来的；
+    - **数字字符串**：接口有时把数字写成 `"1793512539"`；
+    - **ISO 8601**：迅雷网页版的 localStorage 里就存着
+      `2026-10-31T19:15:39.367Z` 这种字符串。
+
+    以前这里统一用 `float()`，撞上 ISO 就是
+    `ValueError: could not convert string to float: '2026-10-31T19:15:39.367Z'`
+    —— 发生在"转存前先看要不要续期"那一步，于是整单转存直接失败，
+    用户看到的是"部分文件没能开始下载"（跟时间毫无关系的错觉）。
+
+    认不出来时返回 0 而不是抛错：调用方的语义本来就是"0 = 不知道什么时候过期，
+    那就等到真撞上 401 再续"。
+    """
+    if value is None or isinstance(value, bool):
+        return 0.0
+    if isinstance(value, (int, float)):
+        number = float(value)
+    else:
+        text = str(value).strip()
+        if not text:
+            return 0.0
+        try:
+            number = float(text)
+        except ValueError:
+            return _iso_seconds(text)
+    if number <= 0:
+        return 0.0
+    # 毫秒时间戳（前端偶尔会存 13 位）
+    if number > 1e12:
+        number /= 1000.0
+    return number
+
+
+def _iso_seconds(text: str) -> float:
+    raw = text.strip()
+    if raw[-1:] in ("Z", "z"):          # Python 3.10 的 fromisoformat 还不认 Z
+        raw = raw[:-1] + "+00:00"
+    try:
+        moment = datetime.fromisoformat(raw)
+    except ValueError:
+        return 0.0
+    if moment.tzinfo is None:           # 没写时区：网盘接口一律是 UTC
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.timestamp()

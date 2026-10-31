@@ -1,0 +1,17 @@
+{
+  "id": "my-tool",
+  "name": "我的工具",
+  "version": "1.0.0",
+  "author": "Your Name",
+  "description": "启动器插件模板：插件自带一个程序，导入 .ibplugin 即可用（宿主不需要认识它）",
+  "section": "tool",
+  "icon": "🔧",
+  "color": "var(--accent)",
+  "entry": "index.tsx",
+  "companion": {
+    "dir": "app",
+    "entry": "main.py",
+    "version": "1.0.0"
+  },
+  "tauriCommands": ["companion_status", "companion_launch"]
+}

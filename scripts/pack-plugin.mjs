@@ -186,11 +186,55 @@ export function checkRuntimeImports(source) {
 }
 
 /**
+ * 打包进 `.ibplugin` 的条目上限（与宿主 `plugins/pack.rs` 的约束一致：
+ * MAX_ENTRIES = 64 / MAX_TOTAL_BYTES = 8MB）。在这里先挡住，
+ * 不要等用户拖进「插件管理」才报"条目过多"。
+ */
+export const MAX_PACKAGE_ENTRIES = 64
+export const MAX_PACKAGE_BYTES = 8 * 1024 * 1024
+
+/** 插件内相对路径的安全检查（与 Rust 侧 `is_safe_rel` 一致） */
+export function isSafeRelPath(rel) {
+  if (typeof rel !== 'string' || rel.trim() === '') return false
+  const p = rel.replace(/\\/g, '/')
+  return !p.startsWith('/') && !p.includes('..') && !p.includes(':')
+}
+
+/**
+ * 收集"伴随程序"要打进包里的文件（`<companion.dir>/...`）。
+ *
+ * 为什么默认排除这几类：
+ * - `__pycache__` / `*.pyc`：跑一次就生成，纯占体积，还可能带进旧字节码
+ * - `tools/`：自测脚本，用户机器上没用（README 留着，出问题时能看）
+ */
+export function collectCompanionPayload(sourceDir, decl) {
+  const skippedDirs = new Set(['__pycache__', 'tools', 'node_modules', '.git', '.idea', '.vscode'])
+  const prefix = decl.dir.replace(/\\/g, '/')
+  const out = []
+  const walk = (dir, rel) => {
+    for (const name of readdirSync(dir).sort()) {
+      const full = join(dir, name)
+      const childRel = rel ? `${rel}/${name}` : name
+      if (statSync(full).isDirectory()) {
+        if (skippedDirs.has(name)) continue
+        walk(full, childRel)
+        continue
+      }
+      if (name.endsWith('.pyc') || name.endsWith('.pyo')) continue
+      out.push({ name: `${prefix}/${childRel}`, data: readFileSync(full) })
+    }
+  }
+  walk(sourceDir, '')
+  return out
+}
+
+/**
  * 读插件目录、校验、产出 zip buffer
  * @param {string} pluginDir
- * @returns {{ id: string, version: string, buffer: Buffer, files: string[], warnings: string[] }}
+ * @param {{ companionSource?: string }} [options] 伴随程序的源目录（由 `--companion` 传入）
+ * @returns {{ id: string, version: string, buffer: Buffer, files: string[], payloadCount: number, payloadBytes: number, warnings: string[] }}
  */
-export function packPlugin(pluginDir) {
+export function packPlugin(pluginDir, options = {}) {
   const manifestPath = join(pluginDir, 'manifest.json')
   if (!existsSync(manifestPath)) {
     throw new Error(`缺少 manifest.json: ${manifestPath}`)
@@ -249,18 +293,94 @@ export function packPlugin(pluginDir) {
     }
   }
 
+  // 伴随程序（启动器类插件才会声明）：把它一起打进包里，
+  // 这样"改一行 Python"只需要发一个新的 .ibplugin，不必重装整个应用。
+  const payload = buildCompanionPayload(manifest, pluginDir, options.companionSource)
+  const payloadBytes = payload.reduce((n, entry) => n + entry.data.length, 0)
+  const totalEntries = payload.length + 2
+  if (totalEntries > MAX_PACKAGE_ENTRIES) {
+    throw new Error(
+      `插件包条目过多（${totalEntries} 个，宿主上限 ${MAX_PACKAGE_ENTRIES}）——` +
+        ' 减小 companion 目录，或把它拆成更少的文件'
+    )
+  }
+  if (payloadBytes > MAX_PACKAGE_BYTES) {
+    throw new Error(
+      `伴随程序过大（${(payloadBytes / 1024 / 1024).toFixed(1)} MB，` +
+        `宿主上限 ${MAX_PACKAGE_BYTES / 1024 / 1024} MB）`
+    )
+  }
+
   const buffer = createZip([
     { name: 'manifest.json', data: readFileSync(manifestPath) },
     { name: entryRel, data: readFileSync(entryPath) },
+    ...payload,
   ])
 
   return {
     id: manifest.id,
     version: manifest.version || '0.0.0',
     buffer,
-    files: ['manifest.json', entryRel],
+    files: ['manifest.json', entryRel, ...payload.map((p) => p.name)],
+    payloadCount: payload.length,
+    payloadBytes,
     warnings,
   }
+}
+
+/**
+ * 校验 manifest.companion 并把源目录里的文件收成 zip 条目。
+ *
+ * 版本号契约（C）：`<源目录>/VERSION` 必须存在，而且**必须等于** manifest 里声明的
+ * `companion.version` —— 不等就拒绝出包。这样"插件说自己是 2.1.0、里面装的却是
+ * 2.0.x"这种事在构建期就挡住了（宿主运行期还会再比一次，双保险）。
+ */
+function buildCompanionPayload(manifest, pluginDir, sourceDir) {
+  const decl = manifest.companion
+  if (!decl) return []
+
+  if (!isSafeRelPath(decl.dir) || !isSafeRelPath(decl.entry)) {
+    throw new Error(
+      `manifest.companion 的 dir/entry 必须是插件内的相对路径：dir=${decl.dir} entry=${decl.entry}`
+    )
+  }
+  // 与宿主 core/companion.rs 的 parse_companion 保持一致：认不出就拒绝，别猜
+  const kind = decl.kind ?? 'python'
+  if (kind !== 'python' && kind !== 'exe') {
+    throw new Error(`manifest.companion.kind 只能是 "python" 或 "exe"（当前: ${kind}）`)
+  }
+  if (!decl.version) {
+    throw new Error('manifest.companion.version 缺失（它必须与程序目录里的 VERSION 一致）')
+  }
+  if (!sourceDir) {
+    throw new Error(
+      `manifest 声明了 companion，但没有给源目录。用法：\n` +
+        `  node scripts/pack-plugin.mjs ${pluginDir} --companion <程序目录>`
+    )
+  }
+
+  const source = resolve(sourceDir)
+  if (!existsSync(source)) throw new Error(`伴随程序源目录不存在: ${source}`)
+
+  const versionFile = join(source, 'VERSION')
+  if (!existsSync(versionFile)) {
+    throw new Error(`缺少 ${versionFile}（版本号唯一事实源，内容一行，如 2.1.0）`)
+  }
+  const version = readFileSync(versionFile, 'utf8').trim()
+  if (version !== decl.version) {
+    throw new Error(
+      `版本号不一致：manifest.companion.version = ${decl.version}，` +
+        `${versionFile} = ${version}。\n` +
+        '  先对齐再出包（否则装上去宿主会提示"版本不一致"，用户看到的是红字警告）。'
+    )
+  }
+
+  const entryFile = join(source, decl.entry)
+  if (!existsSync(entryFile) || !statSync(entryFile).isFile()) {
+    throw new Error(`伴随程序入口不存在: ${entryFile}`)
+  }
+
+  return collectCompanionPayload(source, { dir: decl.dir })
 }
 
 // ─── CLI ───
@@ -269,14 +389,22 @@ function isPluginDir(dir) {
   return existsSync(join(dir, 'manifest.json'))
 }
 
-function packOne(pluginDir, outDir) {
-  const { id, version, buffer, files, warnings } = packPlugin(pluginDir)
+function packOne(pluginDir, outDir, companionSource) {
+  const { id, version, buffer, files, payloadCount, payloadBytes, warnings } = packPlugin(
+    pluginDir,
+    { companionSource }
+  )
   mkdirSync(outDir, { recursive: true })
   const outFile = join(outDir, `${id}-${version}.ibplugin`)
   writeFileSync(outFile, buffer)
   const kb = (buffer.length / 1024).toFixed(1)
   console.log(`✅ ${id} ${version}  →  ${outFile}  (${kb} KB)`)
   console.log(`   包含: ${files.join(', ')}`)
+  if (payloadCount > 0) {
+    console.log(
+      `   伴随程序: ${payloadCount} 个文件 / ${(payloadBytes / 1024).toFixed(1)} KB（装好后宿主优先跑这份）`
+    )
+  }
   for (const w of warnings ?? []) {
     console.log(`   ⚠️  ${w}`)
   }
@@ -286,25 +414,29 @@ function packOne(pluginDir, outDir) {
 function main() {
   const argv = process.argv.slice(2)
   let outDir = resolve('dist-plugins')
+  let companionSource
   const targets = []
 
   if (argv.includes('-h') || argv.includes('--help')) {
-    console.log(`用法: node scripts/pack-plugin.mjs <插件目录|包含多个插件的目录> [-o <输出目录>]
+    console.log(`用法: node scripts/pack-plugin.mjs <插件目录|包含多个插件的目录> [-o <输出目录>] [--companion <程序目录>]
 
 把插件目录打包成可分发的 .ibplugin 文件（其实就是一个 zip）。
 使用者把 .ibplugin 拖进「设置 → 插件管理」即可安装，不需要知道插件目录在哪。
 
 参数:
-  <目录>              插件目录（含 manifest.json），或含多个插件的父目录
-  -o, --out <目录>    输出目录，默认 dist-plugins
-  -h, --help          显示本帮助
+  <目录>                 插件目录（含 manifest.json），或含多个插件的父目录
+  -o, --out <目录>       输出目录，默认 dist-plugins
+  --companion <目录>     伴随程序的源目录。manifest 里声明了 "companion" 的插件必须给，
+                        里面的 <源>/VERSION 必须与 manifest.companion.version 一致
+  -h, --help             显示本帮助
 
 示例:
   node scripts/pack-plugin.mjs plugins/hello-world
-  node scripts/pack-plugin.mjs plugins -o build
+  node scripts/pack-plugin.mjs plugins/netdisk --companion netdisk-app
+  node scripts/pack-plugin.mjs plugins -o build --companion netdisk-app
 
-打包前会做与运行时一致的校验（id 规则、section、entry 路径、import 白名单、
-入口大小），不合格直接报错，不必等装上去才发现。`)
+打包前会做与运行时一致的校验（id 规则、section、entry 路径、import 白名单、入口大小、
+条目数/总字节数、伴随程序版本），不合格直接报错，不必等装上去才发现。`)
     return
   }
 
@@ -317,6 +449,13 @@ function main() {
         process.exit(1)
       }
       outDir = resolve(next)
+    } else if (a === '--companion') {
+      const next = argv[++i]
+      if (!next) {
+        console.error('❌ --companion 后面需要跟伴随程序的源目录')
+        process.exit(1)
+      }
+      companionSource = resolve(next)
     } else if (a.startsWith('-')) {
       console.error(`❌ 未知参数: ${a}`)
       process.exit(1)
@@ -327,7 +466,7 @@ function main() {
 
   if (targets.length === 0) {
     console.error(
-      '用法: node scripts/pack-plugin.mjs <插件目录|包含多个插件的目录> [-o <输出目录>]'
+      '用法: node scripts/pack-plugin.mjs <插件目录|包含多个插件的目录> [-o <输出目录>] [--companion <程序目录>]'
     )
     process.exit(1)
   }
@@ -342,8 +481,13 @@ function main() {
     }
     // 目标是单个插件？
     if (isPluginDir(dir)) {
-      packOne(dir, outDir)
-      count++
+      try {
+        packOne(dir, outDir, companionSource)
+        count++
+      } catch (err) {
+        console.error(`❌ ${dir}：${err.message}`)
+        process.exitCode = 1
+      }
       continue
     }
     // 否则当作"包含多个插件的父目录"
@@ -357,8 +501,13 @@ function main() {
       continue
     }
     for (const sub of subs) {
-      packOne(join(dir, sub), outDir)
-      count++
+      try {
+        packOne(join(dir, sub), outDir, companionSource)
+        count++
+      } catch (err) {
+        console.error(`❌ ${join(dir, sub)}：${err.message}`)
+        process.exitCode = 1
+      }
     }
   }
 

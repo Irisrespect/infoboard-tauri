@@ -5,6 +5,7 @@
     1) POST /1/clouddrive/share/sharepage/token   {pwd_id, passcode}     → data.stoken   （免登录）
     2) GET  /1/clouddrive/share/sharepage/detail  pwd_id, stoken, pdir_fid
        → data.list[]: fid / file_name / size / dir / share_fid_token                    （免登录）
+       一页最多 200 项，装不下要按 `_page` 翻页（见 `list_dir`）
     3) POST /1/clouddrive/file/download           {fids, fids_token, pwd_id, stoken}
        → data[0].download_url                                                           （★免转存）
     4) 直链 GET + Range，必须带会话 Cookie，UA 与取链时一致 → 206 分片
@@ -59,9 +60,31 @@ def _headers() -> dict[str, str]:
     }
 
 
+def _as_int(value: Any) -> int:
+    """接口里的数字有时是字符串、有时干脆缺字段 —— 别让 int() 抛错把整棵树弄崩"""
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def quark_pwd_id(url: str) -> str:
     """从 `https://pan.quark.cn/s/<pwd_id>` 里取分享 ID"""
     m = re.search(r"/s/([0-9a-zA-Z_-]+)", url or "")
+    return m.group(1) if m else ""
+
+
+def quark_passcode(url: str) -> str:
+    """链接自带提取码时取出来（`?pwd=abcd` / `#abcd` / 「提取码：abcd」）。
+
+    合并成「网盘下载」之后只有一个输入框，用户是整段粘贴的：
+    提取码放在链接里是常态，让用户再往第二个框里抄一遍纯属多余。
+    """
+    text = url or ""
+    m = re.search(r"[?&#](?:pwd|passcode|code)=([0-9A-Za-z]{4,8})", text)
+    if m:
+        return m.group(1)
+    m = re.search(r"(?:提取码|密码|口令)\s*[:：]?\s*([0-9A-Za-z]{4,8})", text)
     return m.group(1) if m else ""
 
 
@@ -70,12 +93,28 @@ class QuarkAdapter:
 
     name = "夸克网盘"
     session = "quark"
+    root_id = "0"           # 夸克的根目录 id 是 "0"（迅雷是空字符串）
+    anonymous_hint = "未登录（只能下 ~50MB 以内的文件）"
+    parse_hint = "正在解析（夸克网盘）…"
+    example_host = "pan.quark.cn"
 
     # 免登录能列的目录、能下的文件大小上限（实测 38.6MB 可 / 68.6MB 被拒，阈值约 50MB）
     anonymous_size_limit = 50 * 1024 * 1024
 
+    # 展开目录时可以同层并发：列目录是只读 GET，`Client` 的 cookie jar 自带锁，
+    # 并发几次没有问题（并发数由界面的「展开并发」控制，默认 6）。
+    parallel_expand = True
+
     def __init__(self) -> None:
         self.client = Client("quark", ua=QUARK_UA)
+
+    # ── 配置 ──
+    def configure(self, cfg: dict[str, Any]) -> None:  # noqa: ARG002
+        """夸克没有可配项（登录态走 Cookie，由界面直接灌进 client）。
+
+        合并成「网盘下载」之后，界面统一对所有适配器调一次 `configure(cfg)`，
+        所以这里留一个空实现，而不是到处 `getattr(adapter, "configure", None)`。
+        """
 
     # ── 识别 ──
 
@@ -96,6 +135,7 @@ class QuarkAdapter:
         pwd_id = quark_pwd_id(url)
         if not pwd_id:
             raise NetdiskError("没能从链接里认出分享 ID（形如 https://pan.quark.cn/s/xxxx）")
+        pwd = (pwd or quark_passcode(url)).strip()
 
         resp = self.client.post_json(
             f"{API}/1/clouddrive/share/sharepage/token?pr=ucpro&fr=pc&uc_param_str=",
@@ -124,7 +164,47 @@ class QuarkAdapter:
 
     # ── 列目录 ──
 
+    # 夸克一次最多给 200 项（`_size`），装不下要翻页。
+    # 从前只取第 1 页：一个装 300 个文件的目录会**静默少下 100 个**，
+    # 用户看到的是"下完了"，实际缺文件 —— 和"层数超过 6 下不了"是一类问题。
+    PAGE_SIZE = 100
+    MAX_PAGES = 50          # 保险丝：单目录最多 1 万项（再多就说明这不是"目录"了）
+
     def list_dir(self, ctx: ShareCtx, dir_id: str = "0") -> list[FileEntry]:
+        out: list[FileEntry] = []
+        for page in range(1, self.MAX_PAGES + 1):
+            data = self._detail_page(ctx, dir_id, page)
+            payload = data.get("data") or {}
+            items = payload.get("list") or []
+
+            for raw in items:
+                out.append(
+                    FileEntry(
+                        id=str(raw.get("fid")),
+                        name=str(raw.get("file_name") or "未命名"),
+                        size=_as_int(raw.get("size")),
+                        is_dir=raw.get("dir") is True,
+                        updated_at=_as_int(raw.get("updated_at")),
+                        extra={"share_fid_token": raw.get("share_fid_token")},
+                    )
+                )
+
+            meta = payload.get("metadata") or {}
+            total = _as_int(meta.get("_total"))
+            page_size = _as_int(meta.get("_size")) or self.PAGE_SIZE
+            has_more = data.get("has_more")
+
+            if has_more is False:                      # 服务端明说没有了
+                break
+            if total and len(out) >= total:           # 数量对上了
+                break
+            if not items:                             # 空页：再翻也是空的
+                break
+            if has_more is not True and len(items) < page_size:
+                break                                 # 没满一页 = 最后一页
+        return out
+
+    def _detail_page(self, ctx: ShareCtx, dir_id: str, page: int) -> dict[str, Any]:
         query = urllib.parse.urlencode(
             {
                 "pr": "ucpro",
@@ -134,8 +214,8 @@ class QuarkAdapter:
                 "stoken": ctx["stoken"],
                 "pdir_fid": dir_id,
                 "force": "0",
-                "_page": "1",
-                "_size": "200",
+                "_page": str(page),
+                "_size": str(self.PAGE_SIZE),
                 "_fetch_banner": "1",
                 "_fetch_share": "1",
                 "_fetch_total": "1",
@@ -153,20 +233,7 @@ class QuarkAdapter:
         if data.get("code") != 0:
             # 提取码错误是在这一步才暴露的（token 那步不报错）
             raise NetdiskError(f"夸克列目录失败：{self._explain(data)}")
-
-        out: list[FileEntry] = []
-        for raw in (data.get("data") or {}).get("list") or []:
-            out.append(
-                FileEntry(
-                    id=str(raw.get("fid")),
-                    name=str(raw.get("file_name") or "未命名"),
-                    size=int(raw.get("size") or 0),
-                    is_dir=raw.get("dir") is True,
-                    updated_at=int(raw.get("updated_at") or 0),
-                    extra={"share_fid_token": raw.get("share_fid_token")},
-                )
-            )
-        return out
+        return data
 
     # ── 取直链 ──
 

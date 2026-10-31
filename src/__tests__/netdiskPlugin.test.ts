@@ -1,5 +1,5 @@
 /**
- * 网盘下载插件（plugins/netdisk）的"装上就能跑"回归测试
+ * 「网盘下载」插件（plugins/netdisk）的"装上就能跑"回归测试
  *
  * 外部插件不在 `tsconfig` 的 include 里（`include: ["src"]`），所以 `npm run build`
  * 不会检查它 —— 语法错、import 了白名单外的模块、调用了没声明的命令，这些都要等
@@ -11,16 +11,19 @@
  *    否则运行时会 fail-closed 直接拒绝
  * 3. 这个插件**不自己下载**：点图标时由宿主直接拉起独立软件。那条链路是按 id 硬连的，
  *    两边必须同时对得上，否则会出现"点了没反应也没报错"这种最难查的问题
+ * 4. 这个插件是**夸克 + 迅雷合并**后的唯一入口：独立软件那边必须两家都还认得，
+ *    不能哪天顺手把某一家删掉而插件名还写着「网盘下载」
  */
 
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { transpilePluginSource, evaluatePluginSource, SHARED_MODULES } from '../core/pluginRuntime'
 import { packPlugin } from '../../scripts/pack-plugin.mjs'
 
 const APP_ROOT = process.cwd()
 const PLUGIN_DIR = join(APP_ROOT, 'plugins', 'netdisk')
+const APP_DIR = join(APP_ROOT, 'netdisk-app')
 
 function readSource(): string {
   return readFileSync(join(PLUGIN_DIR, 'index.tsx'), 'utf8')
@@ -46,12 +49,12 @@ function invokedCommands(source: string): string[] {
   return [...found]
 }
 
-describe('netdisk 插件', () => {
+describe('netdisk 插件（网盘下载）', () => {
   it('能用应用的真实运行时转译并加载', () => {
     const src = readSource()
     // 转译失败会抛 PluginRuntimeError（含具体行列）
     const code = transpilePluginSource(src, 'index.tsx')
-    expect(code).toContain('netdisk_app_launch')
+    expect(code).toContain('companion_launch')
 
     const mod = evaluatePluginSource(src, 'index.tsx', SHARED_MODULES)
     const plugin = (mod.default ?? mod.plugin) as {
@@ -81,8 +84,9 @@ describe('netdisk 插件', () => {
    * 工具区图标下那行字来自 `manifest.json` 的 `name`（`ToolIcon` 直接渲染它）。
    * 钉住它是为了防止"改名改一半"—— `manifest.json` 和 `index.tsx` 里各有一份 `name`。
    */
-  it('工具区显示名是「夸克网盘」', () => {
-    expect(readManifest().name).toBe('夸克网盘')
+  it('工具区显示名是合并后的「网盘下载」', () => {
+    expect(readManifest().name).toBe('网盘下载')
+    expect(readManifest().version).toBe('2.1.0')
   })
 
   /**
@@ -160,6 +164,9 @@ describe('netdisk 插件', () => {
   /**
    * 点图标 → 直接启动，不展开中间面板（和截图插件同一套做法）。
    * 这条链路两边都硬编码了 id，任何一边改名都会变成"点了没反应"。
+   *
+   * 注意这里用的是**宿主原有的专用命令** `netdisk_app_launch`：合并两家网盘只换了
+   * 背后那个程序，宿主一行都不用改 —— 所以这个插件装上就能用，不需要重新编译应用。
    */
   it('宿主认识 netdisk，点图标直接启动而不是展开面板', () => {
     const tool = readFileSync(join(APP_ROOT, 'src', 'components', 'ToolSection.tsx'), 'utf8')
@@ -169,9 +176,10 @@ describe('netdisk 插件', () => {
     expect(tool).toContain('plugin:dialog|message')
   })
 
-  it('宿主弹错误框的能力已开放（少了它失败时会静默）', () => {
+  it('宿主弹框 / 选文件的能力已开放（少了它失败时会静默）', () => {
     const caps = readFileSync(join(APP_ROOT, 'src-tauri', 'capabilities', 'default.json'), 'utf8')
     expect(caps).toContain('dialog:allow-message')
+    expect(caps).toContain('dialog:allow-open')
   })
 
   it('插件声明的自定义命令在宿主里真实注册过', () => {
@@ -185,12 +193,66 @@ describe('netdisk 插件', () => {
     }
   })
 
-  it('能打包成 .ibplugin 且包含入口', () => {
-    const pkg = packPlugin(PLUGIN_DIR)
+  it('伴随程序注册表里有 netdisk（id / 入口 / 目录）', () => {
+    const rs = readFileSync(join(APP_ROOT, 'src-tauri', 'src', 'core', 'companion.rs'), 'utf8')
+    expect(rs).toContain('id: "netdisk"')
+    expect(rs).toContain('entry: "main.py"')
+    expect(rs).toContain('bundled_dir: "netdisk-app"')
+    // 入口文件真的存在，否则 status 会说"没找到 main.py"
+    expect(existsSync(join(APP_DIR, 'main.py'))).toBe(true)
+  })
+
+  /**
+   * 「网盘下载」= 夸克 + 迅雷。独立软件里两家适配器都必须还在、而且都被注册表收着。
+   *
+   * 这条是**合并的护栏**：如果哪天只留一家，插件名就名不副实了（用户点「网盘下载」
+   * 却只认得夸克，会以为迅雷链接坏了）。
+   */
+  it('独立软件里两家网盘都还在（services 注册表 + 协议实现）', () => {
+    const services = readFileSync(join(APP_DIR, 'netdisk', 'services.py'), 'utf8')
+    expect(services).toContain('QuarkAdapter')
+    expect(services).toContain('XunleiAdapter')
+
+    // 迅雷的协议实现在 bridge_worker 的 JS 里，别被"清理无用代码"顺手删掉
+    const worker = readFileSync(join(APP_DIR, 'netdisk', 'bridge_worker.py'), 'utf8')
+    expect(worker).toContain('/share/file_info')
+    expect(worker).toContain('/share/restore')
+    expect(worker).toContain('trace_file_ids')
+
+    // 两个入口脚本都在，且资源目录已随包声明
+    expect(existsSync(join(APP_DIR, 'netdisk', 'xunlei.py'))).toBe(true)
+    expect(existsSync(join(APP_DIR, 'netdisk', 'adapters.py'))).toBe(true)
+
+    const conf = readFileSync(join(APP_ROOT, 'src-tauri', 'tauri.conf.json'), 'utf8')
+    expect(conf).toContain('"../netdisk-app/": "netdisk-app/"')
+  })
+
+  it('能打包成 .ibplugin：启动器 + 自带伴随程序', () => {
+    const pkg = packPlugin(PLUGIN_DIR, { companionSource: APP_DIR })
     expect(pkg.id).toBe('netdisk')
-    expect(pkg.files).toEqual(['manifest.json', 'index.tsx'])
-    // 这个插件现在很薄（只是个启动器），顺手把"又变胖"也拦住：
-    // 真要下载逻辑，应该放进独立软件而不是塞回插件
-    expect(pkg.buffer.length).toBeLessThan(200 * 1024)
+    expect(pkg.files).toContain('manifest.json')
+    expect(pkg.files).toContain('index.tsx')
+    // A 方案的核心：程序本体跟着插件走（改一行 Python 只发插件包，不用重装应用）
+    expect(pkg.files).toContain('app/main.py')
+    expect(pkg.files).toContain('app/VERSION')
+    expect(pkg.files).toContain('app/netdisk/tree.py')
+    expect(pkg.payloadCount).toBeGreaterThan(5)
+
+    // 不该把自测脚本 / 字节码打进去（体积、以及"带着旧字节码"的隐患）
+    expect(pkg.files.some((f) => f.includes('__pycache__') || f.endsWith('.pyc'))).toBe(false)
+    expect(pkg.files.some((f) => f.includes('/tools/'))).toBe(false)
+
+    // 宿主上限 8MB，这个包应该远小于此
+    expect(pkg.buffer.length).toBeLessThan(2 * 1024 * 1024)
+  })
+
+  it('声明了 companion 却不给源目录 → 拒绝出包（不能出个空壳）', () => {
+    expect(() => packPlugin(PLUGIN_DIR)).toThrow(/companion/)
+  })
+
+  it('插件声明的程序版本 == 程序目录里的 VERSION（版本契约）', () => {
+    const decl = JSON.parse(readFileSync(join(PLUGIN_DIR, 'manifest.json'), 'utf8')).companion
+    const version = readFileSync(join(APP_DIR, 'VERSION'), 'utf8').trim()
+    expect(decl.version).toBe(version)
   })
 })

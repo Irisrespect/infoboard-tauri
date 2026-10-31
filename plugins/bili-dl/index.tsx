@@ -196,7 +196,7 @@ const BiliDownloaderPlugin: InfoBoardPlugin = {
   manifest: {
     id: 'bili-dl',
     name: 'B站下载',
-    version: '1.1.2',
+    version: '1.2.0',
     section: 'tool',
     icon: 'download',
     color: 'var(--accent)',

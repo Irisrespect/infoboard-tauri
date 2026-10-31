@@ -8,25 +8,35 @@
 
 ## 功能
 
-| 模块            | 说明                                                                                 |
-| --------------- | ------------------------------------------------------------------------------------ |
-| **灵动岛**      | 系统媒体会话（SMTC）控制、B 站信息补充、可选本地 MusicPlayer 歌词桥                  |
-| **天气**        | 定位 + 公开天气 API（可配置和风 Key）                                                |
-| **待办**        | 本地待办列表（localStorage）                                                         |
-| **翻译**        | 多引擎（小牛 / OpenAI 兼容 / DeepL / Google / MyMemory）+ 历史收藏；已改为外部插件包 |
-| **DeepSeek**    | 点一下弹出网页小窗（chat.deepseek.com），应用内直接聊天；外部插件                    |
-| **截图**        | 全屏捕获、区域框选、剪贴板；集成 RapidOCR 文字识别                                   |
-| **夸克网盘**    | 拉起独立的「网盘下载器」：夸克分享解析 + 多连接高速下载                              |
-| **API**         | 拉起独立的「API 中转站测活工具」：站点/多 Key、模型探测、一键接入                    |
-| **设置**        | 主题色、开机自启、API Key、插件开关                                                  |
-| **🔌 外部插件** | 热插拔插件系统，无需修改核心代码即可添加新功能                                       |
+| 模块            | 说明                                                                                              |
+| --------------- | ------------------------------------------------------------------------------------------------- |
+| **灵动岛**      | 系统媒体会话（SMTC）控制、B 站信息补充、可选本地 MusicPlayer 歌词桥                               |
+| **天气**        | 定位 + 公开天气 API（可配置和风 Key）                                                             |
+| **待办**        | 本地待办列表（localStorage）                                                                      |
+| **翻译**        | 多引擎（小牛 / OpenAI 兼容 / DeepL / Google / MyMemory）+ 历史收藏；已改为外部插件包              |
+| **DeepSeek**    | 点一下弹出网页小窗（chat.deepseek.com），应用内直接聊天；外部插件                                 |
+| **截图**        | 全屏捕获、区域框选、剪贴板；集成 RapidOCR 文字识别                                                |
+| **网盘下载**    | 拉起独立的「网盘下载器」：夸克 / 迅雷分享解析 + 多连接高速下载                                    |
+| **API**         | 拉起独立的「API 中转站测活工具」：站点/多 Key、模型探测、一键接入                                 |
+| **设置**        | 主题色、开机自启、API Key、插件开关                                                               |
+| **🔌 外部插件** | 热插拔插件系统，无需修改核心代码即可添加新功能；启动器类插件可**自带程序**（导入 .ibplugin 即用） |
 
-> **「夸克网盘」和「API」是"启动器"插件**：点工具区的图标会拉起对应的**独立程序**
-> （都是 Python + tkinter、零第三方依赖），功能不在插件里跑。原因是插件运行在 WebView 中，
+> **「网盘下载」和「API」是"启动器"插件**：点工具区的图标会拉起对应的**独立程序**
+> （Python + tkinter；网盘下载器除迅雷那家需要 `pywebview` 外零第三方依赖），
+> 功能不在插件里跑。原因是插件运行在 WebView 中，
 > 受应用 CSP 约束（发不出对任意域名的请求、也没有写文件能力），而且只在面板打开时活着 ——
 > 而这两个工具的核心恰好就是"发网络请求 + 写文件 + 长时间运行"。
 >
-> 详见 [netdisk-app/](netdisk-app/README.md) 与 [plugins/api-probe/](plugins/api-probe/README.md)。
+> 「网盘下载」是**夸克 + 迅雷合并**后的唯一入口（插件 2.1.0，程序随插件包发）：一个输入框认两家链接，
+> 一套目录浏览与下载队列。详见 [netdisk-app/](netdisk-app/README.md) 与
+> [plugins/api-probe/](plugins/api-probe/README.md)。
+>
+> 同一个网盘下载器还有**命令行版**（不需要界面，和 GUI 共用配置与登录态）：
+>
+> ```bash
+> python netdisk-app/netdisk_cli.py get "https://pan.quark.cn/s/xxxx" --only "*.mp4" -o D:\片 -c 32
+> python netdisk-app/netdisk_cli.py ls  "https://pan.quark.cn/s/xxxx"
+> ```
 
 > **「翻译」也是外部插件**（[plugins/translate/](plugins/translate/README.md)）：
 > 它原本是内置插件，现在重建成了可独立安装的 `.ibplugin`。
@@ -174,16 +184,18 @@ src-tauri/target/release/infoboard-tauri.exe
 │   ├── binaries/rapidocr/    # OCR 引擎与模型（随仓库提供）
 │   └── capabilities/         # Tauri 权限
 ├── netdisk-app/              # 伴随程序：网盘下载器（Python + tkinter，随安装包分发）
-│   ├── main.py               #   Tkinter 界面
-│   ├── netdisk/              #   HTTP 客户端 / 夸克适配器 / 多连接下载引擎
+│   ├── main.py               #   Tkinter 界面（一个输入框认夸克 / 迅雷）
+│   ├── netdisk_cli.py        #   命令行版：ls / tree / get / login / config
+│   ├── netdisk/              #   HTTP 客户端 / 两家适配器 / WebView 桥 / 多连接下载引擎
 │   └── tools/                #   自测工具（不需账号）
 ├── plugins/                  # 外部插件目录（用户可添加自定义插件）
 │   ├── hello-world/          # 示例插件
-│   ├── netdisk/              # 启动器插件：拉起网盘下载器（工具区显示「夸克网盘」）
+│   ├── netdisk/              # 启动器插件：拉起网盘下载器（工具区显示「网盘下载」）
 │   └── api-probe/            # 启动器插件：拉起 API 测活工具（工具区显示「API」）
 ├── docs/                     # 文档
 │   ├── PLUGIN_TUTORIAL.md    # 插件开发教程
-│   └── NETDISK.md            # 网盘下载：设计、协议序列与调研结论
+│   ├── NETDISK.md            # 网盘下载：设计、协议序列与调研结论（夸克第 3 节 / 迅雷第 9 节）
+│   └── NETDISK_CLI.md        # 网盘下载命令行版手册（子命令、JSON、脚本、排错）
 ├── package.json
 └── vite.config.ts
 ```

@@ -4,11 +4,17 @@
 //! 不能发请求、不能写文件、不能起进程。原先每个程序都单独写两三个命令
 //! （`netdisk_app_launch` / `apiprobe_app_launch` ...），加一个程序就要动一次 `lib.rs`。
 //!
-//! 这里改成**按 id 查注册表**的一组通用命令，新程序只需要在
-//! [`crate::core::companion::ALL`] 里登记一个 [`crate::core::companion::AppSpec`]。
+//! 两层来源，**对调用方是同一组命令**：
 //!
-//! 注意：`id` 是**白名单键**，不是路径。查不到就报错并列出可用 id ——
-//! 所以这组命令不会变成"任何插件都能启动任意程序"的口子。
+//! 1. **注册表**（[`crate::core::companion::ALL`]）：随安装包发的程序，
+//!    有"随包资源 / 仓库副本 / 用户手动指定"三条兜底；
+//! 2. **插件自带**（manifest 里的 `companion` 段）：程序就在插件目录里，
+//!    路径只由宿主拼出来 —— 所以**新插件不需要宿主认识它**，
+//!    导入一个 `.ibplugin` 就能有自己的程序（这是 P3 的目的）。
+//!
+//! 注意：`id` 仍然是**白名单键**，不是路径。查不到就报错并列出可用 id ——
+//! 这组命令不会变成"任何插件都能启动任意程序"的口子：
+//! 插件不能传路径，只能启动自己包里那份。
 //! 旧的两组专用命令保留，行为等价，不打断已装插件。
 
 use crate::core::companion::{self as core_companion, AppStatus};
@@ -19,10 +25,17 @@ use tauri::AppHandle;
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompanionInfo {
-    pub id: &'static str,
-    /// 入口文件名（也是手动指定路径时必须匹配的名字）
-    pub entry: &'static str,
-    pub bundled_dir: &'static str,
+    pub id: String,
+    /// 入口文件名（注册表项也是手动指定路径时必须匹配的名字）
+    pub entry: String,
+    /// 随包资源里的子目录名（插件自带的为 null）
+    pub bundled_dir: Option<String>,
+    /// `registry` = 注册表（安装包随附）；`plugin` = 插件自带
+    pub source: String,
+    /// 插件声明的版本（注册表项通常没有）
+    pub version: Option<String>,
+    /// 入口文件现在是否真的存在
+    pub present: bool,
 }
 
 fn resolve(id: &str) -> Result<&'static core_companion::AppSpec, String> {
@@ -32,31 +45,47 @@ fn resolve(id: &str) -> Result<&'static core_companion::AppSpec, String> {
     })
 }
 
-/// 列出所有已注册的伴随程序
+/// 列出所有可启动的程序：注册表 + 已装插件里声明了 `companion` 的
 #[tauri::command]
-pub fn companion_list() -> Vec<CompanionInfo> {
-    core_companion::ALL
+pub fn companion_list(app: AppHandle) -> Vec<CompanionInfo> {
+    let mut out: Vec<CompanionInfo> = core_companion::ALL
         .iter()
         .map(|s| CompanionInfo {
-            id: s.id,
-            entry: s.entry,
-            bundled_dir: s.bundled_dir,
+            id: s.id.to_string(),
+            entry: s.entry.to_string(),
+            bundled_dir: Some(s.bundled_dir.to_string()),
+            source: "registry".to_string(),
+            version: None,
+            present: true,
         })
-        .collect()
+        .collect();
+
+    for (id, decl) in core_companion::plugin_companions(&app) {
+        let present = core_companion::status_by_id(&app, &id)
+            .map(|st| st.script.is_some() && st.available)
+            .unwrap_or(false);
+        out.push(CompanionInfo {
+            id,
+            entry: decl.entry,
+            bundled_dir: None,
+            source: "plugin".to_string(),
+            version: Some(decl.version),
+            present,
+        });
+    }
+    out
 }
 
 /// 查询某个伴随程序是否可用（找到入口 + 找到 Python）
 #[tauri::command]
 pub fn companion_status(app: AppHandle, id: String) -> Result<AppStatus, String> {
-    let spec = resolve(&id)?;
-    Ok(core_companion::status(&app, spec))
+    core_companion::status_by_id(&app, &id)
 }
 
-/// 启动某个伴随程序
+/// 启动某个伴随程序（注册表项或插件自带）
 #[tauri::command]
 pub fn companion_launch(app: AppHandle, id: String) -> Result<String, String> {
-    let spec = resolve(&id)?;
-    core_companion::launch(&app, spec)
+    core_companion::launch_by_id(&app, &id)
 }
 
 /// 记住用户手动指定的入口脚本（文件名必须与注册表里的 `entry` 一致）

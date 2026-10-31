@@ -51,18 +51,95 @@ my-plugin-1.0.0.ibplugin   （zip）
 
 ### 字段表
 
-| 字段            | 必需 | 说明                                                                     |
-| --------------- | ---- | ------------------------------------------------------------------------ |
-| `id`            | ✅   | 插件唯一标识，**同时是安装目录名**。规则见下                             |
-| `name`          | ✅   | 显示名称，非空                                                           |
-| `version`       | ✅   | 版本号，建议语义化（`1.0.0`）                                            |
-| `section`       | ✅   | 只能是 `"info"`（信息区卡片）或 `"tool"`（工具区图标）                   |
-| `icon`          | ✅   | emoji 或内置 SVG 图标名（如 `camera`）。emoji 支持组合形式（`👋🏽`、`🇨🇳`） |
-| `entry`         | ✅   | 入口文件，相对插件目录；不能是绝对路径或含 `..`                          |
-| `author`        |      | 作者，显示在插件管理列表里                                               |
-| `description`   |      | 描述                                                                     |
-| `tauriCommands` |      | **要调用 `invoke` 就必须在这里声明命令名**，见第 4 节                    |
-| `permissions`   |      | 保留字段，**当前无任何消费方**（声明了也不会校验）                       |
+| 字段            | 必需 | 说明                                                                                  |
+| --------------- | ---- | ------------------------------------------------------------------------------------- |
+| `id`            | ✅   | 插件唯一标识，**同时是安装目录名**。规则见下                                          |
+| `name`          | ✅   | 显示名称，非空                                                                        |
+| `version`       | ✅   | 版本号，建议语义化（`1.0.0`）                                                         |
+| `section`       | ✅   | 只能是 `"info"`（信息区卡片）或 `"tool"`（工具区图标）                                |
+| `icon`          | ✅   | emoji 或内置 SVG 图标名（如 `camera`）。emoji 支持组合形式（`👋🏽`、`🇨🇳`）              |
+| `entry`         | ✅   | 入口文件，相对插件目录；不能是绝对路径或含 `..`                                       |
+| `author`        |      | 作者，显示在插件管理列表里                                                            |
+| `description`   |      | 描述                                                                                  |
+| `tauriCommands` |      | **要调用 `invoke` 就必须在这里声明命令名**，见第 4 节                                 |
+| `companion`     |      | 启动器类插件用它**把伴随程序打进包里**，见 [第 2.1 节](#21-companion把伴随程序打进包) |
+| `permissions`   |      | 保留字段，**当前无任何消费方**（声明了也不会校验）                                    |
+
+### 2.1 `companion`：把伴随程序打进包
+
+有些插件只是个"启动器"：点图标拉起一个独立程序（Python/其它可执行文件）。
+这类插件如果把程序放在**应用安装包的 resources** 里，就会出现一个结构性矛盾：
+
+> 改一行程序代码 → 用户必须重装整个应用；`.ibplugin` 这个热更新通道对它完全失效。
+
+`companion` 就是给它们准备的：程序一起打进插件包，宿主**优先跑插件里那份**，
+安装包 resources 里那份退化成"没装插件时的兜底"。
+
+```json
+{
+  "id": "netdisk",
+  "version": "2.1.0",
+  "entry": "index.tsx",
+  "companion": {
+    "dir": "app",
+    "entry": "main.py",
+    "version": "2.1.0"
+  }
+}
+```
+
+| 字段      | 说明                                                                         |
+| --------- | ---------------------------------------------------------------------------- |
+| `dir`     | 插件目录下的子目录（约定 `app`）；相对路径，不能绝对、不能含 `..`            |
+| `entry`   | 子目录里的入口文件（`main.py` / `tool.exe`），同上限制                       |
+| `version` | 内置程序版本，**必须等于程序目录里 `VERSION` 文件的内容**                    |
+| `kind`    | 可选：`"python"`（默认，用解释器跑脚本）或 `"exe"`（直接执行自带可执行文件） |
+
+打包时用 `--companion` 指源目录：
+
+```bash
+node scripts/pack-plugin.mjs plugins/netdisk --companion netdisk-app
+```
+
+**任意插件 id 都能用，不需要宿主"认识"它。** 宿主提供的通用命令是：
+
+```ts
+// 声明在 manifest.tauriCommands 里即可调用
+await invoke('companion_status', { id: 'my-plugin' }) // {available, script, version, expected, source:'plugin'}
+await invoke('companion_launch', { id: 'my-plugin' }) // 跑 <plugins>/my-plugin/app/<entry>
+```
+
+也就是说：**新功能 = 一个 .ibplugin**，宿主一次都不用改（这是 v0.9 起的能力，
+0.8 及更早的宿主只认 `netdisk` / `apiprobe` / `bilidl` 三个内置 id）。
+
+规则（都是硬性的，出包时就报错）：
+
+1. `manifest.companion.version` 必须等于 `<源目录>/VERSION`
+   —— 版本号只能有一个事实源，否则"插件说自己 2.1.0、里面装 2.0.x"又回来了；
+2. 源目录里会**排除** `__pycache__`、`*.pyc/*.pyo`、`tools/`（自测脚本）等；
+3. 条目数 ≤ 64、解压后总字节 ≤ 8 MB（与宿主 `plugins/pack.rs` 的上限一致）。
+
+宿主侧的查找顺序（`core/companion.rs`）：
+
+```
+注册表里的 id（netdisk / apiprobe / bilidl）：
+    用户手动指定的路径
+      → 插件包自带（<plugins>/<id>/<companion.dir>/<entry>）
+      → 随包 resources / exe 上层 / cwd        ← 这三处取"修改时间最新"
+
+其他 id（插件自带程序）：
+    只有 <plugins>/<id>/<companion.dir>/<entry> —— 路径由宿主拼，插件不能自己传
+```
+
+最后这条是安全边界：`companion_launch` 只接受 **id**，不接受路径，所以一个插件
+启动不了别人的程序，也启动不了自己包外的东西（老版本里靠 `companion_set_path`
+指到任意 `main.py` 的"借道"写法，在这个机制下不再需要）。
+
+**版本漂移**：宿主会把实际入口旁的 `VERSION` 与 `manifest.companion.version` 对比，
+不一致就在启动时弹一条 toast + 写日志（`[伴随程序] ... 版本不一致`），
+插件面板里的 `companion_status` 也会带 `version` / `expected` 两个字段。
+
+> 纯前端插件（如 `translate`）不需要也不该写 `companion`。
 
 ### `id` 的规则
 
@@ -203,16 +280,20 @@ node scripts/pack-plugin.mjs --help
 
 脚本会在本地就做完**与运行时一致**的校验，不合格直接报错，不用等装上去才发现：
 
-| 检查                                   | 不合格时                           |
-| -------------------------------------- | ---------------------------------- |
-| `manifest.json` 存在且是合法 JSON      | 报错                               |
-| `id` 规则（第 2 节）                   | 报错                               |
-| `section` 是 `info` / `tool`           | 报错                               |
-| `entry` 不是绝对路径、不含 `..`        | 报错                               |
-| 入口文件存在                           | 报错                               |
-| **入口的 import 都在白名单内**         | 报错，并列出可用模块               |
-| 入口大小 ≤ 2 MB                        | 报错                               |
-| 用了 `invoke` 但没声明 `tauriCommands` | **仅警告**（装上后 invoke 会被拒） |
+| 检查                                    | 不合格时                           |
+| --------------------------------------- | ---------------------------------- |
+| `manifest.json` 存在且是合法 JSON       | 报错                               |
+| `id` 规则（第 2 节）                    | 报错                               |
+| `section` 是 `info` / `tool`            | 报错                               |
+| `entry` 不是绝对路径、不含 `..`         | 报错                               |
+| 入口文件存在                            | 报错                               |
+| **入口的 import 都在白名单内**          | 报错，并列出可用模块               |
+| 入口大小 ≤ 2 MB                         | 报错                               |
+| 声明了 `companion` 但没给 `--companion` | 报错（不允许出空壳包）             |
+| `companion.version` ≠ 源目录 `VERSION`  | 报错，并打印两边的值               |
+| 伴随程序入口不存在                      | 报错                               |
+| 包内条目 ≤ 64 / 解压后 ≤ 8 MB           | 报错（与宿主上限一致）             |
+| 用了 `invoke` 但没声明 `tauriCommands`  | **仅警告**（装上后 invoke 会被拒） |
 
 后两条是应用侧的硬限制：入口超过 2 MB 会在 `read_external_plugin_source` 阶段被拒。
 

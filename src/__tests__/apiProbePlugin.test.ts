@@ -135,10 +135,16 @@ describe('api-probe 插件', () => {
     expect(companion, '没有校验文件名的话，可以指向任意脚本').toMatch(/name != spec\.entry/)
   })
 
-  it('能打包成 .ibplugin 且包含入口', () => {
-    const pkg = packPlugin(PLUGIN_DIR)
+  it('能打包成 .ibplugin：启动器 + 自带伴随程序', () => {
+    const pkg = packPlugin(PLUGIN_DIR, { companionSource: join(APP_ROOT, 'api-probe-app') })
     expect(pkg.id).toBe('api-probe')
-    expect(pkg.files).toEqual(['manifest.json', 'index.tsx'])
-    expect(pkg.buffer.length).toBeLessThan(200 * 1024)
+    expect(pkg.files).toContain('manifest.json')
+    expect(pkg.files).toContain('index.tsx')
+    // 程序本体跟着插件走：改程序只需要重发插件包
+    expect(pkg.files).toContain('app/api_probe.py')
+    expect(pkg.files).toContain('app/VERSION')
+    expect(pkg.payloadCount).toBeGreaterThan(0)
+    // 宿主上限 8 MB；单文件 400 KB 左右，别哪天塞进来一个打包产物
+    expect(pkg.buffer.length).toBeLessThan(2 * 1024 * 1024)
   })
 })
