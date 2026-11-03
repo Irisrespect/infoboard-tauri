@@ -116,6 +116,11 @@ export function TodoCard({ manifest, expanded, onToggle }: TodoCardProps) {
   const [deadlineValue, setDeadlineValue] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
   const datePickerRef = useRef<HTMLInputElement>(null)
+  /**
+   * 删除的「同位置短时冷却」上一次指针坐标（见 handleDelete）。
+   * 只记录坐标 + 时间，不记录"全局上次删除时间" —— 键盘连删两条不该被误伤。
+   */
+  const lastDeleteRef = useRef<{ at: number; x: number; y: number } | null>(null)
 
   // 折叠态显示的第一条待办（取截止时间最早的未完成项）
   // 使用 useMemo 避免每次渲染都重新排序
@@ -160,9 +165,30 @@ export function TodoCard({ manifest, expanded, onToggle }: TodoCardProps) {
     [handleAdd]
   )
 
-  /** 删除单条 + 可撤销提示（撤销把原条目原样插回） */
+  /**
+   * 删除单条 + 可撤销提示（撤销把原条目原样插回）
+   *
+   * 卡级「同位置短时冷却」守卫：真机上连点删除按钮会连删两条 —— 第一击删掉第 N 条，
+   * 第 N+1 条上移占住同一个位置，紧接着的第二击落到"顶替上来的另一条"上，
+   * 表现为一次双击删两条。同一位置 350ms 内的第二击直接吞掉。
+   * 守卫按「卡内同一位置」而不是「全局时间」：键盘触发没有坐标，连删两条不受影响。
+   */
   const handleDelete = useCallback(
-    (id: string) => {
+    (id: string, point?: { x: number; y: number }) => {
+      const now = Date.now()
+      const last = lastDeleteRef.current
+      // 同一位置 350ms 内的第二次点击：行已经上移，这一击命中的是"顶替上来的另一条"，
+      // 属于一次误触双击，直接吞掉。键盘触发没有坐标，不走这个守卫。
+      if (
+        point &&
+        last &&
+        now - last.at < 350 &&
+        Math.abs(point.x - last.x) < 24 &&
+        Math.abs(point.y - last.y) < 24
+      ) {
+        return
+      }
+      lastDeleteRef.current = point ? { at: now, x: point.x, y: point.y } : null
       const removed = deleteTodo(id)
       if (!removed) return
       window.toastAPI?.show?.({
@@ -204,8 +230,16 @@ export function TodoCard({ manifest, expanded, onToggle }: TodoCardProps) {
         整张卡片（含 InfoCard 的 p-4 内边距、卡片根的空白、行间隙）都不折叠自己：
         折叠入口只保留 CompactView 头部那一个（它已有自己的 onToggle），
         否则点内边距/空白处会把卡片收起来，用户还会以为是自己点到了什么。
+
+        `-m-4 p-4` 是为了把 InfoCard 的 16px 内边距圈也纳入止泡范围：
+        InfoSection 的结构是「卡片根(onToggle) > div.p-4 > 插件组件」，只靠这里的
+        止泡只覆盖 `.p-4` 的**内容盒**，落在那一圈 16px 内边距上的点击命中的是
+        `DIV.p-4`，事件绕过本组件直接冒到卡片根 → 卡片被收起。
+        负外边距抵消掉自身内边距，盒子向外撑进那圈 padding：内容位置一个像素都不变
+        （`-m-4` + `p-4` 净效果为 0），但整圈内边距落在本组件内，止泡真正覆盖整张卡片。
+        数值与 InfoSection.tsx 里的 `p-4` 绑定，改那边必须同步改这里。
       */}
-      <div className="relative" onClick={(e) => e.stopPropagation()}>
+      <div className="relative -m-4 p-4" onClick={(e) => e.stopPropagation()}>
         {/* 折叠摘要：始终可见，头部是唯一的展开/折叠入口 */}
         <CompactView
           activeCount={stats.active}
@@ -366,7 +400,7 @@ interface ExpandedViewProps {
   onKeyDown: (e: React.KeyboardEvent) => void
   onToggle: (id: string) => void
   onUpdate: (id: string, patch: TodoPatch) => void
-  onDelete: (id: string) => void
+  onDelete: (id: string, point?: { x: number; y: number }) => void
   onClearCompleted: () => void
 }
 
@@ -470,6 +504,11 @@ function ExpandedView({
             <input
               type="date"
               ref={datePickerRef}
+              // 移出 Tab 序：这个框是完全不可见的（opacity-0，只负责盖住日历图标接鼠标点击），
+              // 但 Chrome 原生日期控件在 Tab 序列里会按「年 / 月 / 日 / 日历按钮」连占 4 次停靠，
+              // 键盘用户会被硬拽进一个看不见的控件。tabIndex=-1 不影响鼠标点击（鼠标走命中测试，
+              // 与 Tab 序无关）；键盘用户用上面的文本框直接输入 YYYY-MM-DD，能力没有丢失。
+              tabIndex={-1}
               // 受控：只有 ISO 值才回填（"7月8日"这类不是 date input 的合法值，
               // 直接塞进去浏览器会丢掉，值会静默变成空）
               value={ISO_DATE_REGEX.test(deadlineValue) ? deadlineValue : ''}
@@ -551,7 +590,8 @@ interface TodoItemProps {
   overdue: boolean
   onToggle: (id: string) => void
   onUpdate: (id: string, patch: TodoPatch) => void
-  onDelete: (id: string) => void
+  /** `point` 仅指针点击时提供，供卡片做「同位置短时冷却」判定 */
+  onDelete: (id: string, point?: { x: number; y: number }) => void
 }
 
 function TodoItem({ todo, overdue, onToggle, onUpdate, onDelete }: TodoItemProps) {
@@ -630,7 +670,9 @@ function TodoItem({ todo, overdue, onToggle, onUpdate, onDelete }: TodoItemProps
           ref={editInputRef}
           type="text"
           value={draft}
-          aria-label={`编辑待办：${todo.text}`}
+          // 固定可访问名：不能用 todo.text（那是已保存的旧文本，编辑中读屏念的名字会和框内内容不一致），
+          // 也不能用 draft（每敲一个字都会重念）。不加 title，避免和 aria-label 打架。
+          aria-label="编辑待办"
           onChange={(e) => setDraft(e.target.value)}
           onClick={(e) => e.stopPropagation()}
           onBlur={() => finishEditing(true)}
@@ -698,7 +740,10 @@ function TodoItem({ todo, overdue, onToggle, onUpdate, onDelete }: TodoItemProps
         className="flex items-center justify-center shrink-0 w-6 h-6 -my-[3px] rounded transition-opacity opacity-40 group-hover:opacity-100 focus-visible:opacity-100"
         onClick={(e) => {
           e.stopPropagation()
-          onDelete(todo.id)
+          // 键盘激活（Enter / Space 合成的 click）没有真实指针坐标：detail === 0。
+          // 这种情况不传坐标，让卡片的「同位置冷却」守卫放行 —— 否则连按两次 Enter
+          // 删两条会被当成同位置的误触双击，第二条删不掉。
+          onDelete(todo.id, e.detail === 0 ? undefined : { x: e.clientX, y: e.clientY })
         }}
       >
         <Trash2 size={14} color="var(--text-muted)" />
