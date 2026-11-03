@@ -40,7 +40,14 @@ declare global {
   }
 
   interface ToastAPI {
-    show: (data: { message: string; color?: string; bg?: string; duration?: number }) => void
+    /** action 会原样透传给 GlobalToast（如「撤销」按钮；带 action 时默认停留 8000ms） */
+    show: (data: {
+      message: string
+      color?: string
+      bg?: string
+      duration?: number
+      action?: { label: string; onClick: () => void }
+    }) => void
   }
 
   interface ClipboardBridge {

@@ -2,13 +2,21 @@ import { useEffect, useState, useCallback } from 'react'
 import { X } from 'lucide-react'
 import { listen } from '@tauri-apps/api/event'
 
-interface ToastData {
+/** toast 上的操作按钮（如「撤销」）。点击后先移除该 toast，再执行 onClick */
+export interface ToastAction {
+  label: string
+  onClick: () => void
+}
+
+export interface ToastData {
   message: string
   color?: string
   bg?: string
   duration?: number
   /** 后端 toast_show 事件字段 */
   level?: string
+  /** 可选操作按钮；给了 action 时默认停留时间自动延长到 8000ms */
+  action?: ToastAction
 }
 
 interface ToastItem {
@@ -16,7 +24,15 @@ interface ToastItem {
   message: string
   color?: string
   bg?: string
+  action?: ToastAction
 }
+
+/** 默认停留时间 / 带操作按钮时的停留时间（用户需要时间点「撤销」） */
+const DEFAULT_DURATION = 4000
+const ACTION_DURATION = 8000
+
+/** 屏幕上同时最多显示的 toast 数量，超出时淘汰最不可能被需要的那个 */
+const MAX_TOASTS = 3
 
 let toastId = 0
 
@@ -48,10 +64,22 @@ export default function GlobalToast() {
       const id = ++toastId
       const color = data.color || colorForLevel(data.level)
       setToasts((prev) => {
-        const next = [...prev, { id, message: data.message, color, bg: data.bg }]
-        return next.length > 3 ? next.slice(-3) : next
+        const next: ToastItem[] = [
+          ...prev,
+          { id, message: data.message, color, bg: data.bg, action: data.action },
+        ]
+        if (next.length <= MAX_TOASTS) return next
+        // 超出上限时优先淘汰没有操作按钮的 toast：带「撤销」的那条若被挤掉，
+        // 用户的删除就彻底不可恢复，而 8 秒停留时间本该是他唯一的挽救窗口
+        const idx = next.findIndex((t) => !t.action)
+        if (idx < 0) return next.slice(-MAX_TOASTS) // 全是 action 时才退回最老优先
+        const copy = next.slice()
+        copy.splice(idx, 1)
+        return copy
       })
-      setTimeout(() => removeToast(id), data.duration || 4000)
+      // 带操作按钮的 toast 留更久；显式传了 duration 就按传入值
+      const duration = data.duration ?? (data.action ? ACTION_DURATION : DEFAULT_DURATION)
+      setTimeout(() => removeToast(id), duration)
     },
     [removeToast]
   )
@@ -98,6 +126,21 @@ export default function GlobalToast() {
           style={{ borderColor: toast.color || 'var(--border-glass)' }}
         >
           <span className="flex-1 text-text-primary">{toast.message}</span>
+          {toast.action && (
+            <button
+              className="shrink-0 whitespace-nowrap text-xs font-semibold transition-opacity hover:opacity-80"
+              style={{ color: toast.color || 'var(--accent)' }}
+              title={toast.action.label}
+              // 必须先移除 toast 再执行回调：undo 会触发 state 更新，
+              // 否则回调期间 toast 还挂在屏幕上，交互会重入
+              onClick={() => {
+                removeToast(toast.id)
+                toast.action?.onClick()
+              }}
+            >
+              {toast.action.label}
+            </button>
+          )}
           <button
             className="p-0.5 rounded hover:bg-bg-surface-hover transition-colors"
             onClick={() => removeToast(toast.id)}
