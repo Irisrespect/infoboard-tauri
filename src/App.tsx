@@ -9,6 +9,20 @@ export default function App() {
 
   // 右键菜单（位置钳制在可视区内，否则右下角右键会点不到菜单项）
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
+    // 输入框 / 文本域 / contenteditable 内右键必须交给浏览器原生菜单，
+    // 否则用户无法右键粘贴、复制、剪切。顺带把可能已打开的自定义菜单收掉。
+    // isContentEditable 覆盖祖先上的 contenteditable、plaintext-only 等属性写法，
+    // 只靠 [contenteditable="true"] 属性选择器会漏掉它们。
+    const target = e.target
+    const editable =
+      target instanceof HTMLElement &&
+      (target.closest('input, textarea') !== null ||
+        target.isContentEditable ||
+        target.closest('[contenteditable]') !== null)
+    if (editable) {
+      setMenu(null)
+      return
+    }
     e.preventDefault()
     setMenu(
       clampMenuPosition(
@@ -48,12 +62,17 @@ export default function App() {
   }, [])
 
   return (
-    <div className="min-h-screen bg-bg-main flex flex-col" onContextMenu={handleContextMenu}>
+    // 无边框窗口（decorations:false）：整页高度锁死一屏并裁掉溢出，
+    // 标题栏（拖拽区 + 最小化/关闭）才不会随内容滚动跑出视口
+    <div
+      className="h-screen overflow-hidden bg-bg-main flex flex-col"
+      onContextMenu={handleContextMenu}
+    >
       {/* 自定义标题栏 */}
       <TitleBar />
 
-      {/* 内容区 */}
-      <main className="flex-1 flex flex-col p-5 gap-6 overflow-auto">
+      {/* 内容区：min-h-0 让 flex 子项可以收缩，overflow-auto 才真正生效 */}
+      <main className="flex-1 min-h-0 flex flex-col p-5 gap-6 overflow-auto">
         <InfoSection />
         <ToolSection />
       </main>
