@@ -10,11 +10,20 @@
 import { useState, useCallback, useEffect } from 'react'
 import { usePlugins } from '../core/PluginHost'
 import { ErrorBoundary } from '../core/ErrorBoundary'
-import type { InfoBoardPlugin } from '../core/types'
+import type { InfoBoardPlugin, PluginComponentProps } from '../core/types'
 import { eventBus } from '../core/eventBus'
 
 /** 灵动岛插件 ID */
 const ISLAND_ID = 'dynamic-island'
+
+/**
+ * InfoCard 额外注入给插件的可选 props
+ *
+ * 核心的 `PluginComponentProps` 只声明了 manifest / expanded，但"点头部折叠"
+ * 需要插件拿到 onToggle。插件把它声明成**可选**扩展 props 即可，
+ * 仍然是 `ComponentType<PluginComponentProps>` 的合法实现。
+ */
+type PluginCardProps = PluginComponentProps & { onToggle?: () => void }
 
 export function InfoSection() {
   const infoPlugins = usePlugins('info')
@@ -142,6 +151,18 @@ function InfoCard({ plugin, isExpanded, onToggle }: InfoCardProps) {
   const { Component, manifest } = plugin
   const isIsland = manifest.id === 'dynamic-island'
 
+  // 展开面板的 id 约定：插件内部把展开容器标成 `${manifest.id}-panel`
+  const panelId = `${manifest.id}-panel`
+  // aria-controls 必须指向真实存在的元素，没提供面板容器的插件就不设（避免无效引用）
+  // 面板可能在插件数据加载完成后才出现，所以展开状态变化时再确认一次
+  const [hasPanel, setHasPanel] = useState(false)
+  useEffect(() => {
+    setHasPanel(document.getElementById(panelId) !== null)
+  }, [panelId, isExpanded])
+
+  // 组件只声明了 PluginComponentProps，onToggle 是可选扩展 → 收敛到更宽的类型再传
+  const PluginComponent: React.ComponentType<PluginCardProps> = Component
+
   const cardClassName = [
     isIsland ? 'rounded-card' : 'rounded-card glass-card',
     'cursor-pointer overflow-hidden',
@@ -156,7 +177,13 @@ function InfoCard({ plugin, isExpanded, onToggle }: InfoCardProps) {
       onClick={onToggle}
       role="button"
       tabIndex={0}
+      aria-expanded={isExpanded}
+      aria-controls={hasPanel ? panelId : undefined}
       onKeyDown={(e) => {
+        // 焦点在内部控件上时，Enter/Space 归控件自己处理：
+        // 否则 preventDefault 会把内部 <button> 的合成 click 掐掉，
+        // 表现为"在「已完成」筛选上按 Enter 只会折叠卡片"。
+        if (e.target !== e.currentTarget) return
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault()
           onToggle()
@@ -168,7 +195,7 @@ function InfoCard({ plugin, isExpanded, onToggle }: InfoCardProps) {
       <div className="p-4">
         {/* 插件级兜底：单个插件崩溃不该影响其它卡片 */}
         <ErrorBoundary variant="plugin" label={manifest.name}>
-          <Component manifest={manifest} expanded={isExpanded} />
+          <PluginComponent manifest={manifest} expanded={isExpanded} onToggle={onToggle} />
         </ErrorBoundary>
       </div>
     </div>

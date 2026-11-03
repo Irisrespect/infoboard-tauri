@@ -3,18 +3,18 @@
  *
  * 完全按照 Pencil 设计稿还原：
  * - 折叠态：list-checks 图标 + 标题 + 未完成数
- * - 展开态：头部 + 进度条 + 输入框 + 筛选 + 待办列表
+ * - 展开态：进度条 + 输入框 + 筛选 + 待办列表
  * - 动画：grid-template-rows 实现展开/折叠（参考 InfoSection.tsx）
  */
 
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import type { PluginComponentProps } from '../../core/types'
-import type { Todo, FilterType } from './types'
+import type { Todo, TodoPatch, FilterType } from './types'
 import { useTodo } from './useTodo'
 import { useThemeColors } from '../../hooks/useThemeColors'
 import { AccentProvider, useAccent } from '../../hooks/useAccent'
 import { withAlpha } from '../../utils/themeColor'
-import { getFirstActiveTodo, ISO_DATE_REGEX } from './utils'
+import { getFirstActiveTodo, ISO_DATE_REGEX, parseDeadlineToDayEnd } from './utils'
 
 // ─── 主题色 ───
 // 子组件通过 useAccent() 从 Context 读取，不再用模块级可变变量
@@ -37,8 +37,34 @@ function formatDeadline(iso: string | undefined | null): string {
   return `${month}月${day}日`
 }
 
+/**
+ * 输入法正在拼字时的键盘事件判定
+ *
+ * 中文/日文输入法里 Enter 是"确认候选词"，不是"提交"。`isComposing` 是标准属性；
+ * 少数输入法只在 keydown 上给出 keyCode 229，所以两个都判。
+ */
+function isComposingEvent(e: React.KeyboardEvent): boolean {
+  const native = e.nativeEvent as KeyboardEvent
+  return native.isComposing || native.keyCode === 229
+}
+
+/** 截断提示文案（按码点切分，避免把 emoji 之类的代理对劈成两半） */
+function truncate(text: string, max: number): string {
+  const chars = Array.from(text)
+  return chars.length <= max ? text : `${chars.slice(0, max).join('')}…`
+}
+
 // ─── Lucide 图标（从 lucide-react 导入） ───
-import { ListChecks, ChevronDown, Check, Plus, Trash2, Calendar, Circle } from 'lucide-react'
+import {
+  ListChecks,
+  ChevronDown,
+  Check,
+  Plus,
+  Trash2,
+  Pencil,
+  Calendar,
+  Circle,
+} from 'lucide-react'
 
 // ─── 筛选配置 ───
 
@@ -48,25 +74,46 @@ const FILTER_OPTIONS: { key: FilterType; label: string }[] = [
   { key: 'completed', label: '已完成' },
 ]
 
+/** 列表行：待办 + 渲染期算好的逾期标记 */
+interface TodoRow {
+  todo: Todo
+  overdue: boolean
+}
+
+/**
+ * 待办卡片属性
+ *
+ * `onToggle` 由 InfoCard 额外注入（核心的 PluginComponentProps 里没有），
+ * 缺省时退化成"整张卡片可点"的旧行为，因此保持可选。
+ */
+export interface TodoCardProps extends PluginComponentProps {
+  /** 折叠 / 展开回调（InfoCard 注入） */
+  onToggle?: () => void
+}
+
 /**
  * 待办卡片主组件
  */
-export function TodoCard({ manifest, expanded }: PluginComponentProps) {
+export function TodoCard({ manifest, expanded, onToggle }: TodoCardProps) {
   const {
     todos,
     allTodos,
     addTodo,
     toggleTodo,
+    updateTodo,
     deleteTodo,
+    restoreTodo,
     clearCompleted,
+    restoreTodos,
     filter,
     setFilter,
     stats,
+    todayTick,
+    isOverdue,
   } = useTodo()
   const { accent } = useThemeColors()
   const [inputValue, setInputValue] = useState('')
   const [deadlineValue, setDeadlineValue] = useState('')
-  const [hoveredId, setHoveredId] = useState<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const datePickerRef = useRef<HTMLInputElement>(null)
 
@@ -74,16 +121,37 @@ export function TodoCard({ manifest, expanded }: PluginComponentProps) {
   // 使用 useMemo 避免每次渲染都重新排序
   const firstActiveTodo = useMemo(() => getFirstActiveTodo(allTodos), [allTodos])
 
+  // 逾期标记：isOverdue() 内部读的是 Date.now()，React 不会因为"时间流逝"重渲染，
+  // 所以把 useTodo 的跨天信号 todayTick 一起作为依赖 —— 跨天 / 窗口重新可见后
+  // 用最新的"现在"重算一遍逾期，而不是靠 hover 之类的偶然重渲染。
+  const rows = useMemo<TodoRow[]>(
+    () => todos.map((todo) => ({ todo, overdue: isOverdue(todo) })),
+    [todos, isOverdue, todayTick]
+  )
+
   const handleAdd = useCallback(() => {
-    if (inputValue.trim()) {
-      addTodo(inputValue, deadlineValue)
-      setInputValue('')
-      setDeadlineValue('')
+    const text = inputValue.trim()
+    if (!text) return
+
+    const deadlineText = deadlineValue.trim()
+    // 非法截止日期不提交，也不清空输入（让用户原地改，而不是丢掉他写的东西）
+    if (deadlineText && parseDeadlineToDayEnd(deadlineText) === undefined) {
+      window.toastAPI?.show?.({
+        message: '截止日期无效，请检查格式',
+        color: 'var(--danger)',
+      })
+      return
     }
+
+    addTodo(text, deadlineText || undefined)
+    setInputValue('')
+    setDeadlineValue('')
   }, [inputValue, deadlineValue, addTodo])
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
+      // 输入法拼字中的 Enter 是在选词，不能提交
+      if (isComposingEvent(e)) return
       if (e.key === 'Enter') {
         e.preventDefault()
         handleAdd()
@@ -92,32 +160,81 @@ export function TodoCard({ manifest, expanded }: PluginComponentProps) {
     [handleAdd]
   )
 
+  /** 删除单条 + 可撤销提示（撤销把原条目原样插回） */
+  const handleDelete = useCallback(
+    (id: string) => {
+      const removed = deleteTodo(id)
+      if (!removed) return
+      window.toastAPI?.show?.({
+        message: `已删除「${truncate(removed.text, 12)}」`,
+        color: 'var(--danger)',
+        action: { label: '撤销', onClick: () => restoreTodo(removed) },
+      })
+    },
+    [deleteTodo, restoreTodo]
+  )
+
+  /** 一键清理已完成 + 可撤销提示（没清掉任何东西就不打扰用户） */
+  const handleClearCompleted = useCallback(() => {
+    const removed = clearCompleted()
+    if (removed.length === 0) return
+    window.toastAPI?.show?.({
+      message: `已清理 ${removed.length} 条已完成`,
+      color: 'var(--danger)',
+      action: { label: '撤销', onClick: () => restoreTodos(removed) },
+    })
+  }, [clearCompleted, restoreTodos])
+
   // 展开时聚焦输入框
   useEffect(() => {
-    if (expanded && inputRef.current) {
-      // 延迟聚焦，等待动画完成
-      const timer = setTimeout(() => inputRef.current?.focus(), 300)
-      return () => clearTimeout(timer)
-    }
+    if (!expanded) return
+    // 只等一帧（而不是等 500ms 动画）：preventScroll 保证不会把视口滚出去
+    const raf = requestAnimationFrame(() => {
+      inputRef.current?.focus({ preventScroll: true })
+    })
+    return () => cancelAnimationFrame(raf)
   }, [expanded])
+
+  // 展开容器的 id：InfoCard 的 aria-controls 按 `{pluginId}-panel` 约定指向它
+  const panelId = `${manifest.id}-panel`
 
   return (
     <AccentProvider value={accent}>
-      <div className="relative">
-        {/* 折叠摘要：始终可见 */}
-        <CompactView activeCount={stats.active} firstTodo={firstActiveTodo} />
+      {/*
+        整张卡片（含 InfoCard 的 p-4 内边距、卡片根的空白、行间隙）都不折叠自己：
+        折叠入口只保留 CompactView 头部那一个（它已有自己的 onToggle），
+        否则点内边距/空白处会把卡片收起来，用户还会以为是自己点到了什么。
+      */}
+      <div className="relative" onClick={(e) => e.stopPropagation()}>
+        {/* 折叠摘要：始终可见，头部是唯一的展开/折叠入口 */}
+        <CompactView
+          activeCount={stats.active}
+          firstTodo={firstActiveTodo}
+          expanded={!!expanded}
+          onToggle={onToggle}
+        />
 
         {/* 展开详情：grid 行高动画 0fr ↔ 1fr */}
         <div
+          id={panelId}
           className="transition-[grid-template-rows] duration-500 ease-[cubic-bezier(0.4,0,0.2,1)]"
           style={{
             display: 'grid',
             gridTemplateRows: expanded ? '1fr' : '0fr',
           }}
         >
-          <div className="overflow-hidden min-h-0">
+          {/*
+            inert：收起后内容仍留在 DOM 里（保留动画与状态），但整棵子树不能
+            被 Tab 聚焦、也不能被点击 —— 否则键盘用户会 Tab 进看不见的输入框。
+            onClick 止泡：展开区（含上边距、行间隙）里的任何点击都不折叠卡片。
+          */}
+          <div
+            className="overflow-hidden min-h-0"
+            inert={!expanded}
+            onClick={(e) => e.stopPropagation()}
+          >
             <ExpandedView
-              todos={todos}
+              rows={rows}
               stats={stats}
               filter={filter}
               setFilter={setFilter}
@@ -127,13 +244,12 @@ export function TodoCard({ manifest, expanded }: PluginComponentProps) {
               setDeadlineValue={setDeadlineValue}
               inputRef={inputRef}
               datePickerRef={datePickerRef}
-              hoveredId={hoveredId}
-              setHoveredId={setHoveredId}
               onAdd={handleAdd}
               onKeyDown={handleKeyDown}
               onToggle={toggleTodo}
-              onDelete={deleteTodo}
-              onClearCompleted={clearCompleted}
+              onUpdate={updateTodo}
+              onDelete={handleDelete}
+              onClearCompleted={handleClearCompleted}
             />
           </div>
         </div>
@@ -144,12 +260,35 @@ export function TodoCard({ manifest, expanded }: PluginComponentProps) {
 
 // ─── 折叠视图 ───
 
-function CompactView({ activeCount, firstTodo }: { activeCount: number; firstTodo?: Todo }) {
+interface CompactViewProps {
+  activeCount: number
+  firstTodo?: Todo
+  expanded: boolean
+  /** 未提供时（比如被别处单独渲染）交给外层 InfoCard 的整卡点击兜底 */
+  onToggle?: () => void
+}
+
+function CompactView({ activeCount, firstTodo, expanded, onToggle }: CompactViewProps) {
   const ACCENT = useAccent()
+
+  const handleHeaderClick = (e: React.MouseEvent) => {
+    if (!onToggle) return
+    // 自己是折叠入口：阻止冒泡，否则 InfoCard 根节点的 onClick 会再切一次（等于没动）
+    e.stopPropagation()
+    onToggle()
+  }
+
+  const handlePreviewClick = (e: React.MouseEvent) => {
+    // 折叠态下最显眼的可点区域，点它就展开；没有注入 onToggle 时留给 InfoCard 整卡点击兜底
+    if (!onToggle) return
+    e.stopPropagation()
+    onToggle()
+  }
+
   return (
     <div className="flex flex-col gap-2.5">
-      {/* 顶部行：图标 + 标题 + 未完成数 + chevron */}
-      <div className="flex items-center gap-3">
+      {/* 顶部行（折叠/展开触发区）：图标 + 标题 + 未完成数 + chevron */}
+      <div className="flex items-center gap-3 cursor-pointer" onClick={handleHeaderClick}>
         <div
           className="flex items-center justify-center w-9 h-9 rounded-full shrink-0"
           style={{ backgroundColor: withAlpha(ACCENT, 0.08) }}
@@ -165,28 +304,41 @@ function CompactView({ activeCount, firstTodo }: { activeCount: number; firstTod
           </span>
         </div>
         <div className="ml-auto">
-          <ChevronDown size={16} color="var(--text-muted)" />
+          <ChevronDown
+            size={16}
+            color="var(--text-muted)"
+            style={{
+              transform: expanded ? 'rotate(180deg)' : 'none',
+              transition: 'transform 300ms',
+            }}
+          />
         </div>
       </div>
 
-      {/* 第一条待办预览 */}
-      {firstTodo && (
+      {/*
+        第一条待办预览：只在折叠态显示（展开后列表第一行就是它，再显示一次就是重复）；
+        点击 = 展开 —— 这是折叠态最显眼的可点区域，点它没反应等于"坏了"。
+      */}
+      {!expanded && firstTodo && (
         <div
-          className="flex items-center gap-2.5 px-3 py-2 rounded-lg"
+          className="flex items-center gap-2.5 px-3 py-2 rounded-lg cursor-pointer"
           style={{ backgroundColor: 'var(--bg-main)' }}
+          title="展开待办"
+          onClick={handlePreviewClick}
         >
           <Circle size={14} color={ACCENT} />
           <span
-            className="flex-1 text-[13px] truncate"
+            className="flex-1 min-w-0 truncate text-[13px]"
             style={{ color: 'var(--text-primary)', fontFamily: 'Inter' }}
+            title={firstTodo.text}
           >
             {firstTodo.text}
           </span>
           {/* 截止时间 */}
           {firstTodo.deadline ? (
             <span className="flex items-center gap-1 shrink-0">
-              <Calendar size={11} color="var(--text-muted)" />
-              <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+              <Calendar size={11} color="var(--text-secondary)" />
+              <span className="text-[11px]" style={{ color: 'var(--text-secondary)' }}>
                 {formatDeadline(firstTodo.deadline)}
               </span>
             </span>
@@ -200,7 +352,7 @@ function CompactView({ activeCount, firstTodo }: { activeCount: number; firstTod
 // ─── 展开视图 ───
 
 interface ExpandedViewProps {
-  todos: Todo[]
+  rows: TodoRow[]
   stats: { total: number; completed: number; active: number }
   filter: FilterType
   setFilter: (f: FilterType) => void
@@ -210,17 +362,16 @@ interface ExpandedViewProps {
   setDeadlineValue: (v: string) => void
   inputRef: React.RefObject<HTMLInputElement | null>
   datePickerRef: React.RefObject<HTMLInputElement | null>
-  hoveredId: string | null
-  setHoveredId: (id: string | null) => void
   onAdd: () => void
   onKeyDown: (e: React.KeyboardEvent) => void
   onToggle: (id: string) => void
+  onUpdate: (id: string, patch: TodoPatch) => void
   onDelete: (id: string) => void
   onClearCompleted: () => void
 }
 
 function ExpandedView({
-  todos,
+  rows,
   stats,
   filter,
   setFilter,
@@ -230,11 +381,10 @@ function ExpandedView({
   setDeadlineValue,
   inputRef,
   datePickerRef,
-  hoveredId,
-  setHoveredId,
   onAdd,
   onKeyDown,
   onToggle,
+  onUpdate,
   onDelete,
   onClearCompleted,
 }: ExpandedViewProps) {
@@ -242,26 +392,25 @@ function ExpandedView({
   const progressPercent = stats.total > 0 ? (stats.completed / stats.total) * 100 : 0
 
   return (
-    <div className="flex flex-col gap-3 mt-3">
-      {/* 头部行 */}
-      <div className="flex items-center justify-between">
-        <span className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
-          待办事项
-        </span>
+    // 展开态内的任何点击都不该折叠卡片（进度条、行间隙、空状态、文字……）
+    <div className="flex flex-col gap-3 mt-3" onClick={(e) => e.stopPropagation()}>
+      {/* 进度条 + 完成数徽标 */}
+      <div className="flex items-center gap-2">
+        <div
+          className="h-1 flex-1 rounded-full"
+          style={{ backgroundColor: 'var(--border-subtle)' }}
+        >
+          <div
+            className="h-1 rounded-full transition-all duration-300"
+            style={{ backgroundColor: ACCENT, width: `${progressPercent}%` }}
+          />
+        </div>
         <span
-          className="text-[11px] font-semibold rounded-full px-2 py-0.5"
+          className="shrink-0 text-[11px] font-semibold rounded-full px-2 py-0.5"
           style={{ color: ACCENT, backgroundColor: withAlpha(ACCENT, 0.08) }}
         >
           {stats.completed}/{stats.total} 完成
         </span>
-      </div>
-
-      {/* 进度条 */}
-      <div className="h-1 rounded-full w-full" style={{ backgroundColor: 'var(--border-subtle)' }}>
-        <div
-          className="h-1 rounded-full transition-all duration-300"
-          style={{ backgroundColor: ACCENT, width: `${progressPercent}%` }}
-        />
       </div>
 
       {/* 添加输入框 */}
@@ -270,20 +419,33 @@ function ExpandedView({
           className="flex items-center gap-2 h-[38px] rounded-lg px-3"
           style={{ border: '1px solid var(--border-subtle)' }}
         >
-          <Plus size={16} color="var(--text-muted)" />
+          {/*
+            「+」是提交按钮（同 Enter）：空输入时 handleAdd 自己 return，不会有副作用。
+            命中区 24×24，键盘可 Tab 到并有 focus-visible 可见样式。
+          */}
+          <button
+            type="button"
+            aria-label="添加待办"
+            title="添加"
+            onClick={onAdd}
+            className="flex items-center justify-center shrink-0 w-6 h-6 rounded cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
+            style={{ outlineColor: 'var(--accent)' }}
+          >
+            <Plus size={16} color={ACCENT} />
+          </button>
           <input
             ref={inputRef}
             type="text"
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
             onKeyDown={(e) => {
+              // 必须阻止冒泡：卡片根节点的 onKeyDown 会把 Enter 当成折叠
               e.stopPropagation()
               onKeyDown(e)
             }}
             placeholder="添加新待办..."
             className="flex-1 bg-transparent text-[13px] outline-none"
             style={{ color: 'var(--text-primary)', fontFamily: 'Inter' }}
-            onClick={(e) => e.stopPropagation()}
           />
         </div>
         {/* 截止时间输入 */}
@@ -303,21 +465,16 @@ function ExpandedView({
             }}
             className="flex-1 bg-transparent text-[12px] outline-none"
             style={{ color: 'var(--text-primary)', fontFamily: 'Inter' }}
-            onClick={(e) => e.stopPropagation()}
           />
-          <div
-            className="relative shrink-0"
-            style={{ width: 28, height: 28 }}
-            onClick={(e) => e.stopPropagation()}
-          >
+          <div className="relative shrink-0" style={{ width: 28, height: 28 }}>
             <input
               type="date"
               ref={datePickerRef}
-              onChange={(e) => {
-                if (e.target.value) {
-                  setDeadlineValue(e.target.value)
-                }
-              }}
+              // 受控：只有 ISO 值才回填（"7月8日"这类不是 date input 的合法值，
+              // 直接塞进去浏览器会丢掉，值会静默变成空）
+              value={ISO_DATE_REGEX.test(deadlineValue) ? deadlineValue : ''}
+              // 无条件回填：type=date 的空值就是用户想清空日期，不能因为"假值"就吞掉
+              onChange={(e) => setDeadlineValue(e.target.value)}
               className="absolute inset-0 opacity-0 cursor-pointer"
               style={{ width: '100%', height: '100%' }}
             />
@@ -335,16 +492,14 @@ function ExpandedView({
           return (
             <button
               key={opt.key}
+              type="button"
               className="text-xs rounded-md px-3 py-1 transition-colors"
               style={{
                 color: isActive ? ACCENT : 'var(--text-muted)',
                 backgroundColor: isActive ? withAlpha(ACCENT, 0.08) : 'var(--bg-main)',
                 fontWeight: isActive ? 600 : 400,
               }}
-              onClick={(e) => {
-                e.stopPropagation()
-                setFilter(opt.key)
-              }}
+              onClick={() => setFilter(opt.key)}
             >
               {opt.label}
             </button>
@@ -353,12 +508,10 @@ function ExpandedView({
         {/* 一键清理按钮（仅在"已完成"筛选下显示） */}
         {filter === 'completed' && stats.completed > 0 && (
           <button
+            type="button"
             className="text-xs rounded-md px-3 py-1 ml-auto transition-colors hover:opacity-80"
-            style={{ color: '#DC2626', backgroundColor: '#FEE2E2' }}
-            onClick={(e) => {
-              e.stopPropagation()
-              onClearCompleted()
-            }}
+            style={{ color: 'var(--danger)', backgroundColor: 'var(--danger-bg)' }}
+            onClick={onClearCompleted}
           >
             一键清理
           </button>
@@ -367,21 +520,20 @@ function ExpandedView({
 
       {/* 待办列表 */}
       <div className="flex flex-col gap-1.5">
-        {todos.length === 0 ? (
+        {rows.length === 0 ? (
           <div className="text-center py-4">
             <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
               {filter === 'all' ? '暂无待办，添加一个吧' : '没有匹配的待办'}
             </span>
           </div>
         ) : (
-          todos.map((todo) => (
+          rows.map(({ todo, overdue }) => (
             <TodoItem
               key={todo.id}
               todo={todo}
-              isHovered={hoveredId === todo.id}
-              onMouseEnter={() => setHoveredId(todo.id)}
-              onMouseLeave={() => setHoveredId(null)}
+              overdue={overdue}
               onToggle={onToggle}
+              onUpdate={onUpdate}
               onDelete={onDelete}
             />
           ))
@@ -395,86 +547,162 @@ function ExpandedView({
 
 interface TodoItemProps {
   todo: Todo
-  isHovered: boolean
-  onMouseEnter: () => void
-  onMouseLeave: () => void
+  /** 逾期判定结果（由 TodoCard 用 useTodo().isOverdue + todayTick 算出） */
+  overdue: boolean
   onToggle: (id: string) => void
+  onUpdate: (id: string, patch: TodoPatch) => void
   onDelete: (id: string) => void
 }
 
-function TodoItem({
-  todo,
-  isHovered,
-  onMouseEnter,
-  onMouseLeave,
-  onToggle,
-  onDelete,
-}: TodoItemProps) {
+function TodoItem({ todo, overdue, onToggle, onUpdate, onDelete }: TodoItemProps) {
   const ACCENT = useAccent()
-  // 计算是否逾期（截止日期当天不算逾期，因为我们存储的是当天 23:59:59）
-  const isOverdue = !todo.completed && todo.deadlineTs != null && todo.deadlineTs < Date.now()
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(todo.text)
+  const editInputRef = useRef<HTMLInputElement>(null)
+  // Enter / Esc 结束后浏览器可能再补一次 blur，用一次性闩锁挡住重复提交
+  const editDoneRef = useRef(false)
+
+  // 进入编辑：聚焦并全选，方便直接重写
+  useEffect(() => {
+    if (!editing) return
+    const input = editInputRef.current
+    if (!input) return
+    input.focus({ preventScroll: true })
+    input.select()
+  }, [editing])
+
+  const startEditing = () => {
+    editDoneRef.current = false
+    setDraft(todo.text)
+    setEditing(true)
+  }
+
+  const finishEditing = (save: boolean) => {
+    if (editDoneRef.current) return
+    editDoneRef.current = true
+    setEditing(false)
+    const text = draft.trim()
+    // 空文本 / 没改过 → 不提交（useTodo.updateTodo 也会忽略空串，这里提前收敛）
+    if (save && text && text !== todo.text) onUpdate(todo.id, { text })
+  }
 
   return (
-    <div
-      className="flex items-center gap-2.5 py-2 px-0 rounded-md transition-colors"
-      onMouseEnter={onMouseEnter}
-      onMouseLeave={onMouseLeave}
-    >
-      {/* 勾选框 */}
-      <div
-        className="flex items-center justify-center shrink-0 cursor-pointer"
-        style={{
-          width: 18,
-          height: 18,
-          borderRadius: 4,
-          backgroundColor: todo.completed ? ACCENT : 'var(--bg-surface)',
-          border: todo.completed ? 'none' : '1.5px solid var(--border-subtle)',
-        }}
+    /*
+      故意不做「整行点击 = 切换完成」：整行是勾选框 + 文字 + 日期 + 两个按钮的复合区域，
+      挂 onClick 会带来三类误操作 ——
+      1) 拖选文字想复制，松手后浏览器补发 click → 待办被静默勾掉；
+      2) 点空白想结束行内编辑：blur 先保存、React 同步提交后 editing 已为 false，守卫失效 → 顺手勾掉；
+      3) 双击一行：第一击置完成并立刻沉底重排，第二击落到顶替上来的另一行 → 又勾一条。
+      而 toggleTodo 没有撤销入口，这些误触无法挽回。完成切换的唯一入口就是下面的勾选框。
+    */
+    <div className="group flex items-center gap-2.5 py-2 px-0 rounded-md transition-colors">
+      {/* 勾选框：18×18 视觉，24×24 命中区 */}
+      <button
+        type="button"
+        role="checkbox"
+        aria-checked={todo.completed}
+        aria-label={todo.completed ? `标记未完成：${todo.text}` : `标记完成：${todo.text}`}
+        title={todo.completed ? '标记未完成' : '标记完成'}
+        className="flex items-center justify-center shrink-0 w-6 h-6 -my-[3px] rounded cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
+        style={{ outlineColor: 'var(--accent)' }}
         onClick={(e) => {
           e.stopPropagation()
           onToggle(todo.id)
         }}
       >
-        {todo.completed && <Check size={12} color="#fff" />}
-      </div>
+        <span
+          className="flex items-center justify-center"
+          style={{
+            width: 18,
+            height: 18,
+            borderRadius: 4,
+            backgroundColor: todo.completed ? ACCENT : 'var(--bg-surface)',
+            border: todo.completed ? 'none' : '1.5px solid var(--border-strong)',
+          }}
+        >
+          {todo.completed && <Check size={12} color="#fff" />}
+        </span>
+      </button>
 
-      {/* 文字 */}
-      <span
-        className="text-[13px]"
-        style={{
-          color: todo.completed ? 'var(--text-muted)' : 'var(--text-primary)',
-          textDecoration: todo.completed ? 'line-through' : 'none',
-          fontFamily: 'Inter',
-        }}
-      >
-        {todo.text}
-      </span>
+      {/* 文字 / 行内编辑 */}
+      {editing ? (
+        <input
+          ref={editInputRef}
+          type="text"
+          value={draft}
+          aria-label={`编辑待办：${todo.text}`}
+          onChange={(e) => setDraft(e.target.value)}
+          onClick={(e) => e.stopPropagation()}
+          onBlur={() => finishEditing(true)}
+          onKeyDown={(e) => {
+            // 编辑期间的按键不再往上冒（否则 Enter 会一路冒到卡片，把卡片折叠了）
+            e.stopPropagation()
+            if (isComposingEvent(e)) return
+            if (e.key === 'Enter') {
+              e.preventDefault()
+              finishEditing(true)
+            } else if (e.key === 'Escape') {
+              e.preventDefault()
+              finishEditing(false)
+            }
+          }}
+          className="flex-1 min-w-0 bg-transparent text-[13px] outline-none"
+          style={{ color: 'var(--text-primary)', fontFamily: 'Inter' }}
+        />
+      ) : (
+        <span
+          className="flex-1 min-w-0 truncate text-[13px] select-text cursor-text"
+          style={{
+            color: todo.completed ? 'var(--text-muted)' : 'var(--text-primary)',
+            textDecoration: todo.completed ? 'line-through' : 'none',
+            fontFamily: 'Inter',
+          }}
+          title={todo.text}
+        >
+          {todo.text}
+        </span>
+      )}
 
       {/* 截止时间 */}
       {todo.deadline ? (
-        <span className="flex items-center gap-1 shrink-0">
-          <Calendar size={11} color={isOverdue ? '#DC2626' : 'var(--text-muted)'} />
+        <span className="flex items-center gap-1 shrink-0 select-none">
+          <Calendar size={11} color={overdue ? 'var(--danger)' : 'var(--text-secondary)'} />
           <span
-            className="text-[10px]"
-            style={{ color: isOverdue ? '#DC2626' : 'var(--text-muted)' }}
+            className="text-[11px]"
+            style={{ color: overdue ? 'var(--danger)' : 'var(--text-secondary)' }}
           >
             {formatDeadline(todo.deadline)}
           </span>
         </span>
       ) : null}
 
-      {/* 删除按钮（悬停显示） */}
-      {isHovered && (
-        <button
-          className="shrink-0 opacity-50 hover:opacity-100 transition-opacity"
-          onClick={(e) => {
-            e.stopPropagation()
-            onDelete(todo.id)
-          }}
-        >
-          <Trash2 size={14} color="var(--text-muted)" />
-        </button>
-      )}
+      {/* 编辑按钮：常驻挂载。触屏没有 hover，所以常态就是低透明度可见（否则看得见摸不着），悬停/聚焦变实 */}
+      <button
+        type="button"
+        aria-label={`编辑待办：${todo.text}`}
+        title="编辑"
+        className="flex items-center justify-center shrink-0 w-6 h-6 -my-[3px] rounded transition-opacity opacity-40 group-hover:opacity-100 focus-visible:opacity-100"
+        onClick={(e) => {
+          e.stopPropagation()
+          startEditing()
+        }}
+      >
+        <Pencil size={13} color="var(--text-muted)" />
+      </button>
+
+      {/* 删除按钮：常驻挂载。同上，常态低透明度可见，悬停/聚焦变实 */}
+      <button
+        type="button"
+        aria-label={`删除待办：${todo.text}`}
+        title="删除"
+        className="flex items-center justify-center shrink-0 w-6 h-6 -my-[3px] rounded transition-opacity opacity-40 group-hover:opacity-100 focus-visible:opacity-100"
+        onClick={(e) => {
+          e.stopPropagation()
+          onDelete(todo.id)
+        }}
+      >
+        <Trash2 size={14} color="var(--text-muted)" />
+      </button>
     </div>
   )
 }
