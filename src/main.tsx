@@ -7,6 +7,7 @@ import { installLogConsole } from './core/appLog'
 import { ErrorBoundary } from './core/ErrorBoundary'
 import { initTauriShim } from './tauri-shim'
 import { ScreenshotOverlayWindow } from './components/ScreenshotOverlayWindow'
+import { TodoManagerWindow } from './plugins/todo/TodoManagerWindow'
 import './styles/globals.css'
 import './styles/fonts.css'
 import { toggleNativeDevtools } from './core/devtools'
@@ -60,6 +61,20 @@ function Root() {
 
   if (isOverlay) {
     return <ScreenshotOverlayWindow />
+  }
+
+  // 待办详细管理：独立窗口（`WebviewUrl::App("index.html#/todo")`，见 src-tauri/src/plugins/todowin）
+  const isTodoWindow = window.location.hash.startsWith('#/todo')
+  if (isTodoWindow) {
+    return (
+      <div className="todo-window">
+        <ErrorBoundary label="待办">
+          <TodoManagerWindow />
+        </ErrorBoundary>
+        {/* 撤销 toast 必须在这个窗口里也能弹 */}
+        <GlobalToast />
+      </div>
+    )
   }
 
   return (

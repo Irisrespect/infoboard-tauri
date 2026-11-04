@@ -1,7 +1,7 @@
 {
   "identifier": "default",
-  "description": "Default capability for main and screenshot-overlay windows",
-  "windows": ["main", "screenshot-overlay"],
+  "description": "Default capability for main, screenshot-overlay and todo-manager windows",
+  "windows": ["main", "screenshot-overlay", "todo-manager"],
   "permissions": [
     "core:default",
     "core:event:default",

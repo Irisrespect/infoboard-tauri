@@ -27,6 +27,7 @@ mod plugins {
     pub mod pack;
     pub mod webtranslate;
     pub mod hud;
+    pub mod todowin;
 }
 
 /// 调试自检（`INFOBOARD_SELFTEST=1`）：把有卡死风险的窗口路径真跑一遍再退出。
@@ -144,6 +145,8 @@ pub fn run() {
             plugins::webtranslate::translate_web,
             // 网页 HUD（插件 deepseek 用）：独立窗口直接装站点首页
             plugins::hud::hud_open_deepseek,
+            // 待办详细管理：工具区图标点开自己的独立窗口（已开着则聚焦）
+            plugins::todowin::todo_window_open,
             // Issue 14: 截图
             plugins::screenshot::screenshot_start,
             plugins::screenshot::screenshot_capture_only,
