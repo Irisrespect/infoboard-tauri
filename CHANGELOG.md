@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] - 2026-11-04
+
+> 主题：**待办有了自己的详细管理窗口** —— 信息区卡片只负责瞄一眼，正经管理搬到独立窗口。
+
+### Added
+
+- **待办详细管理改成独立窗口**：工具区新增「待办」图标，点一下弹出自己的窗口（520×700，可移动可关闭），
+  增删改、行内编辑、筛选、批量清理、撤销都在窗口里完成；窗口已开着时再点只是聚焦，不会重复开
+- **工具入口做成外置插件**：`plugins/todo-manager/`（打包为 `dist-plugins/todo-manager-1.1.0.ibplugin`），
+  与网盘下载器 / API 测活那些用同一套 `companion`/启动器机制；插件清单里声明 `todo_window_open` 命令
+- 宿主新增 `todo_window_open` 命令与 `#/todo` 路由；capabilities 覆盖新窗口
+
+### Changed
+
+- **信息区待办卡片精简**：移除每条待办后面的删除 / 编辑按钮，只保留查看、勾选、快速添加、折叠、筛选与一键清理
+- 待办数据层抽成单一 store（zustand），信息区卡片与独立窗口共享同一份数据；
+  跨窗口同步走浏览器原生 `storage` 事件，一侧改动另一侧自动刷新，不需要自定义事件桥
+- 主干侧待办 `filter` 从共享 store 收回到各视图本地，二级窗口切筛选不再影响信息区卡片
+
+### Fixed
+
+- `formatDeadline` 从卡片私有实现提到 `utils.ts`，卡片与窗口共用一份日期显示规则
+
 ## [0.9.1] - 2026-11-03
 
 > 主题：**待办插件重做交互** —— 修掉一批"功能没错但用起来想骂人"的设计。
