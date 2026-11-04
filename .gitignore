@@ -26,7 +26,11 @@ plugins/*
 !plugins/bili-dl/
 !plugins/deepseek/
 !plugins/translate/
+# 待办详细管理：从内置挪成外置插件（源码进仓库，发布时打成 .ibplugin）
+!plugins/todo-manager/
 
 # Python 构建产物（netdisk-app 等伴随程序）
 __pycache__/
 *.pyc
+.openbitfun/
+/.openbitfun/search/flashgrep-index/

@@ -71,6 +71,16 @@ export const SVG_ICONS: Record<string, React.ReactNode> = {
       <path d="M6.6 13.5 H6.62" />
     </>
   ),
+  // 待办详细管理（外置插件）：Lucide "list-checks" —— 两个勾 + 三条列表线
+  'list-checks': (
+    <>
+      <path d="m3 17 2 2 4-4" />
+      <path d="m3 7 2 2 4-4" />
+      <path d="M13 6h8" />
+      <path d="M13 12h8" />
+      <path d="M13 18h8" />
+    </>
+  ),
 }
 
 /**
@@ -118,6 +128,7 @@ export function ToolSection() {
    * - api-probe：先尝试直接拉起测活工具，没配好才退化成展开面板
    * - bili-dl：直接拉起独立的「B 站下载器」
    * - deepseek：直接弹出网页 HUD 小窗（就是 chat.deepseek.com）
+   * - todo-manager：直接开独立的「待办管理」窗口
    *
    * 这几个都是"独立进程/独立窗口/独立动作"，多一步"先开面板再点按钮"没有意义，
    * 而且会让人误以为任务跑在面板里 —— 面板一关就断了。
@@ -179,6 +190,18 @@ export function ToolSection() {
           title: '没能打开 B 站下载器',
           kind: 'error',
         }).catch((err) => console.error('[B站下载] 连错误提示都没弹出来:', err))
+      })
+      return
+    }
+    if (pluginId === 'todo-manager') {
+      // 待办详细管理是独立窗口：列表/编辑/撤销都在那个窗里，面板在这里只是多余的一层
+      invoke('todo_window_open').catch((e) => {
+        console.error('[待办] 打开窗口失败:', e)
+        invoke('plugin:dialog|message', {
+          message: String(e),
+          title: '没能打开待办窗口',
+          kind: 'error',
+        }).catch((err) => console.error('[待办] 连错误提示都没弹出来:', err))
       })
       return
     }
