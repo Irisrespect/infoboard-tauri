@@ -44,9 +44,11 @@ export function useTodo(): UseTodoReturn {
   // 跨天 / 窗口重新可见时自增，UI 依赖它重算逾期
   const [todayTick, setTodayTick] = useState(0)
 
-  // 首次挂载读一次盘。hydrate 内部幂等：卡片与详情页同时挂载也只真正读一次。
+  // 首次挂载读一次快照（异步：文件后端要过 IPC）。hydrate 内部幂等：
+  // 卡片与详情页同时挂载也只真正读一次、只起一个轮询定时器。
+  // 读失败由 store 自己转成只读态并弹提示，这里不需要处理 reject。
   useEffect(() => {
-    hydrate()
+    void hydrate()
   }, [hydrate])
 
   /** 跨天 / 窗口重新可见 → todayTick +1；定时器与监听器必须清理 */
