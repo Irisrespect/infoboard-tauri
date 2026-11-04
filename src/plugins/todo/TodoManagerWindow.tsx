@@ -40,13 +40,11 @@ import type {
 } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { FilterType, Todo } from './types'
-import { useTodoStore } from './store'
+import { useTodoStore, TODO_BACKEND } from './store'
 import {
-  TODO_STORAGE_KEY,
   compareTodosByDeadline,
   formatDeadline,
   isTodoOverdue,
-  loadTodoSnapshot,
   nextLocalMidnightDelay,
   parseDeadlineToDayEnd,
 } from './utils'
@@ -78,20 +76,6 @@ interface ToastPayload {
 function showToast(payload: ToastPayload): void {
   if (typeof window === 'undefined') return
   window.toastAPI?.show?.(payload)
-}
-
-/**
- * 当前是不是"读取失败"态（`todo-list` 不是合法数组，或根本没有 localStorage）
- *
- * 这种状态下**必须禁用所有写操作**：原文还躺在磁盘里等人工抢救，写一次就没了。
- */
-function detectCorrupt(): boolean {
-  try {
-    return loadTodoSnapshot().status === 'corrupt'
-  } catch {
-    // 极端环境（连 localStorage 都摸不到）：同样按读取失败处理，宁可不给写
-    return true
-  }
 }
 
 /**
@@ -493,8 +477,18 @@ export function TodoManagerWindow() {
   /** 筛选是**本窗口自己的**临时状态（不进 store，否则和主窗口卡片互相串台） */
   const [filter, setFilter] = useState<FilterType>('all')
   const [editingId, setEditingId] = useState<string | null>(null)
-  /** 读取失败态：本地数据坏了就只读，绝不覆盖原文 */
-  const [corrupt, setCorrupt] = useState(detectCorrupt)
+  /** 读取失败态：数据源坏了就只读，绝不覆盖原文（判定与文案都由 store 统一给） */
+  const corrupt = useTodoStore((state) => state.corrupt)
+  const dataPath = useTodoStore((state) => state.dataPath)
+  /**
+   * 数据文件绝对路径（只读横幅里给用户指路用）
+   *
+   * 异步取，**只在真的进只读态时才问**（正常使用一次 IPC 都不花）：
+   * 取不到就保持空串，横幅退化成不含路径的文案 —— 路径是锦上添花，不能因为
+   * `todo_data_path` 失败就连"该怎么办"都不显示。
+   * `cancelled` 挡住"组件已卸载 / 已恢复可写后迟到的结果"。
+   */
+  const [dataPathText, setDataPathText] = useState('')
   /** 算逾期用的"现在"：跨天 / 窗口重新可见时更新（见下面的 tick effect） */
   const [nowTs, setNowTs] = useState(() => Date.now())
 
@@ -512,6 +506,23 @@ export function TodoManagerWindow() {
   useEffect(() => {
     applyWindowTheme()
   }, [])
+
+  // 只读时取一次数据文件路径（异步；取不到就退化成不含路径的文案）
+  useEffect(() => {
+    if (!corrupt || TODO_BACKEND !== 'file' || dataPathText) return
+    let cancelled = false
+    void dataPath().then(
+      (path) => {
+        if (!cancelled) setDataPathText(path)
+      },
+      () => {
+        /* 问不出路径：横幅保留不含路径的版本，功能不受影响 */
+      }
+    )
+    return () => {
+      cancelled = true
+    }
+  }, [corrupt, dataPath, dataPathText])
 
   /**
    * 跨天 tick
@@ -547,19 +558,12 @@ export function TodoManagerWindow() {
   }, [])
 
   /**
-   * 另一个窗口把 `todo-list` 改坏了（或改好了）：刷新只读态
+   * 另一个窗口把数据改坏了（或改好了）：不用自己监听
    *
-   * 本窗口自己写不出坏数据（写的永远是合法 JSON），所以损坏只可能来自外部 ——
-   * 挂一个 storage 监听即可，不需要轮询。`e.key === null` 表示 `localStorage.clear()`。
+   * `corrupt` 现在直接来自 `useTodoStore` —— 文件后端由 store 的 1.5s 轮询刷新，
+   * 浏览器兜底由 store 里的 `storage` 监听刷新。本窗口自己写不出坏数据
+   * （写的永远是合法 JSON），所以这里既不需要 `storage` 监听，也不需要本地状态。
    */
-  useEffect(() => {
-    const handleStorage = (event: StorageEvent) => {
-      if (event.key !== null && event.key !== TODO_STORAGE_KEY) return
-      setCorrupt(detectCorrupt())
-    }
-    window.addEventListener('storage', handleStorage)
-    return () => window.removeEventListener('storage', handleStorage)
-  }, [])
 
   const stats = useMemo(() => {
     const total = todos.length
@@ -761,8 +765,25 @@ export function TodoManagerWindow() {
             border: '1px solid var(--danger)',
           }}
         >
-          本地待办数据读取失败（localStorage 的 todo-list 不是合法数组），已停止写入以免覆盖原文。
-          请先修好原始数据（或恢复 `todo-list.corrupt.*` 备份）后再关掉本窗口重开。
+          {TODO_BACKEND === 'file' ? (
+            <>
+              {/* 发布包：数据源是 todo.json。别再让用户去 localStorage 里找东西 —— 那儿什么都没有。 */}
+              <div>待办数据文件（todo.json）读取失败，已停止写入以免覆盖原文。</div>
+              {dataPathText ? (
+                <div style={{ wordBreak: 'break-all', opacity: 0.85 }}>
+                  数据文件：{dataPathText}
+                </div>
+              ) : null}
+              <div>可能是被手工编辑或外部程序写坏了，修好就能继续用。</div>
+              <div>① 用编辑器修好 JSON，或从备份恢复；</div>
+              <div>② 修好不用重开窗口，约 1.5 秒后自动恢复编辑。</div>
+            </>
+          ) : (
+            <div>
+              本地待办数据读取失败（localStorage 的 todo-list 不是合法数组），已停止写入以免覆盖原文。
+              请先修好原始数据（或恢复 `todo-list.corrupt.*` 备份）后再关掉本窗口重开。
+            </div>
+          )}
         </div>
       ) : null}
 

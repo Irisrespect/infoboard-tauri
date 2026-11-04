@@ -14,6 +14,7 @@ import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import type { PluginComponentProps } from '../../core/types'
 import type { Todo, FilterType } from './types'
 import { useTodo } from './useTodo'
+import { useTodoStore } from './store'
 import { useThemeColors } from '../../hooks/useThemeColors'
 import { AccentProvider, useAccent } from '../../hooks/useAccent'
 import { withAlpha } from '../../utils/themeColor'
@@ -69,6 +70,13 @@ export function TodoCard({ manifest, expanded, onToggle }: TodoCardProps) {
   const { todos, allTodos, addTodo, toggleTodo, clearCompleted, restoreTodos, stats, todayTick, isOverdue } =
     useTodo()
   const { accent } = useThemeColors()
+  /**
+   * 只读态（`todo.json` 坏了 / 读不出来）**只有 store 知道**：
+   * `useTodo()` 拿到的是派生列表，损坏时它就是一个空数组 —— 卡片如果只照着列表渲染，
+   * 用户看到的是"我的待办凭空没了"，而真正的原因（数据读不出来、已暂停写入）
+   * 只剩一条 4 秒就消失的 toast。直接订阅 store 的 `corrupt`，把状态说出来。
+   */
+  const corrupt = useTodoStore((s) => s.corrupt)
   const [inputValue, setInputValue] = useState('')
   const [deadlineValue, setDeadlineValue] = useState('')
   /**
@@ -176,6 +184,7 @@ export function TodoCard({ manifest, expanded, onToggle }: TodoCardProps) {
         {/* 折叠摘要：始终可见，头部是唯一的展开/折叠入口 */}
         <CompactView
           activeCount={stats.active}
+          corrupt={corrupt}
           firstTodo={firstActiveTodo}
           expanded={!!expanded}
           onToggle={onToggle}
@@ -203,6 +212,7 @@ export function TodoCard({ manifest, expanded, onToggle }: TodoCardProps) {
             <ExpandedView
               rows={rows}
               stats={stats}
+              corrupt={corrupt}
               filter={filter}
               setFilter={setFilter}
               inputValue={inputValue}
@@ -227,13 +237,15 @@ export function TodoCard({ manifest, expanded, onToggle }: TodoCardProps) {
 
 interface CompactViewProps {
   activeCount: number
+  /** 数据源损坏（只读）：计数行改说「数据异常」，别让用户以为待办凭空消失 */
+  corrupt: boolean
   firstTodo?: Todo
   expanded: boolean
   /** 未提供时（比如被别处单独渲染）交给外层 InfoCard 的整卡点击兜底 */
   onToggle?: () => void
 }
 
-function CompactView({ activeCount, firstTodo, expanded, onToggle }: CompactViewProps) {
+function CompactView({ activeCount, corrupt, firstTodo, expanded, onToggle }: CompactViewProps) {
   const ACCENT = useAccent()
 
   const handleHeaderClick = (e: React.MouseEvent) => {
@@ -264,8 +276,16 @@ function CompactView({ activeCount, firstTodo, expanded, onToggle }: CompactView
           <span className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
             待办
           </span>
-          <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>
-            {activeCount}项未完成
+          {/*
+            计数行在窄卡里，损坏时**只换文案不换尺寸**：仍是 `text-xs`（12px）、同一个
+            span、同一行 —— 「数据异常」4 个中文字 ≈ 48px，和本来就要支持的「12项未完成」
+            （≈49px）一样宽，不会变宽换行、也不会让两行标题的高度变（高度由左边 36px 图标压着）。
+          */}
+          <span
+            className="text-xs"
+            style={{ color: corrupt ? 'var(--danger)' : 'var(--text-secondary)' }}
+          >
+            {corrupt ? '数据异常' : `${activeCount}项未完成`}
           </span>
         </div>
         <div className="ml-auto">
@@ -319,6 +339,8 @@ function CompactView({ activeCount, firstTodo, expanded, onToggle }: CompactView
 interface ExpandedViewProps {
   rows: TodoRow[]
   stats: { total: number; completed: number; active: number }
+  /** 数据源损坏（只读）：整块列表换成一条警告，绝不渲染「暂无待办」 */
+  corrupt: boolean
   filter: FilterType
   setFilter: (f: FilterType) => void
   inputValue: string
@@ -336,6 +358,7 @@ interface ExpandedViewProps {
 function ExpandedView({
   rows,
   stats,
+  corrupt,
   filter,
   setFilter,
   inputValue,
@@ -484,20 +507,43 @@ function ExpandedView({
         )}
       </div>
 
-      {/* 待办列表 */}
-      <div className="flex flex-col gap-1.5">
-        {rows.length === 0 ? (
-          <div className="text-center py-4">
-            <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
-              {filter === 'all' ? '暂无待办，添加一个吧' : '没有匹配的待办'}
-            </span>
-          </div>
-        ) : (
-          rows.map(({ todo, overdue }) => (
-            <TodoItem key={todo.id} todo={todo} overdue={overdue} onToggle={onToggle} />
-          ))
-        )}
-      </div>
+      {/*
+        待办列表
+        只读态（数据读不出来）时**不能**渲染列表和「暂无待办」空态：
+        那样用户看到的是"我 4 条待办凭空没了"，而真正的原因只有一条 4 秒就消失的 toast。
+        这里用一条警告把状态说出来（样式对齐工具区窗口里的横幅），不做成可点按钮 ——
+        卡片上不新增任何交互入口。
+      */}
+      {corrupt ? (
+        <div
+          className="rounded-lg"
+          style={{
+            fontSize: 11,
+            lineHeight: 1.6,
+            padding: '7px 9px',
+            color: 'var(--danger)',
+            background: 'var(--danger-bg)',
+            border: '1px solid var(--danger)',
+          }}
+        >
+          <div>待办数据读取失败，已暂停保存</div>
+          <div>修好后会自动恢复；详情见工具区的「待办」</div>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-1.5">
+          {rows.length === 0 ? (
+            <div className="text-center py-4">
+              <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                {filter === 'all' ? '暂无待办，添加一个吧' : '没有匹配的待办'}
+              </span>
+            </div>
+          ) : (
+            rows.map(({ todo, overdue }) => (
+              <TodoItem key={todo.id} todo={todo} overdue={overdue} onToggle={onToggle} />
+            ))
+          )}
+        </div>
+      )}
     </div>
   )
 }

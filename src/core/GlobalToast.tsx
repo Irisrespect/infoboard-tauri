@@ -118,14 +118,29 @@ export default function GlobalToast() {
   if (toasts.length === 0) return null
 
   return (
-    <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[9999] flex flex-col gap-2 items-center">
+    // 外层容器的宽度上限跟视口绑定：min(420px, 100vw - 24px)。
+    // 原来是让子项用一个固定的 420px 上限（max-w 420px），主窗口只有 297px 时 420 必然溢出，
+    // 左右各被裁 ~61px，连关闭按钮都在窗口外 —— 这是"绝对 px 上限 + 视口更窄"的死结。
+    // 现在把上限收到容器上（左右各留 12px 呼吸位），子项 `max-w-full` 继承这个上限，
+    // 而子项自身仍是 `items-center` 下的收缩宽度（fit-content），所以短消息不会被拉满宽。
+    <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[9999] flex flex-col gap-2 items-center w-[min(420px,calc(100vw_-_24px))]">
       {toasts.map((toast) => (
         <div
           key={toast.id}
-          className="glass-card flex items-center gap-3 px-4 py-2.5 min-w-[280px] max-w-[420px] animate-slide-up text-sm"
+          // 刻意不再有 280px 最小宽度（原 min-w 280px）：它把 297px 窗口里的 toast 强行撑到 280+border，
+          // 任何更窄的窗口都必然溢出。宽度交给内容（短消息自然收紧）与 max-w-full（长消息封顶）。
+          className="glass-card flex items-center gap-3 px-4 py-2.5 max-w-full animate-slide-up text-sm"
           style={{ borderColor: toast.color || 'var(--border-glass)' }}
         >
-          <span className="flex-1 text-text-primary">{toast.message}</span>
+          {/*
+            `min-w-0` 是这条布局的根：flex item 的 min-width 默认是 auto（= min-content），
+            错误文案里 `C:\Users\xxx\todo.json` 这种没有空格的超长 token 会把 min-content
+            顶到比自己还宽，整条 toast 就会被撑破父级上限（现在是容器的 min(420px, 100vw-24px)），
+            横幅左右两侧各被窗口裁掉一截。
+            `break-words`（overflow-wrap: break-word）让这类不可断词在容器边缘折行。
+            刻意不加 line-clamp：错误能被读完整，比"整齐的一行省略号"重要。
+          */}
+          <span className="flex-1 min-w-0 break-words text-text-primary">{toast.message}</span>
           {toast.action && (
             <button
               className="shrink-0 whitespace-nowrap text-xs font-semibold transition-opacity hover:opacity-80"
@@ -141,8 +156,12 @@ export default function GlobalToast() {
               {toast.action.label}
             </button>
           )}
+          {/*
+            消息折成多行后两件事要成立：① 按钮不跟着被挤扁（`shrink-0`，操作按钮本来就有，
+            这里给关闭按钮补齐）；② 垂直居中 —— 靠容器那行的 `items-center`，不是 `items-start`。
+          */}
           <button
-            className="p-0.5 rounded hover:bg-bg-surface-hover transition-colors"
+            className="shrink-0 p-0.5 rounded hover:bg-bg-surface-hover transition-colors"
             onClick={() => removeToast(toast.id)}
             aria-label="关闭提示"
             title="关闭"
