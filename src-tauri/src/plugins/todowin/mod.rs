@@ -32,6 +32,11 @@ pub async fn todo_window_open(app: AppHandle) -> Result<(), String> {
         .inner_size(520.0, 700.0)
         .min_inner_size(400.0, 460.0)
         .decorations(true)
+        // 半透明面板背景（`--bg-window`，alpha≈0.92）只有在透明窗口上才会被合成：
+        // 不开 `.transparent(true)` 时窗口底层是一块不透明的白底，alpha 直接被压成不透明，
+        // 粉紫主题的白字（--text-primary: #ffffff）压白底会整屏看不见内容。
+        // 与主窗 tauri.conf.json 的 "transparent": true 同一套机制，区别只在页面自己画的底色。
+        .transparent(true)
         .center()
         .build()
         .map_err(|e| format!("打开待办窗口失败: {e}"))?;

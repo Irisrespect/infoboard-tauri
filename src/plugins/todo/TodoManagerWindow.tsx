@@ -113,6 +113,13 @@ function applyWindowTheme(): void {
   } catch {
     // 读不到设置就用 `:root` 的默认（浅色），功能不受影响
   }
+  // `body` 在 globals.css 里是 `var(--bg-main)` —— 粉紫主题下那是**全透明**（主窗要透桌面），
+  // 深色/亮色下又是不透明实色。本窗口是二级窗口，统一刷成**半透明面板底色** `--bg-window`（alpha 0.92）。
+  // 写成 var() 而不是取具体色值：切主题时 `data-theme` 一变它就跟着变。
+  // 实测踩过的坑：如果这里和组件根节点各画一层 0.92，叠加后是 1-(1-0.92)² = 0.9936
+  // （CDP 截图底色 alpha=253/255，真机上桌面只透出约 0.8%），"半透明"就名存实亡。
+  // 所以面板底色**只允许一层**：由 body 画，组件根节点保持 transparent。
+  document.body.style.backgroundColor = 'var(--bg-window)'
 }
 
 /**
@@ -696,7 +703,11 @@ export function TodoManagerWindow() {
         padding: 14,
         overflowY: 'auto',
         fontFamily: 'Inter',
-        background: 'var(--bg-main)',
+        // 半透明面板底色**只由 body 画**（`applyWindowTheme` 里把 body 刷成 var(--bg-window)）。
+        // 这里必须留 transparent：
+        //   - 用 var(--bg-main) 的话，深色/亮色下它是不透明实色，会把 body 的半透明面板整个盖死；
+        //   - 用 var(--bg-window) 就是两层 0.92 叠加 → 实际 0.9936，桌面透不出来（实测 alpha 253/255）。
+        background: 'transparent',
       }}
     >
       {/* 1. 头部：标题 + 完成数徽标 + 进度条 */}

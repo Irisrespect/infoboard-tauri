@@ -8,6 +8,10 @@
   --bg-surface: #ffffff;
   --bg-surface-hover: #f5f2ed;
   --bg-glass: rgba(255, 255, 255, 0.8);
+  /* 半透明窗口底色：只给独立（二级）窗口用（当前是 `#/todo`），alpha≈0.92 ——
+     透出一点桌面质感，但主体是不透明面板，文字必须清晰。
+     主窗继续用 --bg-main（粉紫下是全透明透桌面），两者不要混用。 */
+  --bg-window: rgba(250, 247, 242, 0.92);
   --accent: #da7756;
   --accent-light: #f0d5c8;
   --accent-hover: #c46a4b;
@@ -40,6 +44,8 @@
   --bg-surface: #2a2a2a;
   --bg-surface-hover: #3a3a3a;
   --bg-glass: rgba(26, 26, 26, 0.8);
+  /* 半透明窗口底色：独立窗口专用（alpha≈0.92，主窗不用） */
+  --bg-window: rgba(26, 26, 26, 0.92);
   --accent: #da7756;
   --accent-light: #3d2a20;
   --accent-hover: #e08060;
@@ -63,6 +69,10 @@
   --bg-surface-solid: #d0c0e8;
   --bg-surface-hover: rgba(35, 20, 50, 0.55);
   --bg-glass: rgba(20, 10, 30, 0.45);
+  /* 半透明窗口底色：独立窗口专用（alpha≈0.92，主窗不用）。
+     本套 --text-primary 是白色，所以窗口底色必须偏暗；不要用 --bg-surface-solid
+     （#d0c0e8 浅紫）——白字压浅紫同样看不清。 */
+  --bg-window: rgba(25, 15, 35, 0.92);
   --accent: #f0b8d4;
   --accent-light: rgba(232, 160, 191, 0.3);
   --accent-hover: #f5c8df;
