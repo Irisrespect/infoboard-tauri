@@ -161,6 +161,30 @@ export function isTodoOverdue(todo: Todo, nowTs: number = Date.now()): boolean {
 }
 
 /**
+ * 把 "YYYY-MM-DD" 转成中文显示格式，如 "6月20日"（**跨年才带年份**）
+ *
+ * - 非 ISO 的原文（旧版自由文本如"下周三"）**原样返回**：解析不了不代表该把它抹掉，
+ *   用户写的内容至少还能看见
+ * - 年份取"现在"判断：`2025-12-31` 在 2026 年看会显示成 `2025年12月31日`，
+ *   否则同一个"12月31日"在界面上永远分不出是今年还是去年
+ *
+ * 信息区卡片（TodoCard）与独立窗口（TodoManagerWindow）共用这一份，显示规则不许分叉。
+ *
+ * @param now 可注入，便于测试跨年分支
+ */
+export function formatDeadline(iso: string | undefined | null, now: Date = new Date()): string {
+  if (!iso) return ''
+  const match = ISO_DATE_REGEX.exec(String(iso))
+  if (!match) return String(iso)
+  const year = parseInt(match[1], 10)
+  const month = parseInt(match[2], 10)
+  const day = parseInt(match[3], 10)
+  if (Number.isNaN(year) || Number.isNaN(month) || Number.isNaN(day)) return String(iso)
+  if (year !== now.getFullYear()) return `${year}年${month}月${day}日`
+  return `${month}月${day}日`
+}
+
+/**
  * 迁移旧版截止时间数据
  *
  * - "YYYY-MM-DD" 格式 → 计算 deadlineTs（当天结束时间）

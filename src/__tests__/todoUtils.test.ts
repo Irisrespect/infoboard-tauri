@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import {
   chineseDateToIso,
   compareTodosByDeadline,
+  formatDeadline,
   getFirstActiveTodo,
   isTodoOverdue,
   loadTodoSnapshot,
@@ -98,6 +99,34 @@ describe('待办截止日期解析', () => {
     const ts = parseDeadlineToDayEnd('2026-01-05', newYearEve)!
     const d = new Date(ts)
     expect([d.getFullYear(), d.getMonth() + 1, d.getDate()]).toEqual([2026, 1, 5])
+  })
+})
+
+describe('截止日期显示 formatDeadline', () => {
+  /**
+   * 卡片（TodoCard）与独立窗口（TodoManagerWindow）共用这一份显示规则：
+   * 同年省掉年份，跨年补上年份，认不出来的原文照原样显示。
+   */
+  it('同年：只显示「M月D日」（月日不补零）', () => {
+    const now = new Date(2026, 0, 15)
+    expect(formatDeadline('2026-06-20', now)).toBe('6月20日')
+    expect(formatDeadline('2026-12-01', now)).toBe('12月1日')
+    // 空值给空串（卡片用 `todo.deadline ? ... : null` 兜底，这里只保证不抛错）
+    expect(formatDeadline(undefined, now)).toBe('')
+    expect(formatDeadline(null, now)).toBe('')
+  })
+
+  it('跨年：补上「YYYY年」前缀（否则同一个"12月31日"分不清哪年）', () => {
+    const now = new Date(2026, 0, 15)
+    expect(formatDeadline('2025-12-31', now)).toBe('2025年12月31日')
+    expect(formatDeadline('2027-01-05', now)).toBe('2027年1月5日')
+  })
+
+  it('非 ISO 原文（旧版自由文本）原样返回，不吞不改', () => {
+    const now = new Date(2026, 0, 15)
+    expect(formatDeadline('下周三', now)).toBe('下周三')
+    expect(formatDeadline('2026/06/20', now)).toBe('2026/06/20')
+    expect(formatDeadline('6月20日', now)).toBe('6月20日')
   })
 })
 

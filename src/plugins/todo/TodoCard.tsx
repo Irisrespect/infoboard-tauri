@@ -5,37 +5,23 @@
  * - 折叠态：list-checks 图标 + 标题 + 未完成数
  * - 展开态：进度条 + 输入框 + 筛选 + 待办列表
  * - 动画：grid-template-rows 实现展开/折叠（参考 InfoSection.tsx）
+ *
+ * 职责边界：信息区卡片只负责 **看 / 勾选 / 快速添加 / 折叠**。
+ * 条目级的删除、编辑都在工具区的「详细管理」页做，卡片上不放这些入口。
  */
 
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import type { PluginComponentProps } from '../../core/types'
-import type { Todo, TodoPatch, FilterType } from './types'
+import type { Todo, FilterType } from './types'
 import { useTodo } from './useTodo'
 import { useThemeColors } from '../../hooks/useThemeColors'
 import { AccentProvider, useAccent } from '../../hooks/useAccent'
 import { withAlpha } from '../../utils/themeColor'
-import { getFirstActiveTodo, ISO_DATE_REGEX, parseDeadlineToDayEnd } from './utils'
+import { getFirstActiveTodo, ISO_DATE_REGEX, formatDeadline, parseDeadlineToDayEnd } from './utils'
 
 // ─── 主题色 ───
 // 子组件通过 useAccent() 从 Context 读取，不再用模块级可变变量
 // （原先 `let ACCENT` + 渲染期赋值：渲染期副作用，并发渲染下会撕裂）
-
-// ─── 日期格式化 ───
-
-/** 将 "YYYY-MM-DD" 转为中文显示格式，如 "6月20日"（跨年显示年份） */
-function formatDeadline(iso: string | undefined | null): string {
-  if (!iso) return ''
-  const match = String(iso).match(ISO_DATE_REGEX)
-  if (!match) return String(iso)
-  const year = parseInt(match[1], 10)
-  const month = parseInt(match[2], 10)
-  const day = parseInt(match[3], 10)
-  if (isNaN(year) || isNaN(month) || isNaN(day)) return String(iso)
-  if (year !== new Date().getFullYear()) {
-    return `${year}年${month}月${day}日`
-  }
-  return `${month}月${day}日`
-}
 
 /**
  * 输入法正在拼字时的键盘事件判定
@@ -48,23 +34,8 @@ function isComposingEvent(e: React.KeyboardEvent): boolean {
   return native.isComposing || native.keyCode === 229
 }
 
-/** 截断提示文案（按码点切分，避免把 emoji 之类的代理对劈成两半） */
-function truncate(text: string, max: number): string {
-  const chars = Array.from(text)
-  return chars.length <= max ? text : `${chars.slice(0, max).join('')}…`
-}
-
 // ─── Lucide 图标（从 lucide-react 导入） ───
-import {
-  ListChecks,
-  ChevronDown,
-  Check,
-  Plus,
-  Trash2,
-  Pencil,
-  Calendar,
-  Circle,
-} from 'lucide-react'
+import { ListChecks, ChevronDown, Check, Plus, Calendar, Circle } from 'lucide-react'
 
 // ─── 筛选配置 ───
 
@@ -95,32 +66,19 @@ export interface TodoCardProps extends PluginComponentProps {
  * 待办卡片主组件
  */
 export function TodoCard({ manifest, expanded, onToggle }: TodoCardProps) {
-  const {
-    todos,
-    allTodos,
-    addTodo,
-    toggleTodo,
-    updateTodo,
-    deleteTodo,
-    restoreTodo,
-    clearCompleted,
-    restoreTodos,
-    filter,
-    setFilter,
-    stats,
-    todayTick,
-    isOverdue,
-  } = useTodo()
+  const { todos, allTodos, addTodo, toggleTodo, clearCompleted, restoreTodos, stats, todayTick, isOverdue } =
+    useTodo()
   const { accent } = useThemeColors()
   const [inputValue, setInputValue] = useState('')
   const [deadlineValue, setDeadlineValue] = useState('')
+  /**
+   * 筛选是**卡片自己的**临时状态，不进共享 store：
+   * 工具区的详细管理页也有一套筛选，放 store 里会互相串台
+   * （详情页切到"已完成"，信息区卡片跟着只剩已完成项）。
+   */
+  const [filter, setFilter] = useState<FilterType>('all')
   const inputRef = useRef<HTMLInputElement>(null)
   const datePickerRef = useRef<HTMLInputElement>(null)
-  /**
-   * 删除的「同位置短时冷却」上一次指针坐标（见 handleDelete）。
-   * 只记录坐标 + 时间，不记录"全局上次删除时间" —— 键盘连删两条不该被误伤。
-   */
-  const lastDeleteRef = useRef<{ at: number; x: number; y: number } | null>(null)
 
   // 折叠态显示的第一条待办（取截止时间最早的未完成项）
   // 使用 useMemo 避免每次渲染都重新排序
@@ -129,9 +87,17 @@ export function TodoCard({ manifest, expanded, onToggle }: TodoCardProps) {
   // 逾期标记：isOverdue() 内部读的是 Date.now()，React 不会因为"时间流逝"重渲染，
   // 所以把 useTodo 的跨天信号 todayTick 一起作为依赖 —— 跨天 / 窗口重新可见后
   // 用最新的"现在"重算一遍逾期，而不是靠 hover 之类的偶然重渲染。
+  // 筛选也在这里做：`todos` 现在是「已排序的全量」，筛的是卡片自己那份 filter。
   const rows = useMemo<TodoRow[]>(
-    () => todos.map((todo) => ({ todo, overdue: isOverdue(todo) })),
-    [todos, isOverdue, todayTick]
+    () =>
+      todos
+        .filter((todo) => {
+          if (filter === 'active') return !todo.completed
+          if (filter === 'completed') return todo.completed
+          return true
+        })
+        .map((todo) => ({ todo, overdue: isOverdue(todo) })),
+    [todos, filter, isOverdue, todayTick]
   )
 
   const handleAdd = useCallback(() => {
@@ -151,6 +117,8 @@ export function TodoCard({ manifest, expanded, onToggle }: TodoCardProps) {
     addTodo(text, deadlineText || undefined)
     setInputValue('')
     setDeadlineValue('')
+    // 新增后必须让用户看见：停在「已完成」筛选下加完什么都看不到，会以为没成功而重复输入
+    setFilter('all')
   }, [inputValue, deadlineValue, addTodo])
 
   const handleKeyDown = useCallback(
@@ -163,41 +131,6 @@ export function TodoCard({ manifest, expanded, onToggle }: TodoCardProps) {
       }
     },
     [handleAdd]
-  )
-
-  /**
-   * 删除单条 + 可撤销提示（撤销把原条目原样插回）
-   *
-   * 卡级「同位置短时冷却」守卫：真机上连点删除按钮会连删两条 —— 第一击删掉第 N 条，
-   * 第 N+1 条上移占住同一个位置，紧接着的第二击落到"顶替上来的另一条"上，
-   * 表现为一次双击删两条。同一位置 350ms 内的第二击直接吞掉。
-   * 守卫按「卡内同一位置」而不是「全局时间」：键盘触发没有坐标，连删两条不受影响。
-   */
-  const handleDelete = useCallback(
-    (id: string, point?: { x: number; y: number }) => {
-      const now = Date.now()
-      const last = lastDeleteRef.current
-      // 同一位置 350ms 内的第二次点击：行已经上移，这一击命中的是"顶替上来的另一条"，
-      // 属于一次误触双击，直接吞掉。键盘触发没有坐标，不走这个守卫。
-      if (
-        point &&
-        last &&
-        now - last.at < 350 &&
-        Math.abs(point.x - last.x) < 24 &&
-        Math.abs(point.y - last.y) < 24
-      ) {
-        return
-      }
-      lastDeleteRef.current = point ? { at: now, x: point.x, y: point.y } : null
-      const removed = deleteTodo(id)
-      if (!removed) return
-      window.toastAPI?.show?.({
-        message: `已删除「${truncate(removed.text, 12)}」`,
-        color: 'var(--danger)',
-        action: { label: '撤销', onClick: () => restoreTodo(removed) },
-      })
-    },
-    [deleteTodo, restoreTodo]
   )
 
   /** 一键清理已完成 + 可撤销提示（没清掉任何东西就不打扰用户） */
@@ -281,8 +214,6 @@ export function TodoCard({ manifest, expanded, onToggle }: TodoCardProps) {
               onAdd={handleAdd}
               onKeyDown={handleKeyDown}
               onToggle={toggleTodo}
-              onUpdate={updateTodo}
-              onDelete={handleDelete}
               onClearCompleted={handleClearCompleted}
             />
           </div>
@@ -399,8 +330,6 @@ interface ExpandedViewProps {
   onAdd: () => void
   onKeyDown: (e: React.KeyboardEvent) => void
   onToggle: (id: string) => void
-  onUpdate: (id: string, patch: TodoPatch) => void
-  onDelete: (id: string, point?: { x: number; y: number }) => void
   onClearCompleted: () => void
 }
 
@@ -418,8 +347,6 @@ function ExpandedView({
   onAdd,
   onKeyDown,
   onToggle,
-  onUpdate,
-  onDelete,
   onClearCompleted,
 }: ExpandedViewProps) {
   const ACCENT = useAccent()
@@ -567,14 +494,7 @@ function ExpandedView({
           </div>
         ) : (
           rows.map(({ todo, overdue }) => (
-            <TodoItem
-              key={todo.id}
-              todo={todo}
-              overdue={overdue}
-              onToggle={onToggle}
-              onUpdate={onUpdate}
-              onDelete={onDelete}
-            />
+            <TodoItem key={todo.id} todo={todo} overdue={overdue} onToggle={onToggle} />
           ))
         )}
       </div>
@@ -589,53 +509,19 @@ interface TodoItemProps {
   /** 逾期判定结果（由 TodoCard 用 useTodo().isOverdue + todayTick 算出） */
   overdue: boolean
   onToggle: (id: string) => void
-  onUpdate: (id: string, patch: TodoPatch) => void
-  /** `point` 仅指针点击时提供，供卡片做「同位置短时冷却」判定 */
-  onDelete: (id: string, point?: { x: number; y: number }) => void
 }
 
-function TodoItem({ todo, overdue, onToggle, onUpdate, onDelete }: TodoItemProps) {
+function TodoItem({ todo, overdue, onToggle }: TodoItemProps) {
   const ACCENT = useAccent()
-  const [editing, setEditing] = useState(false)
-  const [draft, setDraft] = useState(todo.text)
-  const editInputRef = useRef<HTMLInputElement>(null)
-  // Enter / Esc 结束后浏览器可能再补一次 blur，用一次性闩锁挡住重复提交
-  const editDoneRef = useRef(false)
-
-  // 进入编辑：聚焦并全选，方便直接重写
-  useEffect(() => {
-    if (!editing) return
-    const input = editInputRef.current
-    if (!input) return
-    input.focus({ preventScroll: true })
-    input.select()
-  }, [editing])
-
-  const startEditing = () => {
-    editDoneRef.current = false
-    setDraft(todo.text)
-    setEditing(true)
-  }
-
-  const finishEditing = (save: boolean) => {
-    if (editDoneRef.current) return
-    editDoneRef.current = true
-    setEditing(false)
-    const text = draft.trim()
-    // 空文本 / 没改过 → 不提交（useTodo.updateTodo 也会忽略空串，这里提前收敛）
-    if (save && text && text !== todo.text) onUpdate(todo.id, { text })
-  }
 
   return (
     /*
-      故意不做「整行点击 = 切换完成」：整行是勾选框 + 文字 + 日期 + 两个按钮的复合区域，
-      挂 onClick 会带来三类误操作 ——
+      故意不做「整行点击 = 切换完成」：挂 onClick 会带来两类误操作 ——
       1) 拖选文字想复制，松手后浏览器补发 click → 待办被静默勾掉；
-      2) 点空白想结束行内编辑：blur 先保存、React 同步提交后 editing 已为 false，守卫失效 → 顺手勾掉；
-      3) 双击一行：第一击置完成并立刻沉底重排，第二击落到顶替上来的另一行 → 又勾一条。
+      2) 双击一行：第一击置完成并立刻沉底重排，第二击落到顶替上来的另一行 → 又勾一条。
       而 toggleTodo 没有撤销入口，这些误触无法挽回。完成切换的唯一入口就是下面的勾选框。
     */
-    <div className="group flex items-center gap-2.5 py-2 px-0 rounded-md transition-colors">
+    <div className="flex items-center gap-2.5 py-2 px-0">
       {/* 勾选框：18×18 视觉，24×24 命中区 */}
       <button
         type="button"
@@ -664,46 +550,18 @@ function TodoItem({ todo, overdue, onToggle, onUpdate, onDelete }: TodoItemProps
         </span>
       </button>
 
-      {/* 文字 / 行内编辑 */}
-      {editing ? (
-        <input
-          ref={editInputRef}
-          type="text"
-          value={draft}
-          // 固定可访问名：不能用 todo.text（那是已保存的旧文本，编辑中读屏念的名字会和框内内容不一致），
-          // 也不能用 draft（每敲一个字都会重念）。不加 title，避免和 aria-label 打架。
-          aria-label="编辑待办"
-          onChange={(e) => setDraft(e.target.value)}
-          onClick={(e) => e.stopPropagation()}
-          onBlur={() => finishEditing(true)}
-          onKeyDown={(e) => {
-            // 编辑期间的按键不再往上冒（否则 Enter 会一路冒到卡片，把卡片折叠了）
-            e.stopPropagation()
-            if (isComposingEvent(e)) return
-            if (e.key === 'Enter') {
-              e.preventDefault()
-              finishEditing(true)
-            } else if (e.key === 'Escape') {
-              e.preventDefault()
-              finishEditing(false)
-            }
-          }}
-          className="flex-1 min-w-0 bg-transparent text-[13px] outline-none"
-          style={{ color: 'var(--text-primary)', fontFamily: 'Inter' }}
-        />
-      ) : (
-        <span
-          className="flex-1 min-w-0 truncate text-[13px] select-text cursor-text"
-          style={{
-            color: todo.completed ? 'var(--text-muted)' : 'var(--text-primary)',
-            textDecoration: todo.completed ? 'line-through' : 'none',
-            fontFamily: 'Inter',
-          }}
-          title={todo.text}
-        >
-          {todo.text}
-        </span>
-      )}
+      {/* 文字：只读展示（删除 / 编辑等条目级操作都在工具区的详细管理页做） */}
+      <span
+        className="flex-1 min-w-0 truncate text-[13px] select-text"
+        style={{
+          color: todo.completed ? 'var(--text-muted)' : 'var(--text-primary)',
+          textDecoration: todo.completed ? 'line-through' : 'none',
+          fontFamily: 'Inter',
+        }}
+        title={todo.text}
+      >
+        {todo.text}
+      </span>
 
       {/* 截止时间 */}
       {todo.deadline ? (
@@ -717,37 +575,6 @@ function TodoItem({ todo, overdue, onToggle, onUpdate, onDelete }: TodoItemProps
           </span>
         </span>
       ) : null}
-
-      {/* 编辑按钮：常驻挂载。触屏没有 hover，所以常态就是低透明度可见（否则看得见摸不着），悬停/聚焦变实 */}
-      <button
-        type="button"
-        aria-label={`编辑待办：${todo.text}`}
-        title="编辑"
-        className="flex items-center justify-center shrink-0 w-6 h-6 -my-[3px] rounded transition-opacity opacity-40 group-hover:opacity-100 focus-visible:opacity-100"
-        onClick={(e) => {
-          e.stopPropagation()
-          startEditing()
-        }}
-      >
-        <Pencil size={13} color="var(--text-muted)" />
-      </button>
-
-      {/* 删除按钮：常驻挂载。同上，常态低透明度可见，悬停/聚焦变实 */}
-      <button
-        type="button"
-        aria-label={`删除待办：${todo.text}`}
-        title="删除"
-        className="flex items-center justify-center shrink-0 w-6 h-6 -my-[3px] rounded transition-opacity opacity-40 group-hover:opacity-100 focus-visible:opacity-100"
-        onClick={(e) => {
-          e.stopPropagation()
-          // 键盘激活（Enter / Space 合成的 click）没有真实指针坐标：detail === 0。
-          // 这种情况不传坐标，让卡片的「同位置冷却」守卫放行 —— 否则连按两次 Enter
-          // 删两条会被当成同位置的误触双击，第二条删不掉。
-          onDelete(todo.id, e.detail === 0 ? undefined : { x: e.clientX, y: e.clientY })
-        }}
-      >
-        <Trash2 size={14} color="var(--text-muted)" />
-      </button>
     </div>
   )
 }

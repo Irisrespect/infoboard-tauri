@@ -44,10 +44,6 @@ export interface UseTodoReturn {
   clearCompleted: () => Todo[]
   /** 撤销批量清理（按 id 去重插回） */
   restoreTodos: (todos: Todo[]) => void
-  /** 当前筛选 */
-  filter: FilterType
-  /** 设置筛选 */
-  setFilter: (filter: FilterType) => void
   /** 统计数据 */
   stats: { total: number; completed: number; active: number }
   /** 跨天 / 窗口重新可见时自增，供 UI 作为依赖触发逾期重算 */
