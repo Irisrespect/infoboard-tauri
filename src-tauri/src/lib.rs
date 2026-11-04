@@ -10,9 +10,14 @@ mod core {
     pub mod net;
     pub mod secrets;
     pub mod text;
+    pub mod todo_file;
     pub mod tray;
     pub mod window;
 }
+
+// 待办数据层要能被 `infoboard-todo` CLI（独立 bin）复用：只把这一个模块 re-export 出去，
+// 保持 `mod core` 本身私有——CLI 不该拿到 core 里其它东西，更不该拿到 `run()`。
+pub use self::core::todo_file;
 
 mod plugins {
     pub mod apiprobe;
@@ -147,6 +152,11 @@ pub fn run() {
             plugins::hud::hud_open_deepseek,
             // 待办详细管理：工具区图标点开自己的独立窗口（已开着则聚焦）
             plugins::todowin::todo_window_open,
+            // 待办数据落盘（todo.json）：前端读取 / 整表提交 / 旧 localStorage 迁移
+            core::todo_file::todo_snapshot,
+            core::todo_file::todo_commit,
+            core::todo_file::todo_import_legacy,
+            core::todo_file::todo_data_path,
             // Issue 14: 截图
             plugins::screenshot::screenshot_start,
             plugins::screenshot::screenshot_capture_only,

@@ -1,6 +1,6 @@
 [package]
 name = "infoboard-tauri"
-version = "0.10.0"
+version = "0.11.0"
 description = "InfoBoard - 桌面信息面板"
 authors = ["InfoBoard"]
 license = "MIT"
@@ -12,6 +12,17 @@ rust-version = "1.80"
 [lib]
 name = "infoboard_tauri_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+# 显式声明两个 bin，避免自动发现出岔子：
+# - infoboard-tauri：原 GUI 程序（`windows_subsystem = "windows"` 只写在 src/main.rs 里）
+# - infoboard-todo ：待办命令行（控制台程序，**不能**加 windows_subsystem 属性）
+[[bin]]
+name = "infoboard-tauri"
+path = "src/main.rs"
+
+[[bin]]
+name = "infoboard-todo"
+path = "src/bin/infoboard_todo.rs"
 
 [features]
 # 生产构建开关（Tauri 官方模板同名特性，不要删）。
