@@ -5,6 +5,48 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] - 2026-11-04
+
+> 主题：**待办有了命令行** —— 数据从 WebView 的 localStorage 搬到 `todo.json`，app 和 CLI 读写同一份文件。
+
+### Added
+
+- **`infoboard-todo` 命令行**（随安装包发布，与 `infoboard-tauri.exe` 同目录）：
+  `list` / `add` / `done` / `undone` / `edit` / `rm` / `clear` / `path` / `help`，
+  支持按**序号**或 **id 前缀**指定条目、`--json` 机器可读输出；
+  序号永远按"完整排序列表"编号，`--active/--done` 只过滤不重编号
+- **待办数据落地 `todo.json`**：`%APPDATA%\com.infoboard.tauri\todo.json`，
+  原子写入（tmp + rename）、带 `version` / `rev` 字段；文件损坏时拒绝写入，原文不动
+- app 每 1.5 秒轮询 `rev`，CLI 改动 1~2 秒内出现在界面上；反之亦然
+
+### Changed
+
+- 首次启动自动把旧的 `localStorage['todo-list']` 迁移进 `todo.json`：
+  迁移成功后原键原位备份为 `todo-list.migrated` 再移除；迁移失败（旧数据损坏）则备份为
+  `todo-list.corrupt.<时间戳>` 并进入只读态，绝不覆盖
+- `todo.json` 损坏时 app 进入只读态（不写盘、禁用编辑），CLI 以退出码 3 报错并保持文件原样
+
+### Fixed
+
+- **别再被历史遗留的 `todo.json` 锁成只读**：早期版本留下的 `{"todos": []}`（缺 `version` / `rev`）
+  曾被判为"数据损坏"，一打开 app 就是只读态，旧待办也永远迁不过来。现在
+  `version` / `rev` / `completed` / `createdAt` 缺省可容、裸 JSON 数组也能读、0 字节文件按"空"处理，
+  只有真正解析不了的内容（非 UTF-8、字段类型错、缺 `id` / `text`）才算损坏
+- **旧数据迁移能覆盖"空壳文件"**：`todo.json` 存在但 `rev == 0` 且没有任何条目时仍允许导入
+  localStorage 旧数据；一旦文件里有内容（`rev > 0` 或列表非空）就绝不覆盖
+- **并发写不再丢更新**：连续快速操作（新增后立刻勾掉）的写盘请求现在串行落盘，按调用顺序生效
+- **只读态可自愈**：`todo.json` 修好后约 1.5 秒自动恢复编辑，不必重开窗口
+- **长提示不再被裁**：toast 里的 Windows 路径 / URL 现在会折行，而不是把横幅撑出窗口两侧
+- **待办卡不再"静默清空"**：数据读取失败时折叠态显示「数据异常」、展开态给出修复指引，
+  不会再让用户以为待办凭空丢了
+- 只读横幅文案改为按后端分叉：发布包显示 `todo.json` 的绝对路径与修复步骤，
+  不再让用户去 localStorage 里找并不存在的东西
+
+### Notes
+
+- 命令行与 GUI 的日期语义完全一致：`YYYY-MM-DD` 严格校验、`M月D日` 取"下一次出现"
+- 旧 conhost 需要 `chcp 65001` 才能正常显示中文，已写进 `infoboard-todo help`
+
 ## [0.10.0] - 2026-11-04
 
 > 主题：**待办有了自己的详细管理窗口** —— 信息区卡片只负责瞄一眼，正经管理搬到独立窗口。
