@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0] - 2026-11-05
+
+> 主题：**待办可以声明式同步了** —— CLI 新增 `apply`，让外部来源（脚本 / AI / 其它采集器）能幂等地把清单对齐进 `todo.json`。
+
+### Added
+
+- **`infoboard-todo apply`**：给一份完整清单，把 `todo.json` 对齐成那个样子
+  - 靠 **id** 幂等 upsert：同 id 再跑不会重复，`createdAt` 保留，只有文本/截止时间变了才算"更新"
+  - `--prune <前缀>`：删掉"以该前缀开头但本次清单里没有"的条目；**不传就绝不删任何东西**
+  - `--dry-run` 只报差异不写盘；`--json` 输出机器可读结果
+  - 无变化时不写盘、`rev` 不变；有变化时一次原子写、`rev` 只 +1
+  - `completed` **只升不降**（外部来源说完成了会升级，但不会把已完成改回未完成）
+  - `todo.json` 损坏时拒绝写入，退出码 3，文件原样保留
+
+### Notes
+
+- 本版本新增 `docs/cxtodo-sync.md`：把学习通待办（cxtodo）同步进 InfoBoard 的 AI 执行手册
+- `apply` 不知道任何具体数据源，只认 `id` / `text` / `deadline` / `completed` 四个字段
+
 ## [0.11.0] - 2026-11-04
 
 > 主题：**待办有了命令行** —— 数据从 WebView 的 localStorage 搬到 `todo.json`，app 和 CLI 读写同一份文件。
