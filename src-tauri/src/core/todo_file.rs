@@ -27,6 +27,7 @@
 
 use chrono::{DateTime, Datelike, Local, NaiveDate, TimeZone};
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -290,6 +291,228 @@ fn tmp_path(path: &Path) -> PathBuf {
     let mut os = path.as_os_str().to_owned();
     os.push(".tmp");
     PathBuf::from(os)
+}
+
+// ─────────────────────────── 声明式同步（apply） ───────────────────────────
+//
+// 为什么要有它：`add` 每次生成随机 id，脚本反复把同一批外部条目同步进来就会堆重复
+// 条目；而且"这条在来源里已经消失了"没有任何表达方式。
+// `apply` 换个方向：**给一份完整清单，把 todo.json 对齐成清单的样子**。
+//
+// - 幂等靠 `id`：同 id 走更新，不新增；同样的清单跑 N 次结果一样，rev 只涨一次；
+// - 清理由调用方显式授权：只删"id 命中 `prune_prefixes` 前缀 **且** 这次清单没给"的
+//   条目；前缀为空 = 一条都不删（默认绝不删数据）。
+//
+// 它**不是**通用 diff 工具：不动 `createdAt`、不接受把 `completed` 从 true 改回 false。
+
+/// `apply` 的单条输入（外部来源 / 脚本给的清单项，字段名 camelCase = 前端口径）
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApplyItem {
+    /// 稳定 id（同一个来源条目每次同步都必须是同一个值，否则"幂等"无从谈起）
+    pub id: String,
+    pub text: String,
+    /// "YYYY-MM-DD" 或 "M月D日"，落盘时归一化成 ISO；缺省 / 空串 = 没有截止时间
+    #[serde(default)]
+    pub deadline: Option<String>,
+    #[serde(default)]
+    pub completed: bool,
+}
+
+/// `apply` 的结果（计数 + 落盘后的 rev）
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApplyReport {
+    /// 有变化 → 写盘后的新 rev；无变化 / dry-run → 当前 rev
+    pub rev: u64,
+    pub added: usize,
+    pub updated: usize,
+    pub removed: usize,
+    pub unchanged: usize,
+    pub dry_run: bool,
+}
+
+/// 声明式同步：把 `path` 处的待办对齐成 `items`（幂等 upsert + 前缀 prune）
+///
+/// 逐条规则：
+/// 1. 先校验输入：`id` / `text` trim 后为空、或 `items` 里出现重复 id → `Err`，
+///    一个字节都不写（错误用 `Corrupt`，因为错误枚举不该为"调用方传错了"再加一个新变体；
+///    文案里会写清是**输入**问题，不是文件问题）；
+/// 2. `load_at` 先读：文件不存在 → 空表；损坏 → `Err(Corrupt)`，绝不覆盖；
+/// 3. 同 id 存在 → 比 `text` 与归一化后的 `deadline`，不同就是"更新"（保留原 `createdAt`），
+///    相同就是"未变"；`completed` 只允许 false → true（`existing || item`），
+///    这个合并本身不计入 `updated`；
+/// 4. prune：`id` 命中任一前缀 **且** 不在本次 `items` 里 → 删除，计入 `removed`；
+///    `prune_prefixes` 为空 → 一条都不删；
+/// 5. 真的什么都没变 → **不写盘**，rev 不变；
+/// 6. 有变化 → 一次 `write_at(rev + 1)`，rev 只 +1；
+/// 7. `dry_run` → 只算报告，不写盘，`rev` 返回当前值；
+/// 8. 落盘顺序：**已有条目保持文件里的原顺序，新增条目按 `items` 顺序追加在后**
+///    （顺序对 app 无意义 —— 视图自己按 `compare_todos` 排序，这里只为可复现）。
+pub fn apply_at(
+    path: &Path,
+    items: &[ApplyItem],
+    prune_prefixes: &[String],
+    dry_run: bool,
+) -> Result<ApplyReport, TodoError> {
+    apply_with_now(path, items, prune_prefixes, dry_run, Local::now(), now_ms())
+}
+
+/// `apply_at` 的实现体：`now` / `now_ms` 作为参数注入，保证单测可复现
+/// （`M月D日` 的年份、新增条目的 `createdAt` 都跟它们有关）
+fn apply_with_now(
+    path: &Path,
+    items: &[ApplyItem],
+    prune_prefixes: &[String],
+    dry_run: bool,
+    now: DateTime<Local>,
+    now_ms: i64,
+) -> Result<ApplyReport, TodoError> {
+    // ── 1. 输入校验：id / text 不能空，id 不能重复 ──
+    // 空 text 不许静默跳过：跳过等于"假装同步成功"，来源那边的问题永远暴露不出来
+    let mut seen_ids: HashSet<&str> = HashSet::with_capacity(items.len());
+    for item in items {
+        let id = item.id.trim();
+        if id.is_empty() || item.text.trim().is_empty() {
+            return Err(TodoError::Corrupt(format!(
+                "items 里有条目的 id / text 是空白（id = {:?}）：这是调用方给的数据有问题，不是 todo.json 损坏",
+                item.id
+            )));
+        }
+        if !seen_ids.insert(id) {
+            return Err(TodoError::Corrupt(format!(
+                "items 里有重复 id：{id}\n（同一条不该出现两次：更新谁、不更新谁无法判断，整批不写）"
+            )));
+        }
+    }
+
+    // ── 2. 先把 deadline 全部解析完 ──
+    // 任何一条非法都整批不写：半批写进去比不写更难收拾
+    let mut normalized: Vec<(Option<String>, Option<i64>)> = Vec::with_capacity(items.len());
+    for item in items {
+        let slot = match item.deadline.as_deref() {
+            // 缺键 / 空串都当"没有截止时间"：外部来源常用 "" 表示无期限，
+            // 为它让整批失败太苛刻（而且语义上没有歧义）
+            None => (None, None),
+            Some(raw) if raw.trim().is_empty() => (None, None),
+            Some(raw) => match normalize_deadline(raw, now) {
+                Some((text, ts)) => (Some(text), Some(ts)),
+                None => {
+                    return Err(TodoError::Corrupt(format!(
+                        "无法识别的截止日期：{raw}\n（支持 `YYYY-MM-DD` 或 `M月D日`；整批未写入）"
+                    )));
+                }
+            },
+        };
+        normalized.push(slot);
+    }
+
+    // ── 3. 读现状（损坏原样透出，绝不覆盖） ──
+    let current = load_at(path)?;
+
+    // id → items 下标（ids 已校验过唯一）
+    let mut item_index: HashMap<&str, usize> = HashMap::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        item_index.insert(item.id.trim(), index);
+    }
+    // 空前缀会命中一切 —— 手抖写个 `--prune ""` 不该等于清库，直接忽略
+    let prefixes: Vec<&str> = prune_prefixes
+        .iter()
+        .map(|prefix| prefix.trim())
+        .filter(|prefix| !prefix.is_empty())
+        .collect();
+
+    let mut next: Vec<TodoItem> = Vec::with_capacity(current.todos.len() + items.len());
+    let mut found = vec![false; items.len()];
+    let mut added = 0usize;
+    let mut updated = 0usize;
+    let mut removed = 0usize;
+    let mut unchanged = 0usize;
+    // `dirty` = 落盘内容真的会变（含 completed 合并那种"不算 updated 但要落盘"的情况）
+    let mut dirty = false;
+
+    // ── 4. 已有条目：原地合并 / 保留 / prune，保持文件里的原顺序 ──
+    for existing in &current.todos {
+        let key = existing.id.trim();
+        match item_index.get(key) {
+            Some(&index) => {
+                found[index] = true;
+                let item = &items[index];
+                let (deadline, deadline_ts) = normalized[index].clone();
+                let text = item.text.trim();
+
+                let content_changed = existing.text != text || existing.deadline != deadline;
+                // 只允许 true 覆盖 false：来源说"没完成"不代表用户没在 app 里勾掉它
+                let merged_completed = existing.completed || item.completed;
+                let completed_changed = merged_completed != existing.completed;
+
+                if content_changed {
+                    updated += 1;
+                } else {
+                    unchanged += 1;
+                }
+
+                if content_changed || completed_changed {
+                    dirty = true;
+                    let mut merged = existing.clone();
+                    if content_changed {
+                        merged.text = text.to_string();
+                        merged.deadline = deadline;
+                        merged.deadline_ts = deadline_ts;
+                    }
+                    merged.completed = merged_completed;
+                    next.push(merged);
+                } else {
+                    next.push(existing.clone());
+                }
+            }
+            None => {
+                if prefixes.iter().any(|prefix| key.starts_with(prefix)) {
+                    removed += 1;
+                    dirty = true;
+                } else {
+                    next.push(existing.clone());
+                }
+            }
+        }
+    }
+
+    // ── 5. 新增：追加在后面，`createdAt` 取现在 ──
+    for (index, item) in items.iter().enumerate() {
+        if found[index] {
+            continue;
+        }
+        let (deadline, deadline_ts) = normalized[index].clone();
+        next.push(TodoItem {
+            id: item.id.trim().to_string(),
+            text: item.text.trim().to_string(),
+            completed: item.completed,
+            deadline,
+            deadline_ts,
+            created_at: now_ms,
+        });
+        added += 1;
+        dirty = true;
+    }
+
+    // ── 6. dry-run / 无变化：不写盘，rev 原样返回 ──
+    if dry_run || !dirty {
+        return Ok(ApplyReport {
+            rev: current.rev,
+            added,
+            updated,
+            removed,
+            unchanged,
+            dry_run,
+        });
+    }
+
+    // ── 7. 有变化：一次原子写，rev 只 +1 ──
+    // 直接用 current.rev（上面 load_at 读到的），不再调 save_at 重读一遍：
+    // 这次写入的基线就是那份数据，重读只会让 rev 与校验过的内容是两次不同的快照。
+    let rev = current.rev.saturating_add(1);
+    write_at(path, rev, &next)?;
+    Ok(ApplyReport { rev, added, updated, removed, unchanged, dry_run: false })
 }
 
 // ─────────────────────────── 旧数据迁移 ───────────────────────────
@@ -1091,5 +1314,370 @@ mod tests {
         assert_ne!(a, b);
         assert!(a.chars().all(|c| c.is_ascii_alphanumeric()), "id 只能是 0-9a-z: {a}");
         assert!(a.len() >= 4);
+    }
+
+    // ─── 声明式同步（apply） ───
+
+    fn apply_item(id: &str, text: &str, deadline: Option<&str>, completed: bool) -> ApplyItem {
+        ApplyItem {
+            id: id.to_string(),
+            text: text.to_string(),
+            deadline: deadline.map(|d| d.to_string()),
+            completed,
+        }
+    }
+
+    /// 与前端等价的"当天 23:59:59.999"毫秒时间戳
+    fn day_end_ms(year: i32, month: u32, day: u32) -> i64 {
+        Local
+            .with_ymd_and_hms(year, month, day, 23, 59, 59)
+            .single()
+            .unwrap()
+            .timestamp_millis()
+            + 999
+    }
+
+    /// 1. 空文件 + 3 条 → 全部新增，落盘是正式形状（version / rev / createdAt）
+    #[test]
+    fn apply_adds_all_items_into_missing_file() {
+        let dir = temp_dir("applyadd");
+        let path = todo_path_in(&dir);
+        let items = vec![
+            apply_item("cx-0001", "第一条", None, false),
+            apply_item("cx-0002", "第二条", Some("2026-11-10"), false),
+            apply_item("cx-0003", "第三条", None, true),
+        ];
+
+        let report = apply_at(&path, &items, &[], false).unwrap();
+        assert_eq!(
+            report,
+            ApplyReport { rev: 1, added: 3, updated: 0, removed: 0, unchanged: 0, dry_run: false }
+        );
+
+        let loaded = load_at(&path).unwrap();
+        assert_eq!(loaded.version, FILE_VERSION, "落盘必须带 version");
+        assert_eq!(loaded.rev, 1);
+        assert_eq!(loaded.todos.len(), 3);
+        assert!(loaded.todos.iter().all(|todo| todo.created_at > 0), "新增条目要带 createdAt");
+        assert_eq!(loaded.todos[1].deadline.as_deref(), Some("2026-11-10"));
+        assert_eq!(loaded.todos[1].deadline_ts, Some(day_end_ms(2026, 11, 10)));
+        assert!(loaded.todos[2].completed);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 2. 幂等：同样的清单再 apply 一次 → 全"未变"，rev 与文件字节 / mtime 都不许变
+    #[test]
+    fn apply_is_idempotent_and_does_not_touch_the_file() {
+        let dir = temp_dir("applyidem");
+        let path = todo_path_in(&dir);
+        let items = vec![
+            apply_item("cx-0001", "第一条", None, false),
+            apply_item("cx-0002", "第二条", Some("2026-11-10"), false),
+            apply_item("cx-0003", "第三条", None, true),
+        ];
+        apply_at(&path, &items, &[], false).unwrap();
+
+        let bytes_before = std::fs::read(&path).unwrap();
+        let mtime_before = std::fs::metadata(&path).unwrap().modified().unwrap();
+
+        let report = apply_at(&path, &items, &[], false).unwrap();
+        assert_eq!(report.rev, 1, "无变化不许涨 rev");
+        assert_eq!(report.unchanged, 3);
+        assert_eq!((report.added, report.updated, report.removed), (0, 0, 0));
+        assert_eq!(std::fs::read(&path).unwrap(), bytes_before, "无变化不许重写文件");
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().modified().unwrap(),
+            mtime_before,
+            "mtime 也不许动（说明真的没写）"
+        );
+        assert!(!tmp_path(&path).exists(), "不该留 tmp");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 3. 改 text → 更新 1 条，`createdAt` 保持原值（"第一次见到它"的时间不该被同步刷掉）
+    #[test]
+    fn apply_updates_text_and_keeps_created_at() {
+        let dir = temp_dir("applytext");
+        let path = todo_path_in(&dir);
+        apply_at(&path, &[apply_item("cx-0001", "旧文案", Some("2026-11-10"), false)], &[], false).unwrap();
+        let created_before = load_at(&path).unwrap().todos[0].created_at;
+
+        let report = apply_at(&path, &[apply_item("cx-0001", "新文案", Some("2026-11-10"), false)], &[], false).unwrap();
+        assert_eq!(report.updated, 1);
+        assert_eq!(report.added, 0);
+        assert_eq!(report.rev, 2);
+
+        let todo = load_at(&path).unwrap().todos[0].clone();
+        assert_eq!(todo.text, "新文案");
+        assert_eq!(todo.created_at, created_before, "createdAt 必须保留");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 4. 改 deadline → 更新 1 条，`deadlineTs` 按"当天 23:59:59.999"重算
+    #[test]
+    fn apply_updates_deadline_and_recomputes_ts() {
+        let dir = temp_dir("applydeadline");
+        let path = todo_path_in(&dir);
+        apply_at(&path, &[apply_item("cx-0001", "写报告", Some("2026-11-09"), false)], &[], false).unwrap();
+        assert_eq!(load_at(&path).unwrap().todos[0].deadline_ts, Some(day_end_ms(2026, 11, 9)));
+
+        let report = apply_at(&path, &[apply_item("cx-0001", "写报告", Some("2026-11-10"), false)], &[], false).unwrap();
+        assert_eq!(report.updated, 1);
+        let todo = load_at(&path).unwrap().todos[0].clone();
+        assert_eq!(todo.deadline.as_deref(), Some("2026-11-10"));
+        assert_eq!(todo.deadline_ts, Some(day_end_ms(2026, 11, 10)));
+
+        // 中文日期同样要归一化成 ISO（年份随注入的 now 走）
+        let report = apply_with_now(
+            &path,
+            &[apply_item("cx-0002", "交房租", Some("3月8日"), false)],
+            &[],
+            false,
+            at(2026, 1, 1),
+            1_000,
+        )
+        .unwrap();
+        assert_eq!(report.added, 1);
+        let added = load_at(&path).unwrap().todos.iter().find(|t| t.id == "cx-0002").unwrap().clone();
+        assert_eq!(added.deadline.as_deref(), Some("2026-03-08"), "M月D日 要归一化成 ISO");
+        assert_eq!(added.deadline_ts, Some(day_end_ms(2026, 3, 8)));
+        assert_eq!(added.created_at, 1_000, "createdAt 取注入的 now_ms");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 5. `completed` 不许降级：已有 true + 来源说 false → 未变，仍然 true，且不写盘
+    #[test]
+    fn apply_never_downgrades_completed() {
+        let dir = temp_dir("applynodowngrade");
+        let path = todo_path_in(&dir);
+        save_at(&path, vec![item("cx-0001", "已经做完了", true, Some(("2026-11-10", day_end_ms(2026, 11, 10))), 12_345)]).unwrap();
+        let bytes_before = std::fs::read(&path).unwrap();
+
+        let report = apply_at(&path, &[apply_item("cx-0001", "已经做完了", Some("2026-11-10"), false)], &[], false).unwrap();
+        assert_eq!(report.unchanged, 1);
+        assert_eq!(report.rev, 1, "只有 completed 想往回改 → 无变化，不写盘");
+        assert_eq!(std::fs::read(&path).unwrap(), bytes_before);
+        assert!(load_at(&path).unwrap().todos[0].completed, "true 不许被改成 false");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 5b. 反方向（false → true）要真的落盘：这是"来源说做完了"唯一能生效的通道。
+    /// 按契约它**不计入 updated**（text / deadline 没变），所以报告是 unchanged=1 + rev +1。
+    #[test]
+    fn apply_upgrades_completed_and_persists_it() {
+        let dir = temp_dir("applyupgrade");
+        let path = todo_path_in(&dir);
+        apply_at(&path, &[apply_item("cx-0001", "该做完了", None, false)], &[], false).unwrap();
+
+        let report = apply_at(&path, &[apply_item("cx-0001", "该做完了", None, true)], &[], false).unwrap();
+        assert_eq!((report.added, report.updated, report.removed), (0, 0, 0));
+        assert_eq!(report.unchanged, 1, "completed 合并本身不算 updated");
+        assert_eq!(report.rev, 2, "但数据真的变了 → 必须写盘，rev +1");
+        assert!(load_at(&path).unwrap().todos[0].completed, "false → true 必须生效");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 6. prune 只删"前缀命中且本次清单没给"的条目，别人的条目一条都不许碰
+    #[test]
+    fn apply_prune_removes_only_matching_prefix() {
+        let dir = temp_dir("applyprune");
+        let path = todo_path_in(&dir);
+        save_at(
+            &path,
+            vec![
+                item("cx-a", "来源 A", false, None, 1),
+                item("cx-b", "来源 B", false, None, 2),
+                item("mine-1", "自己加的", false, None, 3),
+            ],
+        )
+        .unwrap();
+
+        let report = apply_at(&path, &[apply_item("cx-a", "来源 A", None, false)], &["cx-".to_string()], false).unwrap();
+        assert_eq!(report.removed, 1, "只删 cx-b");
+        assert_eq!(report.unchanged, 1);
+        assert_eq!(report.rev, 2);
+
+        let ids: Vec<String> = load_at(&path).unwrap().todos.into_iter().map(|t| t.id).collect();
+        assert_eq!(ids, vec!["cx-a", "mine-1"], "顺序按文件原顺序，且 mine-1 必须还在");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 7. 多前缀各删一条
+    #[test]
+    fn apply_prune_handles_multiple_prefixes() {
+        let dir = temp_dir("applyprunemulti");
+        let path = todo_path_in(&dir);
+        save_at(
+            &path,
+            vec![
+                item("cx-1", "来源甲", false, None, 1),
+                item("hw-1", "来源乙", false, None, 2),
+                item("keep-1", "保留", false, None, 3),
+            ],
+        )
+        .unwrap();
+
+        let prefixes = vec!["cx-".to_string(), "hw-".to_string()];
+        let report = apply_at(&path, &[], &prefixes, false).unwrap();
+        assert_eq!(report.removed, 2);
+        assert_eq!(report.rev, 2);
+        assert_eq!(load_at(&path).unwrap().todos, vec![item("keep-1", "保留", false, None, 3)]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// prune 为空 → **一条都不删**（默认绝不删）
+    #[test]
+    fn apply_without_prune_never_deletes_anything() {
+        let dir = temp_dir("applynoprune");
+        let path = todo_path_in(&dir);
+        save_at(&path, vec![item("cx-1", "来源甲", false, None, 1), item("mine", "自己的", false, None, 2)]).unwrap();
+        let bytes_before = std::fs::read(&path).unwrap();
+
+        let report = apply_at(&path, &[], &[], false).unwrap();
+        assert_eq!((report.added, report.updated, report.removed, report.unchanged), (0, 0, 0, 0));
+        assert_eq!(report.rev, 1);
+        assert_eq!(std::fs::read(&path).unwrap(), bytes_before, "prune 为空时什么都不该做");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 8. items 里重复 id → Err(Corrupt)，文件字节不变
+    #[test]
+    fn apply_rejects_duplicate_ids_without_writing() {
+        let dir = temp_dir("applydup");
+        let path = todo_path_in(&dir);
+        save_at(&path, vec![item("cx-1", "已有", false, None, 1)]).unwrap();
+        let bytes_before = std::fs::read(&path).unwrap();
+
+        let items = vec![apply_item("cx-2", "甲", None, false), apply_item("cx-2", "乙", None, false)];
+        let err = apply_at(&path, &items, &[], false).unwrap_err();
+        assert!(err.is_corrupt(), "{err:?}");
+        assert!(err.to_string().contains("重复 id"), "{err}");
+        assert_eq!(std::fs::read(&path).unwrap(), bytes_before, "整批不写");
+        assert!(!tmp_path(&path).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 9. 非法 deadline（2 月 30 号）→ Err(Corrupt)，整批不写
+    #[test]
+    fn apply_rejects_invalid_deadline_without_writing() {
+        let dir = temp_dir("applybaddate");
+        let path = todo_path_in(&dir);
+        let bytes_before = std::fs::read(&path).ok();
+        assert!(bytes_before.is_none(), "文件还不存在");
+
+        let items = vec![
+            apply_item("cx-1", "合法的一条", Some("2026-11-10"), false),
+            apply_item("cx-2", "非法日期", Some("2026-02-30"), false),
+        ];
+        let err = apply_at(&path, &items, &[], false).unwrap_err();
+        assert!(err.is_corrupt(), "{err:?}");
+        assert!(err.to_string().contains("无法识别的截止日期"), "{err}");
+        assert!(!path.exists(), "整批不写：连合法的那条也不许落盘");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 10. 空清单 + prune → 前缀命中的全删，其它保留，rev +1
+    #[test]
+    fn apply_empty_items_with_prune_removes_all_matching() {
+        let dir = temp_dir("applyemptyprune");
+        let path = todo_path_in(&dir);
+        save_at(
+            &path,
+            vec![
+                item("cx-1", "来源甲", false, None, 1),
+                item("cx-2", "来源乙", true, None, 2),
+                item("mine", "自己的", false, None, 3),
+            ],
+        )
+        .unwrap();
+
+        let report = apply_at(&path, &[], &["cx-".to_string()], false).unwrap();
+        assert_eq!(report.removed, 2);
+        assert_eq!(report.added, 0);
+        assert_eq!(report.rev, 2);
+        assert_eq!(load_at(&path).unwrap().todos, vec![item("mine", "自己的", false, None, 3)]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 11. dry-run：计数照算，文件一个字节都不动、rev 也不变
+    #[test]
+    fn apply_dry_run_reports_without_writing() {
+        let dir = temp_dir("applydry");
+        let path = todo_path_in(&dir);
+        save_at(
+            &path,
+            vec![
+                item("cx-1", "来源甲", false, None, 1),
+                item("cx-2", "来源乙", false, None, 2),
+                item("mine", "自己的", false, None, 3),
+            ],
+        )
+        .unwrap();
+        let bytes_before = std::fs::read(&path).unwrap();
+
+        let items = vec![
+            apply_item("cx-1", "来源甲（改过）", None, false),
+            apply_item("cx-9", "新的", None, false),
+        ];
+        let report = apply_at(&path, &items, &["cx-".to_string()], true).unwrap();
+        assert_eq!(
+            report,
+            ApplyReport { rev: 1, added: 1, updated: 1, removed: 1, unchanged: 0, dry_run: true }
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), bytes_before, "dry-run 不许写盘");
+        assert_eq!(load_at(&path).unwrap().rev, 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 12. 数据文件损坏 → Err(Corrupt)，文件原封不动
+    #[test]
+    fn apply_refuses_corrupt_file_untouched() {
+        let dir = temp_dir("applycorrupt");
+        let path = todo_path_in(&dir);
+        let broken = "{\n  \"version\": 1,\n  \"rev\": 4,\n  \"todos\": [ {oops";
+        std::fs::write(&path, broken).unwrap();
+
+        let err = apply_at(&path, &[apply_item("cx-1", "甲", None, false)], &["cx-".to_string()], false).unwrap_err();
+        assert!(err.is_corrupt(), "{err:?}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), broken, "损坏文件必须一字不改");
+        assert!(!tmp_path(&path).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 13. text 为空 → Err，文件字节不变（不许静默跳过、也不许把空文本写进去）
+    #[test]
+    fn apply_rejects_blank_text_without_writing() {
+        let dir = temp_dir("applyblank");
+        let path = todo_path_in(&dir);
+        save_at(&path, vec![item("cx-1", "已有", false, None, 1)]).unwrap();
+        let bytes_before = std::fs::read(&path).unwrap();
+
+        let err = apply_at(&path, &[apply_item("cx-2", "   ", None, false)], &[], false).unwrap_err();
+        assert!(err.is_corrupt(), "数据层只拦不让写的情况：{err:?}");
+        assert_eq!(std::fs::read(&path).unwrap(), bytes_before);
+
+        let err = apply_at(&path, &[apply_item("  ", "有文本没 id", None, false)], &[], false).unwrap_err();
+        assert!(err.is_corrupt(), "id 空白同样是输入问题：{err:?}");
+        assert_eq!(std::fs::read(&path).unwrap(), bytes_before);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 顺序：已有条目保持文件里的原顺序，新增条目按清单顺序追加在后（顺序只为可复现）
+    #[test]
+    fn apply_keeps_existing_order_and_appends_new_items() {
+        let dir = temp_dir("applyorder");
+        let path = todo_path_in(&dir);
+        save_at(&path, vec![item("cx-b", "乙", false, None, 2), item("cx-a", "甲", false, None, 1)]).unwrap();
+
+        let items = vec![
+            apply_item("cx-c", "丙", None, false),
+            apply_item("cx-a", "甲（改）", None, false),
+        ];
+        let report = apply_at(&path, &items, &[], false).unwrap();
+        assert_eq!((report.added, report.updated), (1, 1));
+
+        let ids: Vec<String> = load_at(&path).unwrap().todos.into_iter().map(|t| t.id).collect();
+        assert_eq!(ids, vec!["cx-b", "cx-a", "cx-c"], "已有按原顺序，新增追加在后");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

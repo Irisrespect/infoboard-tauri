@@ -12,6 +12,8 @@
 //! 退出码：0 成功 / 1 用法或参数错误 / 2 找不到目标 / 3 数据文件损坏。
 
 use infoboard_tauri_lib::todo_file::{self, TodoError, TodoItem};
+use std::io::Read;
+use std::path::Path;
 use std::process::ExitCode;
 
 const EXIT_OK: u8 = 0;
@@ -78,13 +80,14 @@ fn run(args: &[String]) -> Result<(), CliError> {
         "edit" => cmd_edit(rest),
         "rm" | "remove" | "del" => cmd_rm(rest),
         "clear" => cmd_clear(rest),
+        "apply" => cmd_apply(rest),
         "path" => cmd_path(rest),
         "help" | "--help" | "-h" => {
             print_help();
             Ok(())
         }
         other => Err(CliError::usage(format!(
-            "未知命令：{other}\n（可用命令：list / add / done / undone / edit / rm / clear / path / help）"
+            "未知命令：{other}\n（可用命令：list / add / done / undone / edit / rm / clear / apply / path / help）"
         ))),
     }
 }
@@ -481,6 +484,228 @@ fn cmd_clear(args: &[String]) -> Result<(), CliError> {
     Ok(())
 }
 
+// ─────────────────────────── apply（声明式同步） ───────────────────────────
+//
+// 与 add 的区别：`add` 是"再来一条"（每次新 id），`apply` 是"整表对齐到这份清单"。
+// 外部来源（第三方待办 / 自己的脚本）都有稳定 id，反复同步靠 id 幂等；
+// "这条在来源里消失了"用 `--prune` 前缀表达 —— 不给前缀就绝不删任何东西。
+
+/// payload：`{"items": [...], "prune": ["前缀", ...]}`（`items` 缺失 = 空数组）
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ApplyPayload {
+    #[serde(default)]
+    items: Vec<todo_file::ApplyItem>,
+    #[serde(default)]
+    prune: Vec<String>,
+}
+
+/// apply 的结果 + 打印所需的两件额外信息（改之前的 rev、清单条数）
+#[derive(Debug)]
+struct ApplyOutcome {
+    before_rev: u64,
+    item_count: usize,
+    report: todo_file::ApplyReport,
+}
+
+fn cmd_apply(args: &[String]) -> Result<(), CliError> {
+    let mut file: Option<String> = None;
+    let mut prune: Vec<String> = Vec::new();
+    let mut dry_run = false;
+    let mut json = false;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-f" | "--file" => {
+                let value = args
+                    .get(i + 1)
+                    .ok_or_else(|| CliError::usage("--file 后面要跟文件路径（不给就从 stdin 读）"))?;
+                file = Some(value.clone());
+                i += 2;
+            }
+            "--prune" => {
+                let value = args.get(i + 1).ok_or_else(|| {
+                    CliError::usage("--prune 后面要跟 id 前缀，例如 --prune cx-（可重复给多个）")
+                })?;
+                prune.push(value.clone());
+                i += 2;
+            }
+            "--dry-run" => {
+                dry_run = true;
+                i += 1;
+            }
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            other => {
+                return Err(CliError::usage(format!(
+                    "apply 不认识这个参数：{other}\n用法：infoboard-todo apply [--file <path>] [--prune <前缀>]... [--dry-run] [--json]"
+                )))
+            }
+        }
+    }
+
+    // 默认从 stdin 读：`脚本 | infoboard-todo apply` 是最顺手的用法
+    let mut source: Box<dyn Read> = match &file {
+        Some(path) => Box::new(
+            std::fs::File::open(path)
+                .map_err(|err| CliError::usage(format!("打开 {path} 失败：{err}")))?,
+        ),
+        None => Box::new(std::io::stdin()),
+    };
+
+    let data_path = todo_file::todo_path().map_err(from_todo_error)?;
+    let outcome = apply_from_reader(&mut source, &data_path, &prune, dry_run)?;
+    print_apply(&outcome, &data_path, json);
+    Ok(())
+}
+
+/// 从任意 reader 读 payload → 校验 → 调数据层。**返回报告而不是自己打印**，
+/// 单测就能用 `io::Cursor` 造输入、直接断言数字（不需要抓 stdout）。
+fn apply_from_reader<R: Read>(
+    source: &mut R,
+    path: &Path,
+    cli_prune: &[String],
+    dry_run: bool,
+) -> Result<ApplyOutcome, CliError> {
+    let mut raw = String::new();
+    source
+        .read_to_string(&mut raw)
+        .map_err(|err| CliError::usage(format!("读取输入失败：{err}")))?;
+    let raw = raw.trim_start_matches('\u{feff}');
+    // 空输入必须报错：当真成"空清单 + prune"就可能把整批来源条目删光
+    if raw.trim().is_empty() {
+        return Err(CliError::usage(
+            "输入是空的\napply 需要一份 JSON 清单（默认从 stdin 读，或用 --file <path>）：\n  {\"items\":[{\"id\":\"a-1\",\"text\":\"写周报\",\"deadline\":\"2026-11-10\",\"completed\":false}],\"prune\":[\"a-\"]}",
+        ));
+    }
+    let payload: ApplyPayload = serde_json::from_str(raw).map_err(|err| {
+        CliError::usage(format!(
+            "输入不是合法 JSON：{err}\n期望形状：\n  {{\"items\":[{{\"id\":\"a-1\",\"text\":\"写周报\",\"deadline\":\"2026-11-10\",\"completed\":false}}],\"prune\":[\"a-\"]}}"
+        ))
+    })?;
+
+    // 逐条校验（数据层也会拦，但那边只能用 Corrupt，退出码会是 3；
+    // 输入问题是用法问题，必须在 CLI 层判成 1）
+    let now = chrono::Local::now();
+    let mut seen: Vec<String> = Vec::with_capacity(payload.items.len());
+    let mut items: Vec<todo_file::ApplyItem> = Vec::with_capacity(payload.items.len());
+    for (index, item) in payload.items.iter().enumerate() {
+        let id = item.id.trim();
+        let text = item.text.trim();
+        if id.is_empty() || text.is_empty() {
+            return Err(CliError::usage(format!(
+                "第 {} 条的 id / text 是空白（id = {:?}）\n每条都必须有非空 id 和非空 text",
+                index + 1,
+                item.id
+            )));
+        }
+        if seen.iter().any(|known| known == id) {
+            return Err(CliError::usage(format!(
+                "items 里有重复 id：{id}\n（同一条不该出现两次：更新谁无法判断，整批不写）"
+            )));
+        }
+        seen.push(id.to_string());
+
+        // 日期在这里先归一化：非法直接 exit 1，不写文件
+        let deadline = match item.deadline.as_deref() {
+            None => None,
+            Some(value) if value.trim().is_empty() => None,
+            Some(value) => Some(
+                todo_file::normalize_deadline(value, now)
+                    .ok_or_else(|| {
+                        CliError::usage(format!(
+                            "无法识别的截止日期：{value}\n支持 `YYYY-MM-DD`（如 2027-01-05）或 `M月D日`（如 1月5日，取下一次出现的日期）\n整批未写入"
+                        ))
+                    })?
+                    .0,
+            ),
+        };
+
+        items.push(todo_file::ApplyItem {
+            id: id.to_string(),
+            text: text.to_string(),
+            deadline,
+            completed: item.completed,
+        });
+    }
+
+    // prune = payload + 命令行（并集，去空白去重）；顺序只影响报错可读性
+    let mut prune: Vec<String> = Vec::new();
+    for prefix in payload.prune.iter().chain(cli_prune.iter()) {
+        let prefix = prefix.trim();
+        if prefix.is_empty() {
+            continue;
+        }
+        if !prune.iter().any(|known| known == prefix) {
+            prune.push(prefix.to_string());
+        }
+    }
+
+    // 先读一次拿"改之前的 rev"：损坏在这里就会 exit 3，且一个字节都不会写
+    let before_rev = todo_file::load_at(path).map_err(from_todo_error)?.rev;
+    let report =
+        todo_file::apply_at(path, &items, &prune, dry_run).map_err(from_todo_error)?;
+
+    Ok(ApplyOutcome { before_rev, item_count: items.len(), report })
+}
+
+/// 打印 apply 结果（人类可读 / `--json`）
+fn print_apply(outcome: &ApplyOutcome, data_path: &Path, json: bool) {
+    let report = &outcome.report;
+
+    if json {
+        // 字段名固定给脚本用（camelCase）；dataPath 便于脚本确认改的是哪个文件
+        let payload = ApplyJson {
+            rev: report.rev,
+            added: report.added,
+            updated: report.updated,
+            removed: report.removed,
+            unchanged: report.unchanged,
+            dry_run: report.dry_run,
+            data_path: data_path.display().to_string(),
+        };
+        match serde_json::to_string_pretty(&payload) {
+            Ok(text) => println!("{text}"),
+            Err(err) => eprintln!("序列化输出失败：{err}"),
+        }
+        return;
+    }
+
+    // rev 变了 = 真的落盘了（dry-run 与"无变化"都不写，rev 原样返回）
+    let written = report.rev != outcome.before_rev;
+    let touched = report.added + report.updated + report.removed;
+    let suffix = if report.dry_run { "（dry-run，未写入）" } else { "" };
+
+    if !written && touched == 0 {
+        println!("没有变化（rev {} 不变）{suffix}", report.rev);
+        return;
+    }
+    let rev_part = if written {
+        format!("rev {} → {}", outcome.before_rev, report.rev)
+    } else {
+        format!("rev {} 不变", report.rev)
+    };
+    println!(
+        "读取 {} 条：新增 {}，更新 {}，删除 {}，未变 {}（{rev_part}）{suffix}",
+        outcome.item_count, report.added, report.updated, report.removed, report.unchanged
+    );
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ApplyJson {
+    rev: u64,
+    added: usize,
+    updated: usize,
+    removed: usize,
+    unchanged: usize,
+    dry_run: bool,
+    data_path: String,
+}
+
 // ─────────────────────────── path / help ───────────────────────────
 
 fn cmd_path(args: &[String]) -> Result<(), CliError> {
@@ -495,7 +720,10 @@ fn cmd_path(args: &[String]) -> Result<(), CliError> {
 }
 
 fn print_help() {
+    // 用 `{}` 而不是把正文直接当格式串：正文里有 JSON 示例（`{"items":…}`），
+    // 花括号会被当成占位符
     println!(
+        "{}",
         r#"infoboard-todo —— InfoBoard 待办命令行（数据文件与 app 共用：todo.json）
 
 用法：
@@ -507,12 +735,29 @@ fn print_help() {
   infoboard-todo edit   <目标> [-t|--text <新文本>] [-d|--deadline <日期>|--clear-deadline]
   infoboard-todo rm     <目标>
   infoboard-todo clear  --done
+  infoboard-todo apply  [--file <path>] [--prune <前缀>]... [--dry-run] [--json]
   infoboard-todo path
   infoboard-todo help
 
 <目标>：
   · 纯数字 = 当前列表里的序号（1 基，就是 `list` 显示的那个序号，未完成在前）
   · 其它 = 待办 id 的前缀（不区分大小写）；前缀不唯一会报错并列出候选
+
+apply（声明式同步，给脚本 / 外部来源用）：
+  · 用法：给一份**完整清单**，把 todo.json 对齐成清单的样子
+  · 靠 id 幂等：同 id 的条目走更新而不是再新增一条，同一份清单反复跑结果一致；
+    清单里没有变化时**不写盘、rev 不变**
+  · 靠前缀安全删：只删"id 以 --prune 前缀开头 **并且** 这次清单里没给"的条目
+    （可给多个前缀）；**不给 --prune 就一条都不删**
+  · 只保留"完成"状态，不降级：文件里已完成（true）的条目，清单说 false 也不会被改回未完成
+  · 输入默认从 stdin 读，也可 --file <path>：
+      {"items":[{"id":"a-1","text":"写周报","deadline":"2026-11-10","completed":false}],
+       "prune":["a-"]}
+    payload 里的 prune 与命令行 --prune 取并集；items 缺失按空数组
+  · --dry-run 只报数不写盘；--json 输出 {"rev":…,"added":…,"updated":…,"removed":…,
+    "unchanged":…,"dryRun":…,"dataPath":"…"}
+  · 退出码：0 成功（含无变化）/ 1 输入不是合法 JSON、缺字段、重复 id、日期非法 /
+    3 数据文件损坏
 
 <日期>：
   · YYYY-MM-DD   严格校验（2026-02-30 非法，2028-02-29 合法）
@@ -705,5 +950,116 @@ mod tests {
             created_at: 1,
         };
         assert_eq!(tail_text(&plain, 2_000), "");
+    }
+
+    // ─── apply（声明式同步） ───
+
+    fn cli_temp_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "infoboard-todo-cli-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// 合法 stdin → 报告数字对；同一份 payload 再跑一次必须是"没有变化"
+    #[test]
+    fn apply_from_reader_reports_numbers_and_is_idempotent() {
+        let dir = cli_temp_dir("applyok");
+        let path = todo_file::todo_path_in(&dir);
+        let body = r#"{"items":[
+            {"id":"cx-0001","text":"甲","deadline":"2026-11-10","completed":false},
+            {"id":"cx-0002","text":"乙","completed":true},
+            {"id":"cx-0003","text":"丙"}
+        ],"prune":["cx-"]}"#;
+
+        let mut source = std::io::Cursor::new(body.as_bytes().to_vec());
+        let outcome = apply_from_reader(&mut source, &path, &[], false).unwrap();
+        assert_eq!(outcome.item_count, 3);
+        assert_eq!(outcome.before_rev, 0);
+        assert_eq!(
+            (outcome.report.added, outcome.report.updated, outcome.report.removed, outcome.report.unchanged),
+            (3, 0, 0, 0)
+        );
+        assert_eq!(outcome.report.rev, 1);
+        assert!(!outcome.report.dry_run);
+
+        // 同一份 payload 再来一次：全"未变"，rev 不动
+        let mut again = std::io::Cursor::new(body.as_bytes().to_vec());
+        let outcome = apply_from_reader(&mut again, &path, &[], false).unwrap();
+        assert_eq!(outcome.report.unchanged, 3);
+        assert_eq!(outcome.report.rev, outcome.before_rev, "无变化不许涨 rev");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 重复 id 属于用法错误（exit 1），且一个字节都不写
+    #[test]
+    fn apply_rejects_duplicate_ids_at_cli_layer() {
+        let dir = cli_temp_dir("applydup");
+        let path = todo_file::todo_path_in(&dir);
+        let body = r#"{"items":[
+            {"id":"cx-0001","text":"甲"},
+            {"id":"cx-0001","text":"乙"}
+        ]}"#;
+
+        let mut source = std::io::Cursor::new(body.as_bytes().to_vec());
+        let err = apply_from_reader(&mut source, &path, &[], false).unwrap_err();
+        assert_eq!(err.code, EXIT_USAGE, "重复 id 是用法错误，不是数据损坏");
+        assert!(err.message.contains("重复 id"), "{}", err.message);
+        assert!(!path.exists(), "输入有问题时不许创建文件");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// payload 里的 prune 与命令行 --prune 取并集
+    #[test]
+    fn apply_prune_is_union_of_payload_and_cli() {
+        let dir = cli_temp_dir("applyunion");
+        let path = todo_file::todo_path_in(&dir);
+
+        let seed = r#"{"items":[
+            {"id":"cx-1","text":"来源甲"},
+            {"id":"hw-1","text":"来源乙"},
+            {"id":"keep-1","text":"保留"}
+        ]}"#;
+        let mut source = std::io::Cursor::new(seed.as_bytes().to_vec());
+        apply_from_reader(&mut source, &path, &[], false).unwrap();
+
+        // payload 给 cx-，命令行给 hw- → 两条都该被删，keep-1 留下
+        let body = r#"{"items":[{"id":"keep-1","text":"保留"}],"prune":["cx-"]}"#;
+        let mut source = std::io::Cursor::new(body.as_bytes().to_vec());
+        let outcome =
+            apply_from_reader(&mut source, &path, &["hw-".to_string()], false).unwrap();
+        assert_eq!(outcome.report.removed, 2, "两个前缀各自命中一条");
+        assert_eq!(outcome.report.unchanged, 1);
+        assert_eq!(outcome.report.rev, outcome.before_rev + 1);
+
+        let ids: Vec<String> =
+            todo_file::load_at(&path).unwrap().todos.into_iter().map(|t| t.id).collect();
+        assert_eq!(ids, vec!["keep-1"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 空输入 / 非法 JSON / 非法日期 / 空 text 一律 exit 1，且不碰数据文件
+    #[test]
+    fn apply_rejects_bad_input_before_writing() {
+        let dir = cli_temp_dir("applybad");
+        let path = todo_file::todo_path_in(&dir);
+
+        let cases: [(&str, &str); 5] = [
+            ("   \n", "空输入"),
+            ("[{oops", "非法 JSON"),
+            (r#"{"items":[{"id":"x","text":"甲","deadline":"2026-02-30"}]}"#, "非法日期"),
+            (r#"{"items":[{"id":"x","text":"   "}]}"#, "空 text"),
+            (r#"{"items":[{"text":"没有 id"}]}"#, "缺 id"),
+        ];
+        for (body, why) in cases {
+            let mut source = std::io::Cursor::new(body.as_bytes().to_vec());
+            let err = apply_from_reader(&mut source, &path, &[], false).unwrap_err();
+            assert_eq!(err.code, EXIT_USAGE, "{why} 应是用法错误：{}", err.message);
+            assert!(!path.exists(), "{why} 时不许写盘");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
